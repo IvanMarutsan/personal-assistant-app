@@ -1,0 +1,266 @@
+:root {
+  font-family: "IBM Plex Sans", "Segoe UI", sans-serif;
+  color: #1d2a1f;
+  background: radial-gradient(circle at 0% 0%, #e7f5ee 0%, #f7fbf8 55%, #ffffff 100%);
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+}
+
+a {
+  color: #0f6a45;
+  text-decoration: none;
+}
+
+.app-shell {
+  max-width: 900px;
+  margin: 0 auto;
+  padding: 16px;
+  min-height: 100vh;
+}
+
+.app-header {
+  margin-bottom: 16px;
+}
+
+.app-header h1 {
+  margin: 0;
+  font-size: 1.5rem;
+}
+
+.app-header p {
+  margin: 6px 0 0;
+  color: #4a5f4f;
+}
+
+.app-nav {
+  display: flex;
+  gap: 12px;
+  margin-bottom: 16px;
+}
+
+.app-content {
+  background: #ffffff;
+  border: 1px solid #dce9df;
+  border-radius: 12px;
+  padding: 16px;
+}
+
+.panel {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.empty-note {
+  color: #617668;
+}
+
+.error-note {
+  color: #9b2f2f;
+  margin: 8px 0;
+}
+
+.dev-auth-box {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin: 8px 0 16px;
+}
+
+.dev-auth-box textarea {
+  width: 100%;
+  border: 1px solid #d5e2d8;
+  border-radius: 8px;
+  padding: 8px;
+}
+
+button {
+  border: 1px solid #0f6a45;
+  background: #0f6a45;
+  color: #fff;
+  border-radius: 8px;
+  padding: 6px 10px;
+  cursor: pointer;
+}
+
+button:disabled {
+  opacity: 0.6;
+  cursor: default;
+}
+
+.inbox-list {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.inbox-item {
+  border: 1px solid #e1e8e3;
+  border-radius: 10px;
+  padding: 10px;
+}
+
+.inbox-main-text {
+  margin: 0 0 4px;
+  font-weight: 600;
+}
+
+.inbox-meta {
+  margin: 0;
+  color: #5f7567;
+  font-size: 0.9rem;
+}
+
+.inbox-actions {
+  margin-top: 8px;
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+button.danger {
+  border-color: #a13838;
+  background: #a13838;
+}
+
+.toolbar-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 8px;
+}
+
+.toolbar-row label {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  color: #375445;
+}
+
+.toolbar-row select {
+  border: 1px solid #d5e2d8;
+  border-radius: 8px;
+  padding: 6px 8px;
+}
+
+.project-group {
+  margin-top: 8px;
+}
+
+.project-group h3 {
+  margin: 0 0 8px;
+  font-size: 1rem;
+  color: #355445;
+}
+
+.today-section {
+  margin-top: 10px;
+}
+
+.today-section h3 {
+  margin: 0 0 8px;
+  font-size: 1rem;
+}
+
+.essential-badge {
+  margin-left: 8px;
+  padding: 2px 7px;
+  border-radius: 999px;
+  background: #e7f4ec;
+  border: 1px solid #bfdac8;
+  color: #24593e;
+  font-size: 0.75rem;
+  font-weight: 500;
+}
+
+.assistant-block {
+  border: 1px solid #d7e5db;
+  border-radius: 10px;
+  padding: 10px;
+  background: #f7fbf8;
+}
+
+.deterministic-block {
+  background: #f7fbf8;
+}
+
+.ai-block {
+  border-color: #cfdbe8;
+  background: #f5f9ff;
+}
+
+.assistant-primary {
+  margin-bottom: 8px;
+}
+
+.assistant-title {
+  margin: 0;
+  font-weight: 700;
+}
+
+.assistant-secondary {
+  margin: 0 0 8px 18px;
+  padding: 0;
+}
+
+.modal-backdrop {
+  position: fixed;
+  inset: 0;
+  background: rgba(20, 32, 25, 0.35);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 12px;
+  z-index: 1000;
+}
+
+.modal-card {
+  width: min(520px, 100%);
+  background: #ffffff;
+  border: 1px solid #d6e3d9;
+  border-radius: 12px;
+  padding: 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.modal-card h3 {
+  margin: 0;
+}
+
+.modal-task-title {
+  margin: 0;
+  color: #51685b;
+}
+
+.modal-card label {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  color: #355445;
+}
+
+.modal-card select,
+.modal-card textarea,
+.modal-card input {
+  border: 1px solid #d5e2d8;
+  border-radius: 8px;
+  padding: 8px;
+  font: inherit;
+}
+
+.modal-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+}
