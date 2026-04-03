@@ -19,7 +19,7 @@ Deno.serve(async (req) => {
   const { data, error } = await supabase
     .from("tasks")
     .select(
-      "id, title, details, task_type, status, last_moved_reason, project_id, due_at, scheduled_for, is_protected_essential, projects(name)"
+      "id, title, details, task_type, status, last_moved_reason, project_id, due_at, scheduled_for, is_protected_essential, calendar_provider, calendar_event_id, projects(name)"
     )
     .eq("user_id", sessionUser.userId)
     .order("created_at", { ascending: false })
@@ -31,6 +31,18 @@ Deno.serve(async (req) => {
 
   const taskIds = (data ?? []).map((item) => item.id);
   const cancelReasonByTaskId = new Map<string, string | null>();
+  const calendarLinkByTaskId = new Map<
+    string,
+    {
+      provider: "google";
+      provider_event_id: string;
+      provider_event_url: string | null;
+      title: string;
+      starts_at: string;
+      ends_at: string;
+      timezone: string;
+    }
+  >();
 
   if (taskIds.length > 0) {
     const { data: cancelEvents } = await supabase
@@ -49,9 +61,33 @@ Deno.serve(async (req) => {
     }
   }
 
+  if (taskIds.length > 0) {
+    const { data: calendarLinks } = await supabase
+      .from("calendar_event_links")
+      .select("task_id, provider, provider_event_id, provider_event_url, title, starts_at, ends_at, timezone, created_at")
+      .eq("user_id", sessionUser.userId)
+      .eq("provider", "google")
+      .in("task_id", taskIds)
+      .order("created_at", { ascending: false });
+
+    for (const link of calendarLinks ?? []) {
+      if (!link.task_id || calendarLinkByTaskId.has(link.task_id)) continue;
+      calendarLinkByTaskId.set(link.task_id, {
+        provider: "google",
+        provider_event_id: link.provider_event_id,
+        provider_event_url: link.provider_event_url ?? null,
+        title: link.title,
+        starts_at: link.starts_at,
+        ends_at: link.ends_at,
+        timezone: link.timezone
+      });
+    }
+  }
+
   const items = (data ?? []).map((task) => ({
     ...task,
-    cancel_reason_text: cancelReasonByTaskId.get(task.id) ?? null
+    cancel_reason_text: cancelReasonByTaskId.get(task.id) ?? null,
+    linked_calendar_event: calendarLinkByTaskId.get(task.id) ?? null
   }));
 
   return jsonResponse({ ok: true, items });

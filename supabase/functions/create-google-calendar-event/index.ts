@@ -11,6 +11,8 @@ type CreateEventBody = {
   durationMinutes?: number;
   timezone?: string;
   sourceInboxItemId?: string;
+  sourceTaskId?: string;
+  sourceNoteId?: string;
 };
 
 function parseIso(input: string | undefined): Date | null {
@@ -56,6 +58,31 @@ Deno.serve(async (req) => {
   }
 
   try {
+    const supabase = createAdminClient();
+    if (body?.sourceTaskId) {
+      const { data: taskOwned } = await supabase
+        .from("tasks")
+        .select("id")
+        .eq("id", body.sourceTaskId)
+        .eq("user_id", sessionUser.userId)
+        .maybeSingle();
+      if (!taskOwned) {
+        return jsonResponse({ ok: false, error: "task_not_found" }, 404);
+      }
+    }
+
+    if (body?.sourceNoteId) {
+      const { data: noteOwned } = await supabase
+        .from("notes")
+        .select("id")
+        .eq("id", body.sourceNoteId)
+        .eq("user_id", sessionUser.userId)
+        .maybeSingle();
+      if (!noteOwned) {
+        return jsonResponse({ ok: false, error: "note_not_found" }, 404);
+      }
+    }
+
     const auth = await getGoogleAccessTokenForUser(sessionUser.userId);
     const apiUrl = `https://www.googleapis.com/calendar/v3/calendars/${encodeURIComponent(auth.calendarId)}/events`;
 
@@ -85,20 +112,37 @@ Deno.serve(async (req) => {
       return jsonResponse({ ok: false, error: "calendar_event_create_failed" }, 502);
     }
 
-    const supabase = createAdminClient();
     const { error: linkError } = await supabase.from("calendar_event_links").insert({
       user_id: sessionUser.userId,
       provider: "google",
       provider_event_id: payload.id,
       inbox_item_id: body?.sourceInboxItemId ?? null,
+      task_id: body?.sourceTaskId ?? null,
+      note_id: body?.sourceNoteId ?? null,
       title,
       starts_at: startAt.toISOString(),
       ends_at: endAt.toISOString(),
-      timezone
+      timezone,
+      provider_event_url: payload.htmlLink ?? null
     });
 
     if (linkError) {
       console.error("[create-google-calendar-event] calendar_event_links_insert_failed", linkError);
+    }
+
+    if (body?.sourceTaskId) {
+      const { error: taskUpdateError } = await supabase
+        .from("tasks")
+        .update({
+          calendar_provider: "google",
+          calendar_event_id: payload.id
+        })
+        .eq("id", body.sourceTaskId)
+        .eq("user_id", sessionUser.userId);
+
+      if (taskUpdateError) {
+        console.error("[create-google-calendar-event] task_link_update_failed", taskUpdateError);
+      }
     }
 
     return jsonResponse({

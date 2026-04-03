@@ -234,10 +234,12 @@ export function TasksPage() {
         description: payload.description || undefined,
         startAt: payload.startAt,
         endAt: payload.endAt,
-        timezone: payload.timezone
+        timezone: payload.timezone,
+        sourceTaskId: pendingCalendarTask.id
       });
       setPendingCalendarTask(null);
       setActiveTask(null);
+      await loadTasks();
     } catch (error) {
       if (error instanceof ApiError) {
         diagnostics.trackFailure({
@@ -514,6 +516,7 @@ export function TasksPage() {
                     </p>
                   ) : null}
                   <p className={timing.tone === "warn" ? "error-note" : "inbox-meta"}>{timing.label}</p>
+                  {task.linked_calendar_event ? <p className="inbox-meta">Пов'язано з Google Calendar</p> : null}
                   <div className="inbox-actions">
                     {task.status !== "done" ? (
                       <button onClick={() => void runDone(task)} disabled={workingTaskId === task.id}>
@@ -601,6 +604,18 @@ export function TasksPage() {
           }
           setPendingCalendarTask(activeTask);
           setCalendarError(null);
+        }}
+        onOpenLinkedCalendarEvent={(url) => {
+          diagnostics.trackAction("open_task_linked_calendar_event", { taskId: activeTask?.id });
+          try {
+            if (window.Telegram?.WebApp?.openLink) {
+              window.Telegram.WebApp.openLink(url);
+              return;
+            }
+            window.open(url, "_blank", "noopener,noreferrer");
+          } catch {
+            window.location.href = url;
+          }
         }}
       />
 

@@ -1,7 +1,21 @@
 import { useEffect, useMemo, useState } from "react";
 import { useDiagnostics } from "../../lib/diagnostics";
-import { ApiError, getAiAdvisor, getPlanningAssistant, getTasks } from "../../lib/api";
-import type { AiAdvisorSummary, PlanningSummary, TaskItem, TaskType } from "../../types/api";
+import {
+  ApiError,
+  getAiAdvisor,
+  getGoogleCalendarStatus,
+  getGoogleCalendarUpcoming,
+  getPlanningAssistant,
+  getTasks
+} from "../../lib/api";
+import type {
+  AiAdvisorSummary,
+  GoogleCalendarEventItem,
+  GoogleCalendarStatus,
+  PlanningSummary,
+  TaskItem,
+  TaskType
+} from "../../types/api";
 
 const SESSION_KEY = "personal_assistant_app_session_token";
 
@@ -82,6 +96,8 @@ export function TodayPage() {
   const [items, setItems] = useState<TaskItem[]>([]);
   const [planning, setPlanning] = useState<PlanningSummary | null>(null);
   const [aiAdvisor, setAiAdvisor] = useState<AiAdvisorSummary | null>(null);
+  const [calendarStatus, setCalendarStatus] = useState<GoogleCalendarStatus | null>(null);
+  const [calendarUpcoming, setCalendarUpcoming] = useState<GoogleCalendarEventItem[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
   const diagnostics = useDiagnostics();
@@ -93,6 +109,8 @@ export function TodayPage() {
       setItems([]);
       setPlanning(null);
       setAiAdvisor(null);
+      setCalendarStatus(null);
+      setCalendarUpcoming([]);
       return;
     }
 
@@ -101,10 +119,12 @@ export function TodayPage() {
     diagnostics.trackAction("load_today", { route: "/today" });
     const errors: string[] = [];
 
-    const [tasksResult, planningResult, aiResult] = await Promise.allSettled([
+    const [tasksResult, planningResult, aiResult, calendarStatusResult, calendarUpcomingResult] = await Promise.allSettled([
       getTasks(sessionToken),
       getPlanningAssistant(sessionToken),
-      getAiAdvisor(sessionToken)
+      getAiAdvisor(sessionToken),
+      getGoogleCalendarStatus(sessionToken),
+      getGoogleCalendarUpcoming(sessionToken)
     ]);
 
     if (tasksResult.status === "fulfilled") {
@@ -159,6 +179,18 @@ export function TodayPage() {
       setAiAdvisor(null);
     }
 
+    if (calendarStatusResult.status === "fulfilled") {
+      setCalendarStatus(calendarStatusResult.value);
+    } else {
+      setCalendarStatus(null);
+    }
+
+    if (calendarUpcomingResult.status === "fulfilled") {
+      setCalendarUpcoming(calendarUpcomingResult.value);
+    } else {
+      setCalendarUpcoming([]);
+    }
+
     if (errors.length > 0) {
       setError(errors.join(" "));
     }
@@ -201,6 +233,30 @@ export function TodayPage() {
           task.task_type === "personal_essential")
     );
   }, [items]);
+
+  const calendarToday = useMemo(() => {
+    return calendarUpcoming.filter((event) => {
+      const raw = event.startAt;
+      if (!raw) return false;
+      const parsed = new Date(raw);
+      if (Number.isNaN(parsed.getTime())) return false;
+      return parsed >= todayStart && parsed <= todayEnd;
+    });
+  }, [calendarUpcoming, todayEnd, todayStart]);
+
+  const nextCalendarEvent = useMemo(() => {
+    const sorted = [...calendarUpcoming]
+      .filter((event) => Boolean(event.startAt))
+      .sort((a, b) => {
+        const aTs = new Date(a.startAt ?? 0).getTime();
+        const bTs = new Date(b.startAt ?? 0).getTime();
+        return aTs - bTs;
+      });
+    return sorted.find((event) => {
+      const ts = new Date(event.startAt ?? 0).getTime();
+      return Number.isFinite(ts) && ts > todayEnd.getTime();
+    });
+  }, [calendarUpcoming, todayEnd]);
 
   function renderSection(title: string, list: TaskItem[]) {
     return (
@@ -367,6 +423,33 @@ export function TodayPage() {
 
       {!loading ? (
         <>
+          <section className="today-section">
+            <h3>Календарний контекст</h3>
+            {!calendarStatus?.connected ? (
+              <p className="empty-note">Google Calendar не підключено. Підключи його на вкладці «Календар».</p>
+            ) : (
+              <>
+                {calendarToday.length === 0 ? (
+                  <p className="empty-note">На сьогодні подій не знайдено.</p>
+                ) : (
+                  <ul className="inbox-list">
+                    {calendarToday.slice(0, 4).map((event) => (
+                      <li className="inbox-item" key={event.id}>
+                        <p className="inbox-main-text">{event.title}</p>
+                        <p className="inbox-meta">{event.startAt ? formatLocalDateTime(new Date(event.startAt)) : "Без часу"}</p>
+                      </li>
+                    ))}
+                  </ul>
+                )}
+                {nextCalendarEvent ? (
+                  <p className="inbox-meta">
+                    Наступна подія після сьогодні: {nextCalendarEvent.title} ·{" "}
+                    {nextCalendarEvent.startAt ? formatLocalDateTime(new Date(nextCalendarEvent.startAt)) : "Без часу"}
+                  </p>
+                ) : null}
+              </>
+            )}
+          </section>
           {renderSection("Заплановано на сьогодні", plannedToday)}
           {renderSection("Прострочені заплановані", overduePlanned)}
           {renderSection("Захищені / регулярні essentials", protectedEssentials)}

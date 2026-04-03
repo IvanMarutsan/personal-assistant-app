@@ -22,6 +22,7 @@ type TaskDetailModalProps = {
   }) => void;
   onAction: (action: TaskActionKind) => void;
   onCreateCalendarEvent: () => void;
+  onOpenLinkedCalendarEvent: (url: string) => void;
 };
 
 const TASK_TYPE_OPTIONS: Array<{ value: TaskType; label: string }> = [
@@ -181,6 +182,27 @@ export function TaskDetailModal(props: TaskDetailModalProps) {
               <p className="inbox-meta">Тип: {taskTypeLabel(task.task_type)}</p>
               <p className="inbox-meta">Статус: {statusLabel(task.status)}</p>
               <p className="inbox-meta">Час: {timingLabel(task)}</p>
+              {task.linked_calendar_event ? (
+                <div className="project-group">
+                  <p className="inbox-meta">Пов'язано з Google Calendar: так</p>
+                  <p className="inbox-meta">
+                    Подія: {task.linked_calendar_event.title} ·{" "}
+                    {formatLocalDateTime(new Date(task.linked_calendar_event.starts_at))}
+                  </p>
+                  {task.linked_calendar_event.provider_event_url ? (
+                    <div className="inbox-actions">
+                      <button
+                        type="button"
+                        className="ghost"
+                        onClick={() => props.onOpenLinkedCalendarEvent(task.linked_calendar_event!.provider_event_url!)}
+                        disabled={props.busy}
+                      >
+                        Переглянути в Google Calendar
+                      </button>
+                    </div>
+                  ) : null}
+                </div>
+              ) : null}
               {task.status === "cancelled" ? (
                 <>
                   <p className="inbox-meta">
@@ -201,7 +223,7 @@ export function TaskDetailModal(props: TaskDetailModalProps) {
                   Редагувати
                 </button>
                 <button type="button" onClick={props.onCreateCalendarEvent} disabled={props.busy || task.status === "cancelled"}>
-                  У Google Calendar
+                  {task.linked_calendar_event ? "Створити ще одну подію" : "У Google Calendar"}
                 </button>
                 {task.status !== "done" ? (
                   <button type="button" onClick={() => props.onAction("done")} disabled={props.busy}>

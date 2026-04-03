@@ -18,6 +18,7 @@ Testing diagnostics mode:
 6. Apply Supabase migration from `supabase/migrations/0003_v1_planning_primitives.sql`.
 7. Apply Supabase migration from `supabase/migrations/0004_v1_5_voice_structured_triage.sql`.
 8. Apply Supabase migration from `supabase/migrations/0005_v1_google_calendar.sql`.
+9. Apply Supabase migration from `supabase/migrations/0006_v1_calendar_link_polish.sql`.
 
 ## Access model (V0/V1)
 - Use Edge Functions for all app data access.

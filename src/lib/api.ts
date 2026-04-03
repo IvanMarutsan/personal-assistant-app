@@ -210,6 +210,8 @@ export async function createGoogleCalendarEvent(input: {
   durationMinutes?: number;
   timezone?: string;
   sourceInboxItemId?: string;
+  sourceTaskId?: string;
+  sourceNoteId?: string;
 }): Promise<{
   id: string;
   htmlLink: string | null;
@@ -240,7 +242,9 @@ export async function createGoogleCalendarEvent(input: {
       endAt: input.endAt ?? null,
       durationMinutes: input.durationMinutes ?? 30,
       timezone: input.timezone ?? "UTC",
-      sourceInboxItemId: input.sourceInboxItemId
+      sourceInboxItemId: input.sourceInboxItemId,
+      sourceTaskId: input.sourceTaskId,
+      sourceNoteId: input.sourceNoteId
     })
   });
 

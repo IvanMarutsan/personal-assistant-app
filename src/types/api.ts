@@ -101,6 +101,17 @@ export type TaskItem = {
   status: TaskStatus;
   last_moved_reason?: MoveReasonCode | null;
   cancel_reason_text?: string | null;
+  calendar_provider?: string | null;
+  calendar_event_id?: string | null;
+  linked_calendar_event?: {
+    provider: "google";
+    provider_event_id: string;
+    provider_event_url: string | null;
+    title: string;
+    starts_at: string;
+    ends_at: string;
+    timezone: string;
+  } | null;
   project_id: string | null;
   due_at: string | null;
   scheduled_for: string | null;
