@@ -1,22 +1,25 @@
 import { useEffect, useState } from "react";
-import type { NoteItem } from "../types/api";
+import type { NoteItem, ProjectItem } from "../types/api";
 
 type NoteDetailModalProps = {
   open: boolean;
   note: NoteItem | null;
+  projects: ProjectItem[];
   busy: boolean;
   onClose: () => void;
-  onSave: (payload: { title: string; body: string; convertToTask: boolean }) => void;
+  onSave: (payload: { title: string; body: string; convertToTask: boolean; projectId: string | null }) => void;
 };
 
 export function NoteDetailModal(props: NoteDetailModalProps) {
   const [title, setTitle] = useState("");
   const [body, setBody] = useState("");
+  const [projectId, setProjectId] = useState("");
 
   useEffect(() => {
     if (!props.open || !props.note) return;
     setTitle(props.note.title ?? "");
     setBody(props.note.body ?? "");
+    setProjectId(props.note.project_id ?? "");
   }, [props.open, props.note?.id]);
 
   if (!props.open || !props.note) return null;
@@ -42,6 +45,18 @@ export function NoteDetailModal(props: NoteDetailModalProps) {
             />
           </label>
           <label>
+            Проєкт
+            <select value={projectId} onChange={(event) => setProjectId(event.target.value)} disabled={props.busy}>
+              <option value="">Без проєкту</option>
+              {props.projects.length === 0 ? <option value="" disabled>Немає проєктів</option> : null}
+              {props.projects.map((project) => (
+                <option key={project.id} value={project.id}>
+                  {project.name}
+                </option>
+              ))}
+            </select>
+          </label>
+          <label>
             Текст нотатки
             <textarea
               rows={10}
@@ -63,14 +78,28 @@ export function NoteDetailModal(props: NoteDetailModalProps) {
             </button>
             <button
               type="button"
-              onClick={() => props.onSave({ title: title.trim(), body: body.trim(), convertToTask: false })}
+              onClick={() =>
+                props.onSave({
+                  title: title.trim(),
+                  body: body.trim(),
+                  convertToTask: false,
+                  projectId: projectId || null
+                })
+              }
               disabled={saveDisabled}
             >
               {props.busy ? "Збереження..." : "Зберегти"}
             </button>
             <button
               type="button"
-              onClick={() => props.onSave({ title: title.trim(), body: body.trim(), convertToTask: true })}
+              onClick={() =>
+                props.onSave({
+                  title: title.trim(),
+                  body: body.trim(),
+                  convertToTask: true,
+                  projectId: projectId || null
+                })
+              }
               disabled={saveDisabled}
             >
               Перетворити в задачу

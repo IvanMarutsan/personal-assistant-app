@@ -1,8 +1,8 @@
 import { useEffect, useMemo, useState } from "react";
 import { NoteDetailModal } from "../../components/NoteDetailModal";
 import { useDiagnostics } from "../../lib/diagnostics";
-import { ApiError, getNotes, updateNote } from "../../lib/api";
-import type { NoteItem } from "../../types/api";
+import { ApiError, getNotes, getProjects, updateNote } from "../../lib/api";
+import type { NoteItem, ProjectItem } from "../../types/api";
 
 const SESSION_KEY = "personal_assistant_app_session_token";
 
@@ -30,6 +30,7 @@ export function NotesPage() {
   const [error, setError] = useState<string | null>(null);
   const [pendingNote, setPendingNote] = useState<NoteItem | null>(null);
   const [saving, setSaving] = useState(false);
+  const [projects, setProjects] = useState<ProjectItem[]>([]);
   const diagnostics = useDiagnostics();
   const sessionToken = localStorage.getItem(SESSION_KEY) ?? "";
 
@@ -64,14 +65,27 @@ export function NotesPage() {
     }
   }
 
+  async function loadProjects() {
+    if (!sessionToken) {
+      setProjects([]);
+      return;
+    }
+    try {
+      const projectItems = await getProjects(sessionToken);
+      setProjects(projectItems);
+    } catch {
+      setProjects([]);
+    }
+  }
+
   useEffect(() => {
-    void loadNotes();
+    void Promise.all([loadNotes(), loadProjects()]);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   const hasItems = useMemo(() => items.length > 0, [items]);
 
-  async function saveNote(payload: { title: string; body: string; convertToTask: boolean }) {
+  async function saveNote(payload: { title: string; body: string; convertToTask: boolean; projectId: string | null }) {
     if (!pendingNote || !sessionToken) return;
     setSaving(true);
     setError(null);
@@ -82,7 +96,8 @@ export function NotesPage() {
         noteId: pendingNote.id,
         title: payload.title || null,
         body: payload.body,
-        convertToTask: payload.convertToTask
+        convertToTask: payload.convertToTask,
+        projectId: payload.projectId
       });
       await loadNotes();
       setPendingNote(null);
@@ -135,6 +150,7 @@ export function NotesPage() {
       <NoteDetailModal
         open={!!pendingNote}
         note={pendingNote}
+        projects={projects}
         busy={saving}
         onClose={() => setPendingNote(null)}
         onSave={(payload) => {

@@ -322,16 +322,57 @@ export async function resolveVoiceCandidate(input: {
   return { allProcessed: result.allProcessed };
 }
 
-export async function getProjects(sessionToken: string): Promise<ProjectItem[]> {
+export async function getProjects(sessionToken: string, options?: { includeArchived?: boolean }): Promise<ProjectItem[]> {
+  const query = options?.includeArchived ? "?includeArchived=true" : "";
   const result = await request<{
     ok: true;
     items: ProjectItem[];
-  }>("get-projects", {
+  }>(`get-projects${query}`, {
     method: "GET",
     headers: sessionHeaders(sessionToken)
   });
 
   return result.items;
+}
+
+export async function createProject(input: {
+  sessionToken: string;
+  name: string;
+}): Promise<ProjectItem> {
+  const result = await request<{
+    ok: true;
+    item: ProjectItem;
+  }>("create-project", {
+    method: "POST",
+    headers: sessionHeaders(input.sessionToken),
+    body: JSON.stringify({
+      name: input.name
+    })
+  });
+
+  return result.item;
+}
+
+export async function updateProject(input: {
+  sessionToken: string;
+  projectId: string;
+  name?: string;
+  status?: "active" | "on_hold" | "archived";
+}): Promise<ProjectItem> {
+  const result = await request<{
+    ok: true;
+    item: ProjectItem;
+  }>("update-project", {
+    method: "POST",
+    headers: sessionHeaders(input.sessionToken),
+    body: JSON.stringify({
+      projectId: input.projectId,
+      name: input.name,
+      status: input.status
+    })
+  });
+
+  return result.item;
 }
 
 export async function getTasks(sessionToken: string): Promise<TaskItem[]> {
@@ -414,6 +455,7 @@ export async function updateNote(input: {
   title?: string | null;
   body?: string;
   convertToTask?: boolean;
+  projectId?: string | null;
 }): Promise<{ createdTaskId: string | null }> {
   const result = await request<{
     ok: true;
@@ -426,7 +468,8 @@ export async function updateNote(input: {
       noteId: input.noteId,
       title: input.title ?? null,
       body: input.body,
-      convertToTask: input.convertToTask ?? false
+      convertToTask: input.convertToTask ?? false,
+      projectId: input.projectId ?? null
     })
   });
 

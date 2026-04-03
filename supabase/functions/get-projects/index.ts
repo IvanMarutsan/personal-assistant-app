@@ -15,14 +15,22 @@ Deno.serve(async (req) => {
     return jsonResponse({ ok: false, error: "unauthorized" }, 401);
   }
 
+  const url = new URL(req.url);
+  const includeArchived = url.searchParams.get("includeArchived") === "true";
+
   const supabase = createAdminClient();
-  const { data, error } = await supabase
+  let query = supabase
     .from("projects")
     .select("id, name, status, rank")
     .eq("user_id", sessionUser.userId)
-    .neq("status", "archived")
     .order("rank", { ascending: true })
     .order("name", { ascending: true });
+
+  if (!includeArchived) {
+    query = query.neq("status", "archived");
+  }
+
+  const { data, error } = await query;
 
   if (error) {
     return jsonResponse({ ok: false, error: "projects_fetch_failed" }, 500);

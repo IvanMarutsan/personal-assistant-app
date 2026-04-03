@@ -5,6 +5,7 @@ import { NotesPage } from "./features/notes/NotesPage";
 import { TasksPage } from "./features/tasks/TasksPage";
 import { TodayPage } from "./features/today/TodayPage";
 import { CalendarPage } from "./features/calendar/CalendarPage";
+import { ProjectsPage } from "./features/projects/ProjectsPage";
 import { useDiagnostics } from "./lib/diagnostics";
 
 export function App() {
@@ -26,6 +27,7 @@ export function App() {
         <Link to="/">Інбокс</Link>
         <Link to="/today">Сьогодні</Link>
         <Link to="/tasks">Задачі</Link>
+        <Link to="/projects">Проєкти</Link>
         <Link to="/notes">Нотатки</Link>
         <Link to="/calendar">Календар</Link>
       </nav>
@@ -36,6 +38,7 @@ export function App() {
           <Route path="/" element={<InboxPage />} />
           <Route path="/today" element={<TodayPage />} />
           <Route path="/tasks" element={<TasksPage />} />
+          <Route path="/projects" element={<ProjectsPage />} />
           <Route path="/notes" element={<NotesPage />} />
           <Route path="/calendar" element={<CalendarPage />} />
         </Routes>

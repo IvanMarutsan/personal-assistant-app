@@ -7,6 +7,7 @@ type UpdateNoteBody = {
   title?: string | null;
   body?: string;
   convertToTask?: boolean;
+  projectId?: string | null;
 };
 
 Deno.serve(async (req) => {
@@ -42,6 +43,7 @@ Deno.serve(async (req) => {
 
   const nextTitle = typeof body.title === "string" ? body.title.trim() : (body.title ?? note.title ?? null);
   const nextBody = typeof body.body === "string" ? body.body.trim() : note.body;
+  const nextProjectId = body.projectId === undefined ? note.project_id : body.projectId;
 
   if (!nextBody) {
     return jsonResponse({ ok: false, error: "empty_note_body" }, 400);
@@ -51,7 +53,8 @@ Deno.serve(async (req) => {
     .from("notes")
     .update({
       title: nextTitle && nextTitle.length > 0 ? nextTitle : null,
-      body: nextBody
+      body: nextBody,
+      project_id: nextProjectId
     })
     .eq("id", note.id)
     .eq("user_id", sessionUser.userId);
@@ -68,7 +71,7 @@ Deno.serve(async (req) => {
       .from("tasks")
       .insert({
         user_id: sessionUser.userId,
-        project_id: note.project_id,
+        project_id: nextProjectId,
         title: taskTitle.slice(0, 120),
         details: nextBody,
         task_type: "admin_operational",
