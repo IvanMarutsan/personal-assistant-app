@@ -9,6 +9,7 @@ React Mini App scaffold for Personal Assistant.
 4. Apply Supabase migration from `supabase/migrations/0001_init.sql`.
 5. Apply Supabase migration from `supabase/migrations/0002_v1_atomic_workflow.sql`.
 6. Apply Supabase migration from `supabase/migrations/0003_v1_planning_primitives.sql`.
+7. Apply Supabase migration from `supabase/migrations/0004_v1_5_voice_structured_triage.sql`.
 
 ## Access model (V0/V1)
 - Use Edge Functions for all app data access.
@@ -18,7 +19,9 @@ React Mini App scaffold for Personal Assistant.
 ## Edge Functions in V1 loop
 - `auth-telegram`
 - `get-inbox`
+- `get-projects`
 - `capture-inbox`
+- `ingest-voice-telegram`
 - `triage-inbox-item`
 - `get-tasks`
 - `get-planning-assistant`
@@ -29,10 +32,12 @@ React Mini App scaffold for Personal Assistant.
 - `SUPABASE_URL`
 - `SUPABASE_SERVICE_ROLE_KEY`
 - `TELEGRAM_BOT_TOKEN`
+- `BOT_INGEST_TOKEN` (for bot -> voice ingest endpoint auth)
 - `APP_SESSION_TTL_SECONDS` (optional, defaults to `86400`)
 - `APP_SESSION_PEPPER` (optional, defaults to service role key)
 - `OPENAI_API_KEY` (for AI advisor)
 - `OPENAI_MODEL` (optional, defaults to `gpt-4.1-mini`)
+- `OPENAI_TRANSCRIBE_MODEL` (optional, defaults to `gpt-4o-mini-transcribe`)
 
 ## Smoke Test
 Run lightweight integration smoke coverage:

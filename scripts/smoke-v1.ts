@@ -69,6 +69,18 @@ async function main() {
   );
   assert.ifError(profileError);
 
+  const { data: project, error: projectError } = await supabaseAdmin
+    .from("projects")
+    .insert({
+      user_id: userId,
+      name: `SMOKE project ${runId}`,
+      status: "active"
+    })
+    .select("id, name")
+    .single();
+  assert.ifError(projectError);
+  assert.ok(project?.id);
+
   const sessionToken = randomBytes(32).toString("hex");
   const tokenHash = hashToken(sessionToken);
   const expiresAt = new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString();
@@ -101,6 +113,13 @@ async function main() {
   });
   assert.ok(inboxBefore.items.length >= 3);
 
+  const projects = await edgeCall<{ ok: true; items: Array<{ id: string; name: string }> }>(
+    sessionToken,
+    "get-projects",
+    { method: "GET" }
+  );
+  assert.ok(projects.items.some((item) => item.id === project.id));
+
   const triageTask = await edgeCall<{ ok: true; result: { task_id: string } }>(
     sessionToken,
     "triage-inbox-item",
@@ -109,7 +128,13 @@ async function main() {
       body: JSON.stringify({
         inboxItemId: captureA.item.id,
         action: "task",
-        title: `SMOKE task ${runId}`
+        title: `SMOKE task ${runId}`,
+        details: "structured details",
+        projectId: project.id,
+        taskType: "quick_communication",
+        importance: 5,
+        scheduledFor: new Date(Date.now() + 60 * 60 * 1000).toISOString(),
+        dueAt: new Date(Date.now() + 3 * 60 * 60 * 1000).toISOString()
       })
     }
   );
@@ -137,11 +162,16 @@ async function main() {
     })
   });
 
-  const tasks = await edgeCall<{ ok: true; items: Array<{ id: string }> }>(sessionToken, "get-tasks", {
+  const tasks = await edgeCall<{
+    ok: true;
+    items: Array<{ id: string; title: string; task_type: string; project_id: string | null }>;
+  }>(sessionToken, "get-tasks", {
     method: "GET"
   });
   const smokeTask = tasks.items.find((item) => item.id === triageTask.result.task_id);
   assert.ok(smokeTask, "Expected triaged task in get-tasks");
+  assert.equal(smokeTask.task_type, "quick_communication");
+  assert.equal(smokeTask.project_id, project.id);
 
   await edgeCall<{ ok: true }>(sessionToken, "update-task-status", {
     method: "POST",

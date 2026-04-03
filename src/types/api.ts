@@ -20,6 +20,37 @@ export type InboxItem = {
   meta: Record<string, unknown>;
 };
 
+export type VoiceDetectedIntent = "task" | "note" | "meeting_candidate" | "reminder_candidate";
+
+export type VoiceAiSuggestion = {
+  detectedIntent: VoiceDetectedIntent;
+  title: string;
+  details: string;
+  projectGuess: string | null;
+  taskTypeGuess:
+    | "deep_work"
+    | "quick_communication"
+    | "admin_operational"
+    | "recurring_essential"
+    | "personal_essential"
+    | "someday"
+    | null;
+  importanceGuess: number | null;
+  dueHint: string | null;
+  datetimeHint: string | null;
+  dueAtIso: string | null;
+  scheduledForIso: string | null;
+  confidence: number;
+  reasoningSummary: string;
+};
+
+export type ProjectItem = {
+  id: string;
+  name: string;
+  status: "active" | "on_hold" | "archived";
+  rank: number;
+};
+
 export type TriageAction = "task" | "note" | "discard";
 
 export type TaskStatus = "planned" | "in_progress" | "blocked" | "done" | "cancelled";

@@ -94,6 +94,12 @@ button:disabled {
   cursor: default;
 }
 
+button.ghost {
+  border-color: #7d9485;
+  background: #ffffff;
+  color: #2f4b3a;
+}
+
 .inbox-list {
   margin: 0;
   padding: 0;
@@ -125,6 +131,20 @@ button:disabled {
   display: flex;
   gap: 8px;
   flex-wrap: wrap;
+}
+
+.voice-ai-card {
+  margin-top: 8px;
+  border: 1px solid #d8e5f0;
+  border-radius: 10px;
+  padding: 8px;
+  background: #f5f9ff;
+}
+
+.voice-ai-title {
+  margin: 0 0 6px;
+  font-weight: 700;
+  color: #2e4760;
 }
 
 button.danger {

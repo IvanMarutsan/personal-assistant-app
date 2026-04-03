@@ -5,7 +5,9 @@ import type {
   InboxItem,
   MoveReasonCode,
   PlanningSummary,
+  ProjectItem,
   TaskItem,
+  TaskType,
   TaskStatus,
   TriageAction
 } from "../types/api";
@@ -81,6 +83,11 @@ export async function triageInboxItem(input: {
   title?: string;
   details?: string;
   noteBody?: string;
+  projectId?: string;
+  taskType?: TaskType;
+  importance?: number;
+  dueAt?: string;
+  scheduledFor?: string;
 }): Promise<void> {
   await request<{ ok: true }>("triage-inbox-item", {
     method: "POST",
@@ -92,9 +99,28 @@ export async function triageInboxItem(input: {
       action: input.action,
       title: input.title,
       details: input.details,
-      noteBody: input.noteBody
+      noteBody: input.noteBody,
+      projectId: input.projectId,
+      taskType: input.taskType,
+      importance: input.importance,
+      dueAt: input.dueAt,
+      scheduledFor: input.scheduledFor
     })
   });
+}
+
+export async function getProjects(sessionToken: string): Promise<ProjectItem[]> {
+  const result = await request<{
+    ok: true;
+    items: ProjectItem[];
+  }>("get-projects", {
+    method: "GET",
+    headers: {
+      "x-app-session": sessionToken
+    }
+  });
+
+  return result.items;
 }
 
 export async function getTasks(sessionToken: string): Promise<TaskItem[]> {
