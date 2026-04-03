@@ -33,6 +33,7 @@ const TASK_TYPE_OPTIONS: Array<{ value: TaskType; label: string }> = [
   { value: "personal_essential", label: "Особисто важливе" },
   { value: "someday", label: "Колись" }
 ];
+const USER_TIMEZONE = Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC";
 
 function statusLabel(status: TaskStatus): string {
   if (status === "planned") return "Заплановано";
@@ -72,7 +73,8 @@ function taskTypeLabel(taskType: TaskType): string {
 function formatLocalDateTime(value: Date): string {
   return new Intl.DateTimeFormat("uk-UA", {
     dateStyle: "short",
-    timeStyle: "short"
+    timeStyle: "short",
+    timeZone: USER_TIMEZONE
   }).format(value);
 }
 

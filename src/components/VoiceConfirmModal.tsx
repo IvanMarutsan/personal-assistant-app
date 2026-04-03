@@ -47,10 +47,12 @@ function toLocalInputFromDate(value: Date): string {
   return localDate.toISOString().slice(0, 16);
 }
 
-function parseReasonableDate(value: string | null | undefined): Date | null {
+function parseIsoDateStrict(value: string | null | undefined): Date | null {
   if (!value) return null;
   const trimmed = value.trim();
   if (!trimmed) return null;
+  // Accept only ISO values with timezone to avoid silent locale-dependent shifts.
+  if (!/^\d{4}-\d{2}-\d{2}T.+(Z|[+-]\d{2}:\d{2})$/.test(trimmed)) return null;
   const date = new Date(trimmed);
   if (Number.isNaN(date.getTime())) return null;
   const year = date.getFullYear();
@@ -69,12 +71,16 @@ function extractTime(hint: string): { hours: number; minutes: number } | null {
   return { hours, minutes };
 }
 
-function nextWeekdayIndex(now: Date, targetWeekday: number): Date {
+function nextWeekdayIndex(now: Date, targetWeekday: number, hours: number, minutes: number, forceNextWeek: boolean): Date {
   const base = new Date(now);
   base.setHours(0, 0, 0, 0);
   const current = base.getDay();
   let diff = (targetWeekday - current + 7) % 7;
-  if (diff === 0) diff = 7;
+  if (diff === 0) {
+    const nowMinutes = now.getHours() * 60 + now.getMinutes();
+    const targetMinutes = hours * 60 + minutes;
+    diff = forceNextWeek || nowMinutes >= targetMinutes ? 7 : 0;
+  }
   base.setDate(base.getDate() + diff);
   return base;
 }
@@ -84,11 +90,19 @@ function parseNaturalDateHint(hint: string | null | undefined): Date | null {
   const text = hint.trim().toLowerCase();
   if (!text) return null;
   const now = new Date();
-  const time = extractTime(text) ?? { hours: 9, minutes: 0 };
+  const inferredTime =
+    extractTime(text) ??
+    (text.includes("ранк") || text.includes("morning")
+      ? { hours: 9, minutes: 0 }
+      : text.includes("після обіду") || text.includes("afternoon")
+      ? { hours: 15, minutes: 0 }
+      : text.includes("веч") || text.includes("evening")
+      ? { hours: 19, minutes: 0 }
+      : { hours: 9, minutes: 0 });
 
   const setTime = (d: Date): Date => {
     const out = new Date(d);
-    out.setHours(time.hours, time.minutes, 0, 0);
+    out.setHours(inferredTime.hours, inferredTime.minutes, 0, 0);
     return out;
   };
 
@@ -113,7 +127,8 @@ function parseNaturalDateHint(hint: string | null | undefined): Date | null {
 
   for (const weekday of weekdays) {
     if (weekday.keys.some((key) => text.includes(key))) {
-      return setTime(nextWeekdayIndex(now, weekday.index));
+      const forceNextWeek = text.includes("next ") || text.includes("наступн");
+      return setTime(nextWeekdayIndex(now, weekday.index, inferredTime.hours, inferredTime.minutes, forceNextWeek));
     }
   }
 
@@ -146,6 +161,26 @@ function buildNoteBody(title: string, details: string, dueAt: string, scheduledF
   return lines.join("\n").trim();
 }
 
+type DateResolveSource = "explicit_iso" | "hint_derived" | "none";
+
+function resolveSuggestionDate(params: { iso: string | null | undefined; hint: string | null | undefined }) {
+  const isoCandidate = parseIsoDateStrict(params.iso);
+  if (isoCandidate) {
+    return { date: isoCandidate, source: "explicit_iso" as const };
+  }
+  const hintCandidate = parseNaturalDateHint(params.hint);
+  if (hintCandidate) {
+    return { date: hintCandidate, source: "hint_derived" as const };
+  }
+  return { date: null, source: "none" as const };
+}
+
+function sourceLabel(source: DateResolveSource): string {
+  if (source === "explicit_iso") return "AI вказав точний час.";
+  if (source === "hint_derived") return "Час виведено з текстової підказки. Перевір перед збереженням.";
+  return "Час не визначено.";
+}
+
 export function VoiceConfirmModal(props: VoiceConfirmModalProps) {
   const bodyRef = useRef<HTMLDivElement | null>(null);
   const [targetKind, setTargetKind] = useState<VoiceConfirmTargetKind>("task");
@@ -156,20 +191,22 @@ export function VoiceConfirmModal(props: VoiceConfirmModalProps) {
   const [importance, setImportance] = useState<number | "">("");
   const [dueAtInput, setDueAtInput] = useState("");
   const [scheduledForInput, setScheduledForInput] = useState("");
+  const [dueSource, setDueSource] = useState<DateResolveSource>("none");
+  const [scheduledSource, setScheduledSource] = useState<DateResolveSource>("none");
   const [timezone, setTimezone] = useState("UTC");
 
   useEffect(() => {
     if (!props.open || !props.suggestion) return;
     const normalizedDefaultKind: VoiceConfirmTargetKind =
       props.defaultKind === "calendar_event" && !props.allowCalendarEvent ? "task" : props.defaultKind;
-    const scheduledCandidate =
-      parseReasonableDate(props.suggestion.scheduledForIso) ??
-      parseNaturalDateHint(props.suggestion.datetimeHint) ??
-      parseReasonableDate(props.suggestion.datetimeHint);
-    const dueCandidate =
-      parseReasonableDate(props.suggestion.dueAtIso) ??
-      parseNaturalDateHint(props.suggestion.dueHint) ??
-      parseReasonableDate(props.suggestion.dueHint);
+    const scheduledResolution = resolveSuggestionDate({
+      iso: props.suggestion.scheduledForIso,
+      hint: props.suggestion.datetimeHint
+    });
+    const dueResolution = resolveSuggestionDate({
+      iso: props.suggestion.dueAtIso,
+      hint: props.suggestion.dueHint
+    });
 
     setTargetKind(normalizedDefaultKind);
     setTitle(props.suggestion.title ?? "");
@@ -177,8 +214,10 @@ export function VoiceConfirmModal(props: VoiceConfirmModalProps) {
     setProjectId(props.projectMatch?.matchedProjectId ?? "");
     setTaskType(props.suggestion.taskTypeGuess ?? "");
     setImportance(props.suggestion.importanceGuess ?? "");
-    setDueAtInput(dueCandidate ? toLocalInputFromDate(dueCandidate) : "");
-    setScheduledForInput(scheduledCandidate ? toLocalInputFromDate(scheduledCandidate) : "");
+    setDueAtInput(dueResolution.date ? toLocalInputFromDate(dueResolution.date) : "");
+    setScheduledForInput(scheduledResolution.date ? toLocalInputFromDate(scheduledResolution.date) : "");
+    setDueSource(dueResolution.source);
+    setScheduledSource(scheduledResolution.source);
     setTimezone(Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC");
     console.debug("[voice-confirm] datetime_mapping", {
       title: props.suggestion.title,
@@ -186,8 +225,10 @@ export function VoiceConfirmModal(props: VoiceConfirmModalProps) {
       datetimeHint: props.suggestion.datetimeHint,
       dueAtIso: props.suggestion.dueAtIso,
       scheduledForIso: props.suggestion.scheduledForIso,
-      mappedDueAt: dueCandidate ? dueCandidate.toISOString() : null,
-      mappedScheduledFor: scheduledCandidate ? scheduledCandidate.toISOString() : null
+      mappedDueAt: dueResolution.date ? dueResolution.date.toISOString() : null,
+      mappedScheduledFor: scheduledResolution.date ? scheduledResolution.date.toISOString() : null,
+      dueSource: dueResolution.source,
+      scheduledSource: scheduledResolution.source
     });
   }, [props.open, props.contextId, props.suggestion, props.transcript, props.defaultKind, props.projectMatch, props.allowCalendarEvent]);
 
@@ -334,6 +375,7 @@ export function VoiceConfirmModal(props: VoiceConfirmModalProps) {
                   value={scheduledForInput}
                   onChange={(event) => setScheduledForInput(event.target.value)}
                 />
+                <p className="inbox-meta">{sourceLabel(scheduledSource)}</p>
               </label>
 
               <label>
@@ -343,6 +385,7 @@ export function VoiceConfirmModal(props: VoiceConfirmModalProps) {
                   value={dueAtInput}
                   onChange={(event) => setDueAtInput(event.target.value)}
                 />
+                <p className="inbox-meta">{sourceLabel(dueSource)}</p>
               </label>
             </>
           ) : null}

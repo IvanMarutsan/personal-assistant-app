@@ -540,12 +540,21 @@ export function InboxPage() {
           projectId: payload.projectId ?? undefined
         });
       } else {
+        if (!payload.scheduledFor) {
+          throw new ApiError({
+            status: 400,
+            path: "/functions/v1/create-google-calendar-event",
+            code: "missing_or_invalid_start",
+            message: "Потрібно вказати початок події.",
+            details: null
+          });
+        }
         await createGoogleCalendarEvent({
           sessionToken,
           sourceInboxItemId: pendingVoiceConfirm.item.id,
           title: payload.title || "Подія з голосового інбоксу",
           description: payload.details || pendingVoiceConfirm.item.transcript_text || undefined,
-          startAt: payload.scheduledFor || new Date().toISOString(),
+          startAt: payload.scheduledFor,
           endAt: payload.dueAt ?? null,
           timezone: payload.timezone || "UTC"
         });

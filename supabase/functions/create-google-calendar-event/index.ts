@@ -22,6 +22,17 @@ function parseIso(input: string | undefined): Date | null {
   return parsed;
 }
 
+function normalizeTimezone(value: string | null | undefined): string {
+  const candidate = value?.trim();
+  if (!candidate) return "UTC";
+  try {
+    new Intl.DateTimeFormat("en-US", { timeZone: candidate }).format(new Date());
+    return candidate;
+  } catch {
+    return "UTC";
+  }
+}
+
 Deno.serve(async (req) => {
   const preflight = handleOptions(req);
   if (preflight) return preflight;
@@ -39,7 +50,6 @@ Deno.serve(async (req) => {
   const title = body?.title?.trim();
   const startAt = parseIso(body?.startAt);
   const endAtDirect = parseIso(body?.endAt);
-  const timezone = body?.timezone?.trim() || "UTC";
 
   if (!title) return jsonResponse({ ok: false, error: "missing_title" }, 400);
   if (!startAt) return jsonResponse({ ok: false, error: "missing_or_invalid_start" }, 400);
@@ -59,6 +69,13 @@ Deno.serve(async (req) => {
 
   try {
     const supabase = createAdminClient();
+    const { data: profile } = await supabase
+      .from("profiles")
+      .select("timezone")
+      .eq("user_id", sessionUser.userId)
+      .maybeSingle();
+    const timezone = normalizeTimezone(body?.timezone ?? ((profile?.timezone as string | null | undefined) ?? null));
+
     if (body?.sourceTaskId) {
       const { data: taskOwned } = await supabase
         .from("tasks")

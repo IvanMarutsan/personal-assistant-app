@@ -18,6 +18,7 @@ import type {
 } from "../../types/api";
 
 const SESSION_KEY = "personal_assistant_app_session_token";
+const USER_TIMEZONE = Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC";
 
 function parseDate(value: string | null): Date | null {
   if (!value) return null;
@@ -28,7 +29,8 @@ function parseDate(value: string | null): Date | null {
 function formatLocalDateTime(value: Date): string {
   return new Intl.DateTimeFormat("uk-UA", {
     dateStyle: "short",
-    timeStyle: "short"
+    timeStyle: "short",
+    timeZone: USER_TIMEZONE
   }).format(value);
 }
 

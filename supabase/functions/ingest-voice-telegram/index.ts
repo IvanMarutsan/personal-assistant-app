@@ -67,6 +67,11 @@ type ParseResult =
       error: string;
     };
 
+type ParseContext = {
+  timezone: string;
+  nowIsoUtc: string;
+};
+
 function unauthorized() {
   return jsonResponse({ ok: false, error: "unauthorized_bot_ingest" }, 401);
 }
@@ -141,6 +146,18 @@ function similarityScore(a: string, b: string): number {
 function shortText(value: string, limit = 280): string {
   if (!value) return "";
   return value.length <= limit ? value : `${value.slice(0, limit)}...`;
+}
+
+function normalizeTimezone(value: string | null | undefined): string {
+  const candidate = value?.trim();
+  if (!candidate) return "UTC";
+  try {
+    // Validate timezone string before using it in prompts or payloads.
+    new Intl.DateTimeFormat("en-US", { timeZone: candidate }).format(new Date());
+    return candidate;
+  } catch {
+    return "UTC";
+  }
 }
 
 async function fetchTelegramVoiceBytes(voiceFileId: string): Promise<{
@@ -322,7 +339,7 @@ function parseAiSuggestion(raw: string): VoiceParseSuggestion | null {
   }
 }
 
-async function parseTranscriptWithAi(transcript: string): Promise<ParseResult> {
+async function parseTranscriptWithAi(transcript: string, context: ParseContext): Promise<ParseResult> {
   const openAiApiKey = Deno.env.get("OPENAI_API_KEY");
   if (!openAiApiKey) {
     return {
@@ -349,11 +366,11 @@ async function parseTranscriptWithAi(transcript: string): Promise<ParseResult> {
           {
             role: "system",
             content:
-              "You classify voice notes for a personal execution assistant. Return strict JSON only. Suggestions only, no autonomous actions. Handle Ukrainian, English, and transliterated Ukrainian. If timing is explicit, fill dueAtIso/scheduledForIso as ISO-8601; otherwise null."
+              "You classify voice notes for a personal execution assistant. Return strict JSON only. Suggestions only, no autonomous actions. Handle Ukrainian, English, and transliterated Ukrainian. Resolve date words and weekdays strictly in the provided user timezone. If timing is explicit, fill dueAtIso/scheduledForIso as full ISO-8601 with timezone (Z or +/-HH:MM); otherwise null. Never default an uncertain date/time to 'now'."
           },
           {
             role: "user",
-            content: `Транскрипт голосового повідомлення:\n${transcript}\n\nПоверни структуровану пропозицію для triage.`
+            content: `Транскрипт голосового повідомлення:\n${transcript}\n\nКонтекст часу користувача:\n- timezone: ${context.timezone}\n- now_utc: ${context.nowIsoUtc}\n\nПоверни структуровану пропозицію для triage.`
           }
         ],
         response_format: {
@@ -579,6 +596,12 @@ Deno.serve(async (req) => {
   }
 
   await supabase.from("profiles").upsert({ user_id: userRow.id }, { onConflict: "user_id" });
+  const { data: profileRow } = await supabase
+    .from("profiles")
+    .select("timezone")
+    .eq("user_id", userRow.id)
+    .maybeSingle();
+  const userTimezone = normalizeTimezone((profileRow?.timezone as string | null | undefined) ?? null);
 
   const fileFetch = await fetchTelegramVoiceBytes(body.voiceFileId);
   let transcript: TranscriptResult;
@@ -607,7 +630,10 @@ Deno.serve(async (req) => {
     filePath = fileFetch.filePath;
     transcript = await transcribeVoice(fileFetch.bytes, fileFetch.mimeType);
     if (transcript.status === "ok" && transcript.text) {
-      parse = await parseTranscriptWithAi(transcript.text);
+      parse = await parseTranscriptWithAi(transcript.text, {
+        timezone: userTimezone,
+        nowIsoUtc: new Date().toISOString()
+      });
     } else {
       parse = {
         status: "skipped",
@@ -655,7 +681,8 @@ Deno.serve(async (req) => {
       voiceDurationSec: body.voiceDurationSec ?? null,
       voiceMimeType: body.voiceMimeType ?? null,
       voiceFileSize: body.voiceFileSize ?? null,
-      telegramFilePath: filePath
+      telegramFilePath: filePath,
+      userTimezone
     }
   };
 

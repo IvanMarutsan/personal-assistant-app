@@ -16,6 +16,7 @@ import { moveReasonLabel } from "../../lib/reasons";
 import type { GoogleCalendarStatus, MoveReasonCode, ProjectItem, TaskItem, TaskType } from "../../types/api";
 
 const SESSION_KEY = "personal_assistant_app_session_token";
+const USER_TIMEZONE = Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC";
 const TASK_TYPE_FILTERS: Array<{ label: string; value: TaskType }> = [
   { label: "Глибока робота", value: "deep_work" },
   { label: "Швидка комунікація", value: "quick_communication" },
@@ -81,7 +82,8 @@ function parseDate(value: string | null): Date | null {
 function formatLocalDateTime(value: Date): string {
   return new Intl.DateTimeFormat("uk-UA", {
     dateStyle: "short",
-    timeStyle: "short"
+    timeStyle: "short",
+    timeZone: USER_TIMEZONE
   }).format(value);
 }
 
