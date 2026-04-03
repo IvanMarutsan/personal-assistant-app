@@ -282,6 +282,46 @@ export async function triageInboxItem(input: {
   });
 }
 
+export async function resolveVoiceCandidate(input: {
+  sessionToken: string;
+  inboxItemId: string;
+  candidateId: string;
+  action: "task" | "note" | "calendar_event" | "discard";
+  title?: string;
+  details?: string;
+  noteBody?: string;
+  projectId?: string;
+  taskType?: TaskType;
+  importance?: number;
+  dueAt?: string | null;
+  scheduledFor?: string | null;
+  timezone?: string;
+}): Promise<{ allProcessed: boolean }> {
+  const result = await request<{
+    ok: true;
+    allProcessed: boolean;
+  }>("resolve-voice-candidate", {
+    method: "POST",
+    headers: sessionHeaders(input.sessionToken),
+    body: JSON.stringify({
+      inboxItemId: input.inboxItemId,
+      candidateId: input.candidateId,
+      action: input.action,
+      title: input.title,
+      details: input.details,
+      noteBody: input.noteBody,
+      projectId: input.projectId,
+      taskType: input.taskType,
+      importance: input.importance,
+      dueAt: input.dueAt,
+      scheduledFor: input.scheduledFor,
+      timezone: input.timezone ?? "UTC"
+    })
+  });
+
+  return { allProcessed: result.allProcessed };
+}
+
 export async function getProjects(sessionToken: string): Promise<ProjectItem[]> {
   const result = await request<{
     ok: true;

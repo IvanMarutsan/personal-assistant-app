@@ -22,6 +22,7 @@ export type InboxItem = {
 
 export type VoiceDetectedIntent = "task" | "note" | "meeting_candidate" | "reminder_candidate";
 export type VoiceConfirmTargetKind = "task" | "note" | "calendar_event";
+export type VoiceCandidateStatus = "pending" | "confirmed" | "discarded";
 
 export type VoiceAiSuggestion = {
   detectedIntent: VoiceDetectedIntent;
@@ -43,6 +44,13 @@ export type VoiceAiSuggestion = {
   scheduledForIso: string | null;
   confidence: number;
   reasoningSummary: string;
+};
+
+export type VoiceAiCandidate = VoiceAiSuggestion & {
+  candidateId: string;
+  status: VoiceCandidateStatus;
+  resolvedAt: string | null;
+  resolutionAction: "task" | "note" | "calendar_event" | "discard" | null;
 };
 
 export type ProjectItem = {

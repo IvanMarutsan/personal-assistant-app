@@ -10,6 +10,7 @@ import {
   getInbox,
   getProjects,
   getTelegramInitDataRaw,
+  resolveVoiceCandidate,
   triageInboxItem
 } from "../../lib/api";
 import type {
@@ -17,9 +18,11 @@ import type {
   InboxItem,
   ProjectItem,
   TaskType,
+  VoiceAiCandidate,
   VoiceAiSuggestion,
   VoiceConfirmTargetKind,
-  VoiceDetectedIntent
+  VoiceDetectedIntent,
+  VoiceCandidateStatus
 } from "../../types/api";
 
 const SESSION_KEY = "personal_assistant_app_session_token";
@@ -28,6 +31,7 @@ type AuthState = "idle" | "authenticating" | "ready" | "error";
 
 type VoiceConfirmState = {
   item: InboxItem;
+  candidateId: string | null;
   defaultKind: VoiceConfirmTargetKind;
   suggestion: VoiceAiSuggestion;
   projectMatch: {
@@ -41,6 +45,9 @@ type VoiceConfirmState = {
 type PreparedInboxItem = {
   item: InboxItem;
   suggestion: VoiceAiSuggestion | null;
+  candidates: VoiceAiCandidate[];
+  parseMode: "single_item" | "multi_item" | null;
+  candidateCountEstimated: number | null;
   projectMatch: {
     status: "matched" | "suggested_only" | "none";
     matchedProjectId: string | null;
@@ -131,6 +138,84 @@ function extractVoiceSuggestion(item: InboxItem): VoiceAiSuggestion | null {
   };
 }
 
+function toCandidateStatus(value: unknown): VoiceCandidateStatus {
+  if (value === "confirmed" || value === "discarded") return value;
+  return "pending";
+}
+
+function extractVoiceCandidates(item: InboxItem): VoiceAiCandidate[] {
+  const meta = asRecord(item.meta);
+  const voiceAi = asRecord(meta?.voice_ai);
+  const rawCandidates = Array.isArray(voiceAi?.candidates) ? voiceAi.candidates : [];
+
+  const fromCandidates = rawCandidates
+    .map((raw, index): VoiceAiCandidate | null => {
+      const parsed = asRecord(raw);
+      if (!parsed) return null;
+      const detectedIntent = toDetectedIntent(parsed.detectedIntent);
+      const title = toNullableString(parsed.title);
+      const confidence = toNullableNumber(parsed.confidence);
+      const reasoningSummary = toNullableString(parsed.reasoningSummary);
+      if (!detectedIntent || !title || confidence === null || !reasoningSummary) return null;
+      return {
+        candidateId: toNullableString(parsed.candidateId) ?? `legacy_${index + 1}`,
+        detectedIntent,
+        title,
+        details: toNullableString(parsed.details) ?? "",
+        projectGuess: toNullableString(parsed.projectGuess),
+        taskTypeGuess: toTaskType(parsed.taskTypeGuess),
+        importanceGuess: toNullableNumber(parsed.importanceGuess),
+        dueHint: toNullableString(parsed.dueHint),
+        datetimeHint: toNullableString(parsed.datetimeHint),
+        dueAtIso: toNullableString(parsed.dueAtIso),
+        scheduledForIso: toNullableString(parsed.scheduledForIso),
+        confidence: Math.max(0, Math.min(1, confidence)),
+        reasoningSummary,
+        status: toCandidateStatus(parsed.status),
+        resolvedAt: toNullableString(parsed.resolvedAt),
+        resolutionAction:
+          parsed.resolutionAction === "task" ||
+          parsed.resolutionAction === "note" ||
+          parsed.resolutionAction === "calendar_event" ||
+          parsed.resolutionAction === "discard"
+            ? parsed.resolutionAction
+            : null
+      };
+    })
+    .filter((item): item is VoiceAiCandidate => Boolean(item))
+    .slice(0, 5);
+
+  if (fromCandidates.length > 0) return fromCandidates;
+
+  const single = extractVoiceSuggestion(item);
+  if (!single) return [];
+  return [
+    {
+      ...single,
+      candidateId: "single_legacy",
+      status: "pending",
+      resolvedAt: null,
+      resolutionAction: null
+    }
+  ];
+}
+
+function extractVoiceMode(item: InboxItem): "single_item" | "multi_item" | null {
+  const meta = asRecord(item.meta);
+  const voiceAi = asRecord(meta?.voice_ai);
+  const mode = toNullableString(voiceAi?.mode);
+  if (mode === "single_item" || mode === "multi_item") return mode;
+  return null;
+}
+
+function extractCandidateCountEstimated(item: InboxItem): number | null {
+  const meta = asRecord(item.meta);
+  const voiceAi = asRecord(meta?.voice_ai);
+  const value = toNullableNumber(voiceAi?.candidateCountEstimated);
+  if (value === null) return null;
+  return Math.max(1, Math.round(value));
+}
+
 function extractProjectMatch(item: InboxItem): {
   status: "matched" | "suggested_only" | "none";
   matchedProjectId: string | null;
@@ -188,6 +273,12 @@ function mapInboxError(error: unknown, fallback: string): string {
     if (error.code === "invalid_due_at" || error.code === "invalid_scheduled_for") {
       return "Невалідна дата або час. Перевір формат і спробуй ще раз.";
     }
+    if (error.code === "candidate_not_found" || error.code === "candidate_already_processed") {
+      return "Кандидат уже оброблений або недоступний. Оновлюю Inbox.";
+    }
+    if (error.code === "voice_candidates_not_found") {
+      return "AI-кандидати не знайдені для цього голосового запису. Оброби елемент вручну.";
+    }
     if (error.code === "calendar_not_connected") {
       return "Google Calendar не підключено. Відкрий вкладку «Календар» і підключи акаунт.";
     }
@@ -231,6 +322,12 @@ function taskTypeLabel(value: TaskType): string {
   }
 }
 
+function candidateStatusLabel(status: VoiceCandidateStatus): string {
+  if (status === "confirmed") return "Підтверджено";
+  if (status === "discarded") return "Відхилено";
+  return "Очікує обробки";
+}
+
 export function InboxPage() {
   const [authState, setAuthState] = useState<AuthState>("idle");
   const [error, setError] = useState<string | null>(null);
@@ -253,6 +350,9 @@ export function InboxPage() {
       items.map((item) => ({
         item,
         suggestion: extractVoiceSuggestion(item),
+        candidates: extractVoiceCandidates(item),
+        parseMode: extractVoiceMode(item),
+        candidateCountEstimated: extractCandidateCountEstimated(item),
         projectMatch: extractProjectMatch(item),
         statuses: extractVoiceStatuses(item),
         isVoiceItem: item.source_type === "voice"
@@ -518,55 +618,84 @@ export function InboxPage() {
     setTriageLoading(true);
     setError(null);
     try {
-      if (payload.targetKind === "task") {
-        await triageInboxItem({
+      if (pendingVoiceConfirm.candidateId) {
+        const candidateAction =
+          payload.targetKind === "task"
+            ? "task"
+            : payload.targetKind === "note"
+            ? "note"
+            : "calendar_event";
+        const result = await resolveVoiceCandidate({
           sessionToken,
           inboxItemId: pendingVoiceConfirm.item.id,
-          action: "task",
+          candidateId: pendingVoiceConfirm.candidateId,
+          action: candidateAction,
           title: payload.title,
           details: payload.details,
+          noteBody: payload.noteBody,
           projectId: payload.projectId ?? undefined,
           taskType: payload.taskType ?? undefined,
           importance: payload.importance ?? undefined,
           dueAt: payload.dueAt ?? undefined,
-          scheduledFor: payload.scheduledFor ?? undefined
+          scheduledFor: payload.scheduledFor ?? undefined,
+          timezone: payload.timezone
         });
-      } else if (payload.targetKind === "note") {
-        await triageInboxItem({
-          sessionToken,
-          inboxItemId: pendingVoiceConfirm.item.id,
-          action: "note",
-          noteBody: payload.noteBody,
-          projectId: payload.projectId ?? undefined
-        });
+        setPendingVoiceConfirm(null);
+        if (result.allProcessed) {
+          markItemOptimisticTriaged(pendingVoiceConfirm.item.id);
+        }
+        void loadInbox(sessionToken);
       } else {
-        if (!payload.scheduledFor) {
-          throw new ApiError({
-            status: 400,
-            path: "/functions/v1/create-google-calendar-event",
-            code: "missing_or_invalid_start",
-            message: "Потрібно вказати початок події.",
-            details: null
+        if (payload.targetKind === "task") {
+          await triageInboxItem({
+            sessionToken,
+            inboxItemId: pendingVoiceConfirm.item.id,
+            action: "task",
+            title: payload.title,
+            details: payload.details,
+            projectId: payload.projectId ?? undefined,
+            taskType: payload.taskType ?? undefined,
+            importance: payload.importance ?? undefined,
+            dueAt: payload.dueAt ?? undefined,
+            scheduledFor: payload.scheduledFor ?? undefined
+          });
+        } else if (payload.targetKind === "note") {
+          await triageInboxItem({
+            sessionToken,
+            inboxItemId: pendingVoiceConfirm.item.id,
+            action: "note",
+            noteBody: payload.noteBody,
+            projectId: payload.projectId ?? undefined
+          });
+        } else {
+          if (!payload.scheduledFor) {
+            throw new ApiError({
+              status: 400,
+              path: "/functions/v1/create-google-calendar-event",
+              code: "missing_or_invalid_start",
+              message: "Потрібно вказати початок події.",
+              details: null
+            });
+          }
+          await createGoogleCalendarEvent({
+            sessionToken,
+            sourceInboxItemId: pendingVoiceConfirm.item.id,
+            title: payload.title || "Подія з голосового інбоксу",
+            description: payload.details || pendingVoiceConfirm.item.transcript_text || undefined,
+            startAt: payload.scheduledFor,
+            endAt: payload.dueAt ?? null,
+            timezone: payload.timezone || "UTC"
+          });
+          await triageInboxItem({
+            sessionToken,
+            inboxItemId: pendingVoiceConfirm.item.id,
+            action: "discard"
           });
         }
-        await createGoogleCalendarEvent({
-          sessionToken,
-          sourceInboxItemId: pendingVoiceConfirm.item.id,
-          title: payload.title || "Подія з голосового інбоксу",
-          description: payload.details || pendingVoiceConfirm.item.transcript_text || undefined,
-          startAt: payload.scheduledFor,
-          endAt: payload.dueAt ?? null,
-          timezone: payload.timezone || "UTC"
-        });
-        await triageInboxItem({
-          sessionToken,
-          inboxItemId: pendingVoiceConfirm.item.id,
-          action: "discard"
-        });
+        setPendingVoiceConfirm(null);
+        markItemOptimisticTriaged(pendingVoiceConfirm.item.id);
+        void loadInbox(sessionToken);
       }
-      setPendingVoiceConfirm(null);
-      markItemOptimisticTriaged(pendingVoiceConfirm.item.id);
-      void loadInbox(sessionToken);
     } catch (triageError) {
       console.error("[inbox] voice_confirm_failed", {
         itemId: pendingVoiceConfirm.item.id,
@@ -589,6 +718,37 @@ export function InboxPage() {
     } finally {
       setTriageLoading(false);
       endTriage(pendingVoiceConfirm.item.id);
+    }
+  }
+
+  async function discardVoiceCandidate(item: InboxItem, candidate: VoiceAiCandidate) {
+    if (!sessionToken) return;
+    if (!beginTriage(item.id)) return;
+    setTriageLoading(true);
+    setError(null);
+    diagnostics.trackAction("discard_voice_candidate", {
+      itemId: item.id,
+      candidateId: candidate.candidateId
+    });
+    try {
+      const result = await resolveVoiceCandidate({
+        sessionToken,
+        inboxItemId: item.id,
+        candidateId: candidate.candidateId,
+        action: "discard"
+      });
+      if (result.allProcessed) {
+        markItemOptimisticTriaged(item.id);
+      }
+      void loadInbox(sessionToken);
+    } catch (resolveError) {
+      if (resolveError instanceof ApiError && resolveError.code === "unauthorized") {
+        invalidateSession();
+      }
+      setError(mapInboxError(resolveError, "Не вдалося відхилити кандидат."));
+    } finally {
+      setTriageLoading(false);
+      endTriage(item.id);
     }
   }
 
@@ -629,8 +789,10 @@ export function InboxPage() {
         <p className="empty-note">Inbox порожній.</p>
       ) : (
         <ul className="inbox-list">
-          {preparedItems.map(({ item, suggestion, projectMatch, statuses, isVoiceItem }) => {
+          {preparedItems.map(({ item, suggestion, candidates, parseMode, candidateCountEstimated, projectMatch, statuses, isVoiceItem }) => {
             const isBusyItem = triageLoading && workingItemId === item.id;
+            const pendingCandidates = candidates.filter((candidate) => candidate.status === "pending");
+            const hasCandidates = candidates.length > 0;
 
             return (
               <li key={item.id} className="inbox-item">
@@ -647,7 +809,143 @@ export function InboxPage() {
                     ) : (
                       <p className="empty-note">Транскрипт поки недоступний.</p>
                     )}
-                    {suggestion ? (
+                    {hasCandidates ? (
+                      <>
+                        <p className="inbox-meta">
+                          {parseMode === "multi_item" ? "Багатоелементний розбір" : "Одноелементний розбір"} · Показано:{" "}
+                          {candidates.length}
+                          {candidateCountEstimated && candidateCountEstimated > candidates.length
+                            ? ` із ${candidateCountEstimated}+ можливих`
+                            : ""}
+                          {" · "}Очікують: {pendingCandidates.length}
+                        </p>
+                        {candidateCountEstimated && candidateCountEstimated > candidates.length ? (
+                          <p className="inbox-meta">Показано лише найчіткіші кандидати. Повний транскрипт збережено вище.</p>
+                        ) : null}
+                        <ul className="inbox-list">
+                          {candidates.map((candidate) => {
+                            const canCreateCalendar =
+                              (candidate.detectedIntent === "meeting_candidate" ||
+                                candidate.detectedIntent === "reminder_candidate") &&
+                              Boolean(calendarStatus?.connected);
+                            return (
+                              <li key={`${item.id}_${candidate.candidateId}`} className="inbox-item">
+                                <p className="inbox-main-text">
+                                  {candidate.title} ({intentLabel(candidate.detectedIntent)})
+                                </p>
+                                <p className="inbox-meta">
+                                  {candidateStatusLabel(candidate.status)} · Впевненість: {Math.round(candidate.confidence * 100)}%
+                                </p>
+                                {candidate.projectGuess ? <p className="inbox-meta">Проєкт: {candidate.projectGuess}</p> : null}
+                                {candidate.taskTypeGuess ? (
+                                  <p className="inbox-meta">Тип задачі: {taskTypeLabel(candidate.taskTypeGuess)}</p>
+                                ) : null}
+                                {candidate.importanceGuess ? (
+                                  <p className="inbox-meta">Важливість: {candidate.importanceGuess}/5</p>
+                                ) : null}
+                                {candidate.dueHint || candidate.datetimeHint ? (
+                                  <p className="inbox-meta">
+                                    Часовий hint: {candidate.dueHint ?? candidate.datetimeHint}
+                                  </p>
+                                ) : null}
+                                {candidate.scheduledForIso || candidate.dueAtIso ? (
+                                  <p className="inbox-meta">
+                                    Час (ISO): {candidate.scheduledForIso ?? "—"} / дедлайн {candidate.dueAtIso ?? "—"}
+                                  </p>
+                                ) : null}
+                                <p className="inbox-meta">Пояснення: {candidate.reasoningSummary}</p>
+                                {candidate.status === "pending" ? (
+                                  <div className="inbox-actions">
+                                    <button
+                                      onClick={() => {
+                                        diagnostics.trackAction("open_voice_confirm", {
+                                          itemId: item.id,
+                                          candidateId: candidate.candidateId,
+                                          defaultKind: "task"
+                                        });
+                                        setPendingVoiceConfirm({
+                                          item,
+                                          candidateId: candidate.candidateId,
+                                          defaultKind: "task",
+                                          suggestion: candidate,
+                                          projectMatch
+                                        });
+                                      }}
+                                      disabled={isBusyItem}
+                                    >
+                                      Підтвердити / редагувати
+                                    </button>
+                                    <button
+                                      onClick={() => {
+                                        diagnostics.trackAction("open_voice_confirm", {
+                                          itemId: item.id,
+                                          candidateId: candidate.candidateId,
+                                          defaultKind: "note"
+                                        });
+                                        setPendingVoiceConfirm({
+                                          item,
+                                          candidateId: candidate.candidateId,
+                                          defaultKind: "note",
+                                          suggestion: candidate,
+                                          projectMatch
+                                        });
+                                      }}
+                                      disabled={isBusyItem}
+                                    >
+                                      У нотатку
+                                    </button>
+                                    {canCreateCalendar ? (
+                                      <button
+                                        onClick={() => {
+                                          diagnostics.trackAction("open_voice_confirm", {
+                                            itemId: item.id,
+                                            candidateId: candidate.candidateId,
+                                            defaultKind: "calendar_event"
+                                          });
+                                          setPendingVoiceConfirm({
+                                            item,
+                                            candidateId: candidate.candidateId,
+                                            defaultKind: "calendar_event",
+                                            suggestion: candidate,
+                                            projectMatch
+                                          });
+                                        }}
+                                        disabled={isBusyItem}
+                                      >
+                                        У Google Calendar
+                                      </button>
+                                    ) : null}
+                                    <button
+                                      type="button"
+                                      className="ghost"
+                                      onClick={() => {
+                                        diagnostics.trackAction("keep_candidate_in_inbox", {
+                                          itemId: item.id,
+                                          candidateId: candidate.candidateId
+                                        });
+                                        setError(null);
+                                      }}
+                                      disabled={isBusyItem}
+                                    >
+                                      Залишити на потім
+                                    </button>
+                                    <button
+                                      className="danger"
+                                      onClick={() => void discardVoiceCandidate(item, candidate)}
+                                      disabled={isBusyItem}
+                                    >
+                                      Відхилити кандидат
+                                    </button>
+                                  </div>
+                                ) : (
+                                  <p className="inbox-meta">Кандидат вже оброблено.</p>
+                                )}
+                              </li>
+                            );
+                          })}
+                        </ul>
+                      </>
+                    ) : suggestion ? (
                       <>
                         <p className="inbox-meta">
                           Інтент: {intentLabel(suggestion.detectedIntent)} · Впевненість:{" "}
@@ -700,6 +998,7 @@ export function InboxPage() {
                               });
                               setPendingVoiceConfirm({
                                 item,
+                                candidateId: null,
                                 defaultKind: "task",
                                 suggestion,
                                 projectMatch
@@ -717,6 +1016,7 @@ export function InboxPage() {
                               });
                               setPendingVoiceConfirm({
                                 item,
+                                candidateId: null,
                                 defaultKind: "note",
                                 suggestion,
                                 projectMatch
@@ -737,6 +1037,7 @@ export function InboxPage() {
                                 });
                                 setPendingVoiceConfirm({
                                   item,
+                                  candidateId: null,
                                   defaultKind: "calendar_event",
                                   suggestion,
                                   projectMatch
@@ -827,7 +1128,11 @@ export function InboxPage() {
 
       <VoiceConfirmModal
         open={Boolean(pendingVoiceConfirm)}
-        contextId={pendingVoiceConfirm?.item.id ?? null}
+        contextId={
+          pendingVoiceConfirm
+            ? `${pendingVoiceConfirm.item.id}:${pendingVoiceConfirm.candidateId ?? "single"}`
+            : null
+        }
         defaultKind={pendingVoiceConfirm?.defaultKind ?? "task"}
         allowCalendarEvent={
           (pendingVoiceConfirm?.suggestion.detectedIntent === "meeting_candidate" ||

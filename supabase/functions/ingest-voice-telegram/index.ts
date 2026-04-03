@@ -34,6 +34,16 @@ type VoiceParseSuggestion = {
   scheduledForIso: string | null;
   confidence: number;
   reasoningSummary: string;
+  candidateId?: string;
+  status?: "pending" | "confirmed" | "discarded";
+  resolvedAt?: string | null;
+  resolutionAction?: "task" | "note" | "calendar_event" | "discard" | null;
+};
+
+type VoiceParsePayload = {
+  mode: "single_item" | "multi_item";
+  candidates: VoiceParseSuggestion[];
+  candidateCountEstimated: number | null;
 };
 
 type ProjectMatch = {
@@ -57,13 +67,13 @@ type ParseResult =
   | {
       status: "ok";
       provider: "openai";
-      suggestion: VoiceParseSuggestion;
+      payload: VoiceParsePayload;
       error: null;
     }
   | {
       status: "failed" | "skipped";
       provider: "openai" | "none";
-      suggestion: null;
+      payload: null;
       error: string;
     };
 
@@ -289,53 +299,123 @@ async function transcribeVoice(bytes: Uint8Array, mimeType: string): Promise<Tra
   }
 }
 
-function parseAiSuggestion(raw: string): VoiceParseSuggestion | null {
+function normalizeCandidate(raw: unknown): VoiceParseSuggestion | null {
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) return null;
+  const parsed = raw as {
+    detectedIntent: VoiceIntent;
+    title: string;
+    details: string;
+    projectGuess: string | null;
+    taskTypeGuess: VoiceTaskTypeGuess;
+    importanceGuess: number | null;
+    dueHint: string | null;
+    datetimeHint: string | null;
+    dueAtIso: string | null;
+    scheduledForIso: string | null;
+    confidence: number;
+    reasoningSummary: string;
+  };
+
+  if (
+    typeof parsed.detectedIntent !== "string" ||
+    typeof parsed.title !== "string" ||
+    typeof parsed.details !== "string" ||
+    typeof parsed.confidence !== "number" ||
+    typeof parsed.reasoningSummary !== "string"
+  ) {
+    return null;
+  }
+
+  const allowedIntents: VoiceIntent[] = ["task", "note", "meeting_candidate", "reminder_candidate"];
+  if (!allowedIntents.includes(parsed.detectedIntent)) return null;
+
+  return {
+    detectedIntent: parsed.detectedIntent,
+    title: cleanText(parsed.title) ?? "Без назви",
+    details: cleanText(parsed.details) ?? "",
+    projectGuess: cleanText(parsed.projectGuess),
+    taskTypeGuess: normalizeTaskType(parsed.taskTypeGuess),
+    importanceGuess: normalizeImportance(parsed.importanceGuess),
+    dueHint: cleanText(parsed.dueHint),
+    datetimeHint: cleanText(parsed.datetimeHint),
+    dueAtIso: normalizeDateTime(parsed.dueAtIso),
+    scheduledForIso: normalizeDateTime(parsed.scheduledForIso),
+    confidence: clampConfidence(parsed.confidence),
+    reasoningSummary: cleanText(parsed.reasoningSummary) ?? "Коротке пояснення недоступне."
+  };
+}
+
+function parseAiPayload(raw: string): VoiceParsePayload | null {
   try {
     const parsed = JSON.parse(raw) as {
-      detectedIntent: VoiceIntent;
-      title: string;
-      details: string;
-      projectGuess: string | null;
-      taskTypeGuess: VoiceTaskTypeGuess;
-      importanceGuess: number | null;
-      dueHint: string | null;
-      datetimeHint: string | null;
-      dueAtIso: string | null;
-      scheduledForIso: string | null;
-      confidence: number;
-      reasoningSummary: string;
+      mode?: "single_item" | "multi_item";
+      candidates?: unknown[];
+      candidateCountEstimated?: number | null;
     };
-
-    if (
-      !parsed ||
-      typeof parsed.detectedIntent !== "string" ||
-      typeof parsed.title !== "string" ||
-      typeof parsed.details !== "string" ||
-      typeof parsed.confidence !== "number" ||
-      typeof parsed.reasoningSummary !== "string"
-    ) {
-      return null;
+    if (!parsed || !Array.isArray(parsed.candidates)) {
+      const singleFallback = normalizeCandidate(parsed as unknown);
+      if (!singleFallback) return null;
+      return {
+        mode: "single_item",
+        candidates: [
+          {
+            ...singleFallback,
+            candidateId: "c1",
+            status: "pending",
+            resolvedAt: null,
+            resolutionAction: null
+          }
+        ],
+        candidateCountEstimated: 1
+      };
     }
 
-    const allowedIntents: VoiceIntent[] = ["task", "note", "meeting_candidate", "reminder_candidate"];
-    if (!allowedIntents.includes(parsed.detectedIntent)) return null;
+    const normalized = parsed.candidates
+      .slice(0, 5)
+      .map(normalizeCandidate)
+      .filter((item): item is VoiceParseSuggestion => Boolean(item));
+
+    if (normalized.length === 0) return null;
+
+    const mode = parsed.mode === "multi_item" || normalized.length > 1 ? "multi_item" : "single_item";
+    const candidateCountEstimated =
+      typeof parsed.candidateCountEstimated === "number" && parsed.candidateCountEstimated > 0
+        ? Math.round(parsed.candidateCountEstimated)
+        : null;
 
     return {
-      detectedIntent: parsed.detectedIntent,
-      title: cleanText(parsed.title) ?? "Без назви",
-      details: cleanText(parsed.details) ?? "",
-      projectGuess: cleanText(parsed.projectGuess),
-      taskTypeGuess: normalizeTaskType(parsed.taskTypeGuess),
-      importanceGuess: normalizeImportance(parsed.importanceGuess),
-      dueHint: cleanText(parsed.dueHint),
-      datetimeHint: cleanText(parsed.datetimeHint),
-      dueAtIso: normalizeDateTime(parsed.dueAtIso),
-      scheduledForIso: normalizeDateTime(parsed.scheduledForIso),
-      confidence: clampConfidence(parsed.confidence),
-      reasoningSummary: cleanText(parsed.reasoningSummary) ?? "Коротке пояснення недоступне."
+      mode,
+      candidates: normalized.map((candidate, index) => ({
+        ...candidate,
+        candidateId: `c${index + 1}`,
+        status: "pending",
+        resolvedAt: null,
+        resolutionAction: null
+      })),
+      candidateCountEstimated
     };
   } catch {
-    return null;
+    // Backward compatibility: older response shape with a single object.
+    try {
+      const parsedSingle = JSON.parse(raw);
+      const single = normalizeCandidate(parsedSingle);
+      if (!single) return null;
+      return {
+        mode: "single_item",
+        candidates: [
+          {
+            ...single,
+            candidateId: "c1",
+            status: "pending",
+            resolvedAt: null,
+            resolutionAction: null
+          }
+        ],
+        candidateCountEstimated: 1
+      };
+    } catch {
+      return null;
+    }
   }
 }
 
@@ -345,7 +425,7 @@ async function parseTranscriptWithAi(transcript: string, context: ParseContext):
     return {
       status: "skipped",
       provider: "none",
-      suggestion: null,
+      payload: null,
       error: "openai_not_configured"
     };
   }
@@ -366,7 +446,7 @@ async function parseTranscriptWithAi(transcript: string, context: ParseContext):
           {
             role: "system",
             content:
-              "You classify voice notes for a personal execution assistant. Return strict JSON only. Suggestions only, no autonomous actions. Handle Ukrainian, English, and transliterated Ukrainian. Resolve date words and weekdays strictly in the provided user timezone. If timing is explicit, fill dueAtIso/scheduledForIso as full ISO-8601 with timezone (Z or +/-HH:MM); otherwise null. Never default an uncertain date/time to 'now'."
+              "You classify voice notes for a personal execution assistant. Return strict JSON only. Suggestions only, no autonomous actions. Handle Ukrainian, English, and transliterated Ukrainian. Extract up to 5 clearly distinct actionable candidates; prefer fewer high-quality candidates when uncertain. Do not split one idea into many tiny items. Resolve date words and weekdays strictly in the provided user timezone. If timing is explicit, fill dueAtIso/scheduledForIso as full ISO-8601 with timezone (Z or +/-HH:MM); otherwise null. Never default an uncertain date/time to 'now'."
           },
           {
             role: "user",
@@ -382,47 +462,63 @@ async function parseTranscriptWithAi(transcript: string, context: ParseContext):
               type: "object",
               additionalProperties: false,
               properties: {
-                detectedIntent: {
+                mode: {
                   type: "string",
-                  enum: ["task", "note", "meeting_candidate", "reminder_candidate"]
+                  enum: ["single_item", "multi_item"]
                 },
-                title: { type: "string" },
-                details: { type: "string" },
-                projectGuess: { type: ["string", "null"] },
-                taskTypeGuess: {
-                  type: ["string", "null"],
-                  enum: [
-                    "deep_work",
-                    "quick_communication",
-                    "admin_operational",
-                    "recurring_essential",
-                    "personal_essential",
-                    "someday",
-                    null
-                  ]
-                },
-                importanceGuess: { type: ["integer", "null"], minimum: 1, maximum: 5 },
-                dueHint: { type: ["string", "null"] },
-                datetimeHint: { type: ["string", "null"] },
-                dueAtIso: { type: ["string", "null"] },
-                scheduledForIso: { type: ["string", "null"] },
-                confidence: { type: "number", minimum: 0, maximum: 1 },
-                reasoningSummary: { type: "string" }
+                candidateCountEstimated: { type: ["integer", "null"], minimum: 1 },
+                candidates: {
+                  type: "array",
+                  maxItems: 5,
+                  items: {
+                    type: "object",
+                    additionalProperties: false,
+                    properties: {
+                      detectedIntent: {
+                        type: "string",
+                        enum: ["task", "note", "meeting_candidate", "reminder_candidate"]
+                      },
+                      title: { type: "string" },
+                      details: { type: "string" },
+                      projectGuess: { type: ["string", "null"] },
+                      taskTypeGuess: {
+                        type: ["string", "null"],
+                        enum: [
+                          "deep_work",
+                          "quick_communication",
+                          "admin_operational",
+                          "recurring_essential",
+                          "personal_essential",
+                          "someday",
+                          null
+                        ]
+                      },
+                      importanceGuess: { type: ["integer", "null"], minimum: 1, maximum: 5 },
+                      dueHint: { type: ["string", "null"] },
+                      datetimeHint: { type: ["string", "null"] },
+                      dueAtIso: { type: ["string", "null"] },
+                      scheduledForIso: { type: ["string", "null"] },
+                      confidence: { type: "number", minimum: 0, maximum: 1 },
+                      reasoningSummary: { type: "string" }
+                    },
+                    required: [
+                      "detectedIntent",
+                      "title",
+                      "details",
+                      "projectGuess",
+                      "taskTypeGuess",
+                      "importanceGuess",
+                      "dueHint",
+                      "datetimeHint",
+                      "dueAtIso",
+                      "scheduledForIso",
+                      "confidence",
+                      "reasoningSummary"
+                    ]
+                  }
+                }
               },
-              required: [
-                "detectedIntent",
-                "title",
-                "details",
-                "projectGuess",
-                "taskTypeGuess",
-                "importanceGuess",
-                "dueHint",
-                "datetimeHint",
-                "dueAtIso",
-                "scheduledForIso",
-                "confidence",
-                "reasoningSummary"
-              ]
+              required: ["mode", "candidateCountEstimated", "candidates"]
             }
           }
         }
@@ -436,7 +532,7 @@ async function parseTranscriptWithAi(transcript: string, context: ParseContext):
     return {
       status: "failed",
       provider: "openai",
-      suggestion: null,
+      payload: null,
       error: "parse_exception"
     };
   }
@@ -451,7 +547,7 @@ async function parseTranscriptWithAi(transcript: string, context: ParseContext):
     return {
       status: "failed",
       provider: "openai",
-      suggestion: null,
+      payload: null,
       error: `parse_request_failed:${response.status}:${errorText || "no_body"}`
     };
   }
@@ -464,20 +560,20 @@ async function parseTranscriptWithAi(transcript: string, context: ParseContext):
     return {
       status: "failed",
       provider: "openai",
-      suggestion: null,
+      payload: null,
       error: "parse_empty_response"
     };
   }
 
-  const suggestion = parseAiSuggestion(content);
-  if (!suggestion) {
+  const payload = parseAiPayload(content);
+  if (!payload) {
     console.error("[ingest-voice-telegram] parse_invalid_structure", {
       content: shortText(content)
     });
     return {
       status: "failed",
       provider: "openai",
-      suggestion: null,
+      payload: null,
       error: "parse_invalid_structure"
     };
   }
@@ -485,7 +581,7 @@ async function parseTranscriptWithAi(transcript: string, context: ParseContext):
   return {
     status: "ok",
     provider: "openai",
-    suggestion,
+    payload,
     error: null
   };
 }
@@ -623,7 +719,7 @@ Deno.serve(async (req) => {
     parse = {
       status: "skipped",
       provider: "none",
-      suggestion: null,
+      payload: null,
       error: "transcript_unavailable"
     };
   } else {
@@ -638,15 +734,18 @@ Deno.serve(async (req) => {
       parse = {
         status: "skipped",
         provider: "none",
-        suggestion: null,
+        payload: null,
         error: "transcript_unavailable"
       };
     }
   }
 
+  const primaryCandidate = parse.payload?.candidates[0] ?? null;
+  const candidateCountShown = parse.payload?.candidates.length ?? 0;
+
   const projectMatch =
-    parse.suggestion?.projectGuess
-      ? await matchProjectGuess(supabase, userRow.id, parse.suggestion.projectGuess)
+    primaryCandidate?.projectGuess
+      ? await matchProjectGuess(supabase, userRow.id, primaryCandidate.projectGuess)
       : {
           status: "none",
           guessedName: null,
@@ -657,7 +756,7 @@ Deno.serve(async (req) => {
         };
 
   const voiceMeta = {
-    version: "v1.5",
+    version: "v1.6",
     transcript: {
       status: transcript.status,
       provider: transcript.provider,
@@ -669,10 +768,14 @@ Deno.serve(async (req) => {
       provider: parse.provider,
       error: parse.error
     },
+    mode: parse.payload?.mode ?? "single_item",
     projectMatch,
-    suggestedKind: parse.suggestion?.detectedIntent ?? null,
-    parseConfidence: parse.suggestion?.confidence ?? null,
-    parseSuggestion: parse.suggestion,
+    suggestedKind: primaryCandidate?.detectedIntent ?? null,
+    parseConfidence: primaryCandidate?.confidence ?? null,
+    parseSuggestion: primaryCandidate,
+    candidates: parse.payload?.candidates ?? null,
+    candidateCountShown,
+    candidateCountEstimated: parse.payload?.candidateCountEstimated ?? null,
     sourceMeta: {
       telegramUserId: body.telegramUserId,
       telegramChatId: body.telegramChatId ?? null,
@@ -718,7 +821,8 @@ Deno.serve(async (req) => {
     inboxItemId: inboxItem.id,
     transcriptStatus: transcript.status,
     parseStatus: parse.status,
-    detectedIntent: parse.suggestion?.detectedIntent ?? null,
-    confidence: parse.suggestion?.confidence ?? null
+    detectedIntent: primaryCandidate?.detectedIntent ?? null,
+    confidence: primaryCandidate?.confidence ?? null,
+    candidateCountShown
   });
 });
