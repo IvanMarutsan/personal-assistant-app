@@ -108,6 +108,40 @@ function toDetectedIntent(value: unknown): VoiceDetectedIntent | null {
   return allowed.includes(value as VoiceDetectedIntent) ? (value as VoiceDetectedIntent) : null;
 }
 
+function hasCyrillic(value: string): boolean {
+  return /[\u0400-\u04FF]/.test(value);
+}
+
+function localizedReasoningSummary(
+  reasoning: string,
+  input: { intent: VoiceDetectedIntent; confidence: number; dueHint: string | null; datetimeHint: string | null }
+): string {
+  if (hasCyrillic(reasoning)) return reasoning;
+  const intentText: Record<VoiceDetectedIntent, string> = {
+    task: "Схоже на окрему задачу.",
+    note: "Схоже на нотатку.",
+    meeting_candidate: "Схоже на кандидат зустрічі.",
+    reminder_candidate: "Схоже на кандидат нагадування."
+  };
+  const hint = input.dueHint ?? input.datetimeHint;
+  const confidenceText =
+    input.confidence >= 0.8 ? "Висока впевненість." : input.confidence >= 0.55 ? "Середня впевненість." : "Низька впевненість, перевір вручну.";
+  return `${intentText[input.intent]} ${hint ? `Часова підказка: ${hint}.` : "Явної часової підказки немає."} ${confidenceText}`.trim();
+}
+
+function formatDateTimeLabel(iso: string | null): string | null {
+  if (!iso) return null;
+  const date = new Date(iso);
+  if (Number.isNaN(date.getTime())) return null;
+  return new Intl.DateTimeFormat("uk-UA", {
+    day: "2-digit",
+    month: "2-digit",
+    year: "numeric",
+    hour: "2-digit",
+    minute: "2-digit"
+  }).format(date);
+}
+
 function extractVoiceSuggestion(item: InboxItem): VoiceAiSuggestion | null {
   const meta = asRecord(item.meta);
   const voiceAi = asRecord(meta?.voice_ai);
@@ -134,7 +168,12 @@ function extractVoiceSuggestion(item: InboxItem): VoiceAiSuggestion | null {
     dueAtIso: toNullableString(parseSuggestion.dueAtIso),
     scheduledForIso: toNullableString(parseSuggestion.scheduledForIso),
     confidence: Math.max(0, Math.min(1, confidence)),
-    reasoningSummary
+    reasoningSummary: localizedReasoningSummary(reasoningSummary, {
+      intent: detectedIntent,
+      confidence: Math.max(0, Math.min(1, confidence)),
+      dueHint: toNullableString(parseSuggestion.dueHint),
+      datetimeHint: toNullableString(parseSuggestion.datetimeHint)
+    })
   };
 }
 
@@ -170,7 +209,12 @@ function extractVoiceCandidates(item: InboxItem): VoiceAiCandidate[] {
         dueAtIso: toNullableString(parsed.dueAtIso),
         scheduledForIso: toNullableString(parsed.scheduledForIso),
         confidence: Math.max(0, Math.min(1, confidence)),
-        reasoningSummary,
+        reasoningSummary: localizedReasoningSummary(reasoningSummary, {
+          intent: detectedIntent,
+          confidence: Math.max(0, Math.min(1, confidence)),
+          dueHint: toNullableString(parsed.dueHint),
+          datetimeHint: toNullableString(parsed.datetimeHint)
+        }),
         status: toCandidateStatus(parsed.status),
         resolvedAt: toNullableString(parsed.resolvedAt),
         resolutionAction:
@@ -742,8 +786,23 @@ export function InboxPage() {
       }
       void loadInbox(sessionToken);
     } catch (resolveError) {
+      if (resolveError instanceof ApiError) {
+        diagnostics.trackFailure({
+          path: resolveError.path,
+          status: resolveError.status,
+          code: resolveError.code,
+          message: resolveError.message,
+          details: resolveError.details
+        });
+      }
       if (resolveError instanceof ApiError && resolveError.code === "unauthorized") {
         invalidateSession();
+      }
+      if (
+        resolveError instanceof ApiError &&
+        (resolveError.code === "candidate_not_found" || resolveError.code === "candidate_already_processed")
+      ) {
+        void loadInbox(sessionToken);
       }
       setError(mapInboxError(resolveError, "Не вдалося відхилити кандидат."));
     } finally {
@@ -792,6 +851,7 @@ export function InboxPage() {
           {preparedItems.map(({ item, suggestion, candidates, parseMode, candidateCountEstimated, projectMatch, statuses, isVoiceItem }) => {
             const isBusyItem = triageLoading && workingItemId === item.id;
             const pendingCandidates = candidates.filter((candidate) => candidate.status === "pending");
+            const processedCandidates = candidates.length - pendingCandidates.length;
             const hasCandidates = candidates.length > 0;
 
             return (
@@ -811,13 +871,13 @@ export function InboxPage() {
                     )}
                     {hasCandidates ? (
                       <>
-                        <p className="inbox-meta">
-                          {parseMode === "multi_item" ? "Багатоелементний розбір" : "Одноелементний розбір"} · Показано:{" "}
+                        <p className="inbox-meta voice-candidate-summary">
+                          {parseMode === "multi_item" ? "Багатоелементний розбір" : "Одноелементний розбір"} · Знайдено:{" "}
                           {candidates.length}
                           {candidateCountEstimated && candidateCountEstimated > candidates.length
-                            ? ` із ${candidateCountEstimated}+ можливих`
+                            ? ` із ${candidateCountEstimated}+`
                             : ""}
-                          {" · "}Очікують: {pendingCandidates.length}
+                          {" · "}Очікують: {pendingCandidates.length} · Оброблено: {processedCandidates}
                         </p>
                         {candidateCountEstimated && candidateCountEstimated > candidates.length ? (
                           <p className="inbox-meta">Показано лише найчіткіші кандидати. Повний транскрипт збережено вище.</p>
@@ -844,14 +904,13 @@ export function InboxPage() {
                                   <p className="inbox-meta">Важливість: {candidate.importanceGuess}/5</p>
                                 ) : null}
                                 {candidate.dueHint || candidate.datetimeHint ? (
-                                  <p className="inbox-meta">
-                                    Часовий hint: {candidate.dueHint ?? candidate.datetimeHint}
-                                  </p>
+                                  <p className="inbox-meta">Підказка часу: {candidate.dueHint ?? candidate.datetimeHint}</p>
                                 ) : null}
-                                {candidate.scheduledForIso || candidate.dueAtIso ? (
-                                  <p className="inbox-meta">
-                                    Час (ISO): {candidate.scheduledForIso ?? "—"} / дедлайн {candidate.dueAtIso ?? "—"}
-                                  </p>
+                                {candidate.scheduledForIso ? (
+                                  <p className="inbox-meta">Заплановано: {formatDateTimeLabel(candidate.scheduledForIso) ?? "невизначено"}</p>
+                                ) : null}
+                                {candidate.dueAtIso ? (
+                                  <p className="inbox-meta">Дедлайн: {formatDateTimeLabel(candidate.dueAtIso) ?? "невизначено"}</p>
                                 ) : null}
                                 <p className="inbox-meta">Пояснення: {candidate.reasoningSummary}</p>
                                 {candidate.status === "pending" ? (
@@ -916,20 +975,6 @@ export function InboxPage() {
                                       </button>
                                     ) : null}
                                     <button
-                                      type="button"
-                                      className="ghost"
-                                      onClick={() => {
-                                        diagnostics.trackAction("keep_candidate_in_inbox", {
-                                          itemId: item.id,
-                                          candidateId: candidate.candidateId
-                                        });
-                                        setError(null);
-                                      }}
-                                      disabled={isBusyItem}
-                                    >
-                                      Залишити на потім
-                                    </button>
-                                    <button
                                       className="danger"
                                       onClick={() => void discardVoiceCandidate(item, candidate)}
                                       disabled={isBusyItem}
@@ -979,14 +1024,13 @@ export function InboxPage() {
                           <p className="inbox-meta">Важливість: {suggestion.importanceGuess}/5</p>
                         ) : null}
                         {suggestion.dueHint || suggestion.datetimeHint ? (
-                          <p className="inbox-meta">
-                            Часовий hint: {suggestion.dueHint ?? suggestion.datetimeHint}
-                          </p>
+                          <p className="inbox-meta">Підказка часу: {suggestion.dueHint ?? suggestion.datetimeHint}</p>
                         ) : null}
-                        {suggestion.scheduledForIso || suggestion.dueAtIso ? (
-                          <p className="inbox-meta">
-                            Час (ISO): {suggestion.scheduledForIso ?? "—"} / дедлайн {suggestion.dueAtIso ?? "—"}
-                          </p>
+                        {suggestion.scheduledForIso ? (
+                          <p className="inbox-meta">Заплановано: {formatDateTimeLabel(suggestion.scheduledForIso) ?? "невизначено"}</p>
+                        ) : null}
+                        {suggestion.dueAtIso ? (
+                          <p className="inbox-meta">Дедлайн: {formatDateTimeLabel(suggestion.dueAtIso) ?? "невизначено"}</p>
                         ) : null}
                         <p className="inbox-meta">Пояснення: {suggestion.reasoningSummary}</p>
                         <div className="inbox-actions">
@@ -1048,18 +1092,6 @@ export function InboxPage() {
                               У Google Calendar
                             </button>
                           ) : null}
-                          <button
-                            type="button"
-                            className="ghost"
-                            onClick={() => {
-                              diagnostics.trackAction("keep_in_inbox", { itemId: item.id });
-                              setPendingVoiceConfirm(null);
-                              setError(null);
-                            }}
-                            disabled={isBusyItem}
-                          >
-                            Залишити в Inbox
-                          </button>
                           <button
                             className="danger"
                             onClick={() => void handleTriage(item, "discard")}

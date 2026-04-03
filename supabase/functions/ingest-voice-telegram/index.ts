@@ -140,6 +140,48 @@ function normalizeComparableText(value: string): string {
     .trim();
 }
 
+function hasCyrillic(value: string): boolean {
+  return /[\u0400-\u04FF]/.test(value);
+}
+
+function localizeReasoningSummary(
+  raw: string | null,
+  input: {
+    intent: VoiceIntent;
+    confidence: number;
+    dueHint: string | null;
+    datetimeHint: string | null;
+  }
+): string {
+  const clean = cleanText(raw);
+  if (clean && hasCyrillic(clean)) return clean;
+
+  const intentText: Record<VoiceIntent, string> = {
+    task: "Схоже на окрему задачу з голосового повідомлення.",
+    note: "Схоже на нотатку без обов'язкової дії.",
+    meeting_candidate: "Схоже на запит або намір щодо зустрічі.",
+    reminder_candidate: "Схоже на намір поставити нагадування."
+  };
+  const confidenceText =
+    input.confidence >= 0.8 ? "Висока впевненість." : input.confidence >= 0.55 ? "Середня впевненість." : "Низька впевненість, перевір вручну.";
+  const hint = cleanText(input.dueHint) ?? cleanText(input.datetimeHint);
+  const timingText = hint ? `Часова підказка: ${hint}.` : "Явної часової підказки немає.";
+  return `${intentText[input.intent]} ${timingText} ${confidenceText}`.trim();
+}
+
+function hasStrongSplitSignals(transcript: string): boolean {
+  const text = transcript.toLowerCase();
+  const markerMatch =
+    /\b(перше|по[-\s]?перше|друге|по[-\s]?друге|третє|по[-\s]?третє|також|окремо|далі|потім|і ще|ще одне|1[\).\:-]|2[\).\:-]|3[\).\:-])\b/u.test(
+      text
+    );
+  const sentenceLikeParts = text
+    .split(/[.!?\n;]+/)
+    .map((part) => part.trim())
+    .filter((part) => part.length >= 18);
+  return markerMatch || sentenceLikeParts.length >= 3;
+}
+
 function similarityScore(a: string, b: string): number {
   if (!a || !b) return 0;
   if (a === b) return 1;
@@ -341,7 +383,12 @@ function normalizeCandidate(raw: unknown): VoiceParseSuggestion | null {
     dueAtIso: normalizeDateTime(parsed.dueAtIso),
     scheduledForIso: normalizeDateTime(parsed.scheduledForIso),
     confidence: clampConfidence(parsed.confidence),
-    reasoningSummary: cleanText(parsed.reasoningSummary) ?? "Коротке пояснення недоступне."
+    reasoningSummary: localizeReasoningSummary(cleanText(parsed.reasoningSummary), {
+      intent: parsed.detectedIntent,
+      confidence: clampConfidence(parsed.confidence),
+      dueHint: cleanText(parsed.dueHint),
+      datetimeHint: cleanText(parsed.datetimeHint)
+    })
   };
 }
 
@@ -376,8 +423,17 @@ function parseAiPayload(raw: string): VoiceParsePayload | null {
       .filter((item): item is VoiceParseSuggestion => Boolean(item));
 
     if (normalized.length === 0) return null;
+    const deduped: VoiceParseSuggestion[] = [];
+    const seen = new Set<string>();
+    for (const candidate of normalized) {
+      const key = `${candidate.detectedIntent}::${normalizeComparableText(candidate.title)}::${normalizeComparableText(candidate.details)}`;
+      if (seen.has(key)) continue;
+      seen.add(key);
+      deduped.push(candidate);
+    }
+    if (deduped.length === 0) return null;
 
-    const mode = parsed.mode === "multi_item" || normalized.length > 1 ? "multi_item" : "single_item";
+    const mode = parsed.mode === "multi_item" || deduped.length > 1 ? "multi_item" : "single_item";
     const candidateCountEstimated =
       typeof parsed.candidateCountEstimated === "number" && parsed.candidateCountEstimated > 0
         ? Math.round(parsed.candidateCountEstimated)
@@ -385,7 +441,7 @@ function parseAiPayload(raw: string): VoiceParsePayload | null {
 
     return {
       mode,
-      candidates: normalized.map((candidate, index) => ({
+      candidates: deduped.map((candidate, index) => ({
         ...candidate,
         candidateId: `c${index + 1}`,
         status: "pending",
@@ -419,7 +475,11 @@ function parseAiPayload(raw: string): VoiceParsePayload | null {
   }
 }
 
-async function parseTranscriptWithAi(transcript: string, context: ParseContext): Promise<ParseResult> {
+async function parseTranscriptWithAi(
+  transcript: string,
+  context: ParseContext,
+  modeHint: "auto" | "force_multi" = "auto"
+): Promise<ParseResult> {
   const openAiApiKey = Deno.env.get("OPENAI_API_KEY");
   if (!openAiApiKey) {
     return {
@@ -446,11 +506,14 @@ async function parseTranscriptWithAi(transcript: string, context: ParseContext):
           {
             role: "system",
             content:
-              "You classify voice notes for a personal execution assistant. Return strict JSON only. Suggestions only, no autonomous actions. Handle Ukrainian, English, and transliterated Ukrainian. Extract up to 5 clearly distinct actionable candidates; prefer fewer high-quality candidates when uncertain. Do not split one idea into many tiny items. Resolve date words and weekdays strictly in the provided user timezone. If timing is explicit, fill dueAtIso/scheduledForIso as full ISO-8601 with timezone (Z or +/-HH:MM); otherwise null. Never default an uncertain date/time to 'now'."
+              "You classify voice notes for a personal execution assistant. Return strict JSON only. Suggestions only, no autonomous actions. Handle Ukrainian, English, and transliterated Ukrainian. Extract up to 5 clearly distinct actionable candidates; prefer fewer high-quality candidates when uncertain. Do not split one idea into many tiny items. Resolve date words and weekdays strictly in the provided user timezone. If timing is explicit, fill dueAtIso/scheduledForIso as full ISO-8601 with timezone (Z or +/-HH:MM); otherwise null. Never default an uncertain date/time to 'now'. reasoningSummary must be in Ukrainian, short, and user-friendly."
           },
           {
             role: "user",
-            content: `Транскрипт голосового повідомлення:\n${transcript}\n\nКонтекст часу користувача:\n- timezone: ${context.timezone}\n- now_utc: ${context.nowIsoUtc}\n\nПоверни структуровану пропозицію для triage.`
+            content:
+              modeHint === "force_multi"
+                ? `Транскрипт голосового повідомлення:\n${transcript}\n\nКонтекст часу користувача:\n- timezone: ${context.timezone}\n- now_utc: ${context.nowIsoUtc}\n\nРежим: multi-item. Спробуй знайти окремі чіткі дії/нотатки. Поверни від 2 до 5 кандидатів, якщо вони справді окремі; інакше 1 кандидат.`
+                : `Транскрипт голосового повідомлення:\n${transcript}\n\nКонтекст часу користувача:\n- timezone: ${context.timezone}\n- now_utc: ${context.nowIsoUtc}\n\nПоверни структуровану пропозицію для triage.`
           }
         ],
         response_format: {
@@ -584,6 +647,21 @@ async function parseTranscriptWithAi(transcript: string, context: ParseContext):
     payload,
     error: null
   };
+}
+
+async function improveMultiItemSplitIfNeeded(
+  transcript: string,
+  context: ParseContext,
+  baseResult: ParseResult
+): Promise<ParseResult> {
+  if (baseResult.status !== "ok") return baseResult;
+  if (baseResult.payload.mode === "multi_item" || baseResult.payload.candidates.length > 1) return baseResult;
+  if (!hasStrongSplitSignals(transcript)) return baseResult;
+
+  const retry = await parseTranscriptWithAi(transcript, context, "force_multi");
+  if (retry.status !== "ok") return baseResult;
+  if (retry.payload.candidates.length <= baseResult.payload.candidates.length) return baseResult;
+  return retry;
 }
 
 async function matchProjectGuess(
@@ -726,10 +804,12 @@ Deno.serve(async (req) => {
     filePath = fileFetch.filePath;
     transcript = await transcribeVoice(fileFetch.bytes, fileFetch.mimeType);
     if (transcript.status === "ok" && transcript.text) {
-      parse = await parseTranscriptWithAi(transcript.text, {
+      const parseContext = {
         timezone: userTimezone,
         nowIsoUtc: new Date().toISOString()
-      });
+      };
+      const baseParse = await parseTranscriptWithAi(transcript.text, parseContext);
+      parse = await improveMultiItemSplitIfNeeded(transcript.text, parseContext, baseParse);
     } else {
       parse = {
         status: "skipped",

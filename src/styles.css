@@ -186,6 +186,11 @@ button.ghost {
   color: #2e4760;
 }
 
+.voice-candidate-summary {
+  font-weight: 600;
+  color: #33546f;
+}
+
 button.danger {
   border-color: #a13838;
   background: #a13838;
