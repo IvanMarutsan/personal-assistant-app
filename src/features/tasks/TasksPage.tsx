@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { TaskActionModal } from "../../components/TaskActionModal";
-import { getTasks, updateTaskStatus } from "../../lib/api";
+import { useDiagnostics } from "../../lib/diagnostics";
+import { ApiError, getTasks, updateTaskStatus } from "../../lib/api";
 import type { MoveReasonCode, TaskItem, TaskType } from "../../types/api";
 
 const SESSION_KEY = "personal_assistant_app_session_token";
@@ -34,6 +35,7 @@ export function TasksPage() {
   const [workingTaskId, setWorkingTaskId] = useState<string | null>(null);
   const [typeFilter, setTypeFilter] = useState<"all" | TaskType>("all");
   const [pendingAction, setPendingAction] = useState<PendingAction | null>(null);
+  const diagnostics = useDiagnostics();
 
   const sessionToken = localStorage.getItem(SESSION_KEY) ?? "";
 
@@ -45,11 +47,23 @@ export function TasksPage() {
 
     setLoading(true);
     setError(null);
+    diagnostics.trackAction("load_tasks", { route: "/tasks" });
 
     try {
       const tasks = await getTasks(sessionToken);
       setItems(tasks);
+      diagnostics.markRefresh();
+      diagnostics.setScreenDataSource("tasks_data");
     } catch (loadError) {
+      if (loadError instanceof ApiError) {
+        diagnostics.trackFailure({
+          path: loadError.path,
+          status: loadError.status,
+          code: loadError.code,
+          message: loadError.message,
+          details: loadError.details
+        });
+      }
       setError(loadError instanceof Error ? loadError.message : "Failed to load tasks");
     } finally {
       setLoading(false);
@@ -93,6 +107,7 @@ export function TasksPage() {
 
     setWorkingTaskId(task.id);
     setError(null);
+    diagnostics.trackAction("update_task_status", { taskId: task.id, status: "done" });
 
     try {
       await updateTaskStatus({
@@ -102,6 +117,15 @@ export function TasksPage() {
       });
       await loadTasks();
     } catch (actionError) {
+      if (actionError instanceof ApiError) {
+        diagnostics.trackFailure({
+          path: actionError.path,
+          status: actionError.status,
+          code: actionError.code,
+          message: actionError.message,
+          details: actionError.details
+        });
+      }
       setError(actionError instanceof Error ? actionError.message : "Task update failed");
     } finally {
       setWorkingTaskId(null);
@@ -118,6 +142,10 @@ export function TasksPage() {
 
     setWorkingTaskId(pendingAction.task.id);
     setError(null);
+    diagnostics.trackAction("update_task_status", {
+      taskId: pendingAction.task.id,
+      action: pendingAction.action
+    });
 
     try {
       const common = {
@@ -160,6 +188,15 @@ export function TasksPage() {
       setPendingAction(null);
       await loadTasks();
     } catch (actionError) {
+      if (actionError instanceof ApiError) {
+        diagnostics.trackFailure({
+          path: actionError.path,
+          status: actionError.status,
+          code: actionError.code,
+          message: actionError.message,
+          details: actionError.details
+        });
+      }
       setError(actionError instanceof Error ? actionError.message : "Task update failed");
     } finally {
       setWorkingTaskId(null);

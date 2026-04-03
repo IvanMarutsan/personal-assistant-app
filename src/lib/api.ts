@@ -18,31 +18,85 @@ type ErrorResponse = {
   message?: string;
 };
 
+export class ApiError extends Error {
+  status: number;
+  code: string | null;
+  path: string;
+  details: string | null;
+
+  constructor(input: {
+    message: string;
+    status: number;
+    code?: string | null;
+    path: string;
+    details?: string | null;
+  }) {
+    super(input.message);
+    this.name = "ApiError";
+    this.status = input.status;
+    this.code = input.code ?? null;
+    this.path = input.path;
+    this.details = input.details ?? null;
+  }
+}
+
 function edgeUrl(path: string): string {
   return `${appEnv.edgeBaseUrl.replace(/\/$/, "")}/${path}`;
 }
 
-async function parseJson(response: Response) {
-  return (await response.json()) as unknown;
+async function parseBody(response: Response): Promise<unknown> {
+  const text = await response.text();
+  if (!text) return null;
+  try {
+    return JSON.parse(text) as unknown;
+  } catch {
+    return { message: text };
+  }
 }
 
 async function request<T>(path: string, init: RequestInit): Promise<T> {
-  const response = await fetch(edgeUrl(path), {
-    ...init,
-    headers: {
-      apikey: appEnv.supabaseAnonKey,
-      "content-type": "application/json",
-      ...(init.headers ?? {})
-    }
-  });
-
-  const body = (await parseJson(response)) as T | ErrorResponse;
-
-  if (!response.ok) {
-    const errorBody = body as ErrorResponse;
-    throw new Error(errorBody.message ?? errorBody.error ?? `Request failed (${response.status})`);
+  let response: Response;
+  try {
+    response = await fetch(edgeUrl(path), {
+      ...init,
+      headers: {
+        apikey: appEnv.supabaseAnonKey,
+        "content-type": "application/json",
+        ...(init.headers ?? {})
+      }
+    });
+  } catch (error) {
+    console.error("[api] network_failure", { path, error });
+    throw new ApiError({
+      message: "Помилка мережі. Перевір з'єднання і спробуй ще раз.",
+      status: 0,
+      path,
+      details: error instanceof Error ? error.message : "network_error"
+    });
   }
 
+  const body = (await parseBody(response)) as T | ErrorResponse | { message?: string };
+
+  if (!response.ok) {
+    const errorBody = body as ErrorResponse & { details?: string };
+    const message = errorBody.message ?? errorBody.error ?? `Request failed (${response.status})`;
+    console.error("[api] request_failed", {
+      path,
+      status: response.status,
+      code: errorBody.error ?? null,
+      message: errorBody.message ?? null,
+      details: (body as { details?: string })?.details ?? null
+    });
+    throw new ApiError({
+      message,
+      status: response.status,
+      code: errorBody.error ?? null,
+      path,
+      details: (body as { details?: string })?.details ?? null
+    });
+  }
+
+  console.debug("[api] request_ok", { path, status: response.status });
   return body as T;
 }
 

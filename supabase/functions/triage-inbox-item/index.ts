@@ -21,6 +21,13 @@ type TriageBody = {
   scheduledFor?: string;
 };
 
+function asIsoDateTime(value: string | undefined): string | null {
+  if (!value) return null;
+  const parsed = new Date(value);
+  if (Number.isNaN(parsed.getTime())) return null;
+  return parsed.toISOString();
+}
+
 function mapTriageError(message: string): { status: number; error: string } {
   if (message.includes("inbox_item_not_found")) return { status: 404, error: "inbox_item_not_found" };
   if (message.includes("inbox_item_not_new")) return { status: 409, error: "inbox_item_not_new" };
@@ -49,6 +56,21 @@ Deno.serve(async (req) => {
     return jsonResponse({ ok: false, error: "missing_fields" }, 400);
   }
 
+  const dueAt = body.dueAt ? asIsoDateTime(body.dueAt) : null;
+  const scheduledFor = body.scheduledFor ? asIsoDateTime(body.scheduledFor) : null;
+  if (body.dueAt && !dueAt) {
+    return jsonResponse({ ok: false, error: "invalid_due_at", details: "dueAt must be ISO datetime" }, 400);
+  }
+  if (body.scheduledFor && !scheduledFor) {
+    return jsonResponse(
+      { ok: false, error: "invalid_scheduled_for", details: "scheduledFor must be ISO datetime" },
+      400
+    );
+  }
+  if (typeof body.importance === "number" && (body.importance < 1 || body.importance > 5)) {
+    return jsonResponse({ ok: false, error: "invalid_importance", details: "importance must be 1..5" }, 400);
+  }
+
   const supabase = createAdminClient();
   const { data, error } = await supabase.rpc("triage_inbox_item_atomic", {
     p_user_id: sessionUser.userId,
@@ -60,13 +82,24 @@ Deno.serve(async (req) => {
     p_project_id: body.projectId ?? null,
     p_task_type: body.taskType ?? null,
     p_importance: body.importance ?? null,
-    p_due_at: body.dueAt ?? null,
-    p_scheduled_for: body.scheduledFor ?? null
+    p_due_at: dueAt,
+    p_scheduled_for: scheduledFor
   });
 
   if (error) {
+    console.error("[triage-inbox-item] rpc_failed", {
+      inboxItemId: body.inboxItemId,
+      action: body.action,
+      code: error.code,
+      message: error.message,
+      details: error.details,
+      hint: error.hint
+    });
     const mapped = mapTriageError(error.message);
-    return jsonResponse({ ok: false, error: mapped.error, message: error.message }, mapped.status);
+    return jsonResponse(
+      { ok: false, error: mapped.error, message: error.message, details: error.details ?? null },
+      mapped.status
+    );
   }
 
   return jsonResponse({ ok: true, result: data });

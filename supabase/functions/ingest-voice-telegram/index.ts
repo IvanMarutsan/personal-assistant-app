@@ -138,6 +138,11 @@ function similarityScore(a: string, b: string): number {
   return (2 * intersection) / (aTokens.size + bTokens.size);
 }
 
+function shortText(value: string, limit = 280): string {
+  if (!value) return "";
+  return value.length <= limit ? value : `${value.slice(0, limit)}...`;
+}
+
 async function fetchTelegramVoiceBytes(voiceFileId: string): Promise<{
   ok: true;
   bytes: Uint8Array;
@@ -214,12 +219,18 @@ async function transcribeVoice(bytes: Uint8Array, mimeType: string): Promise<Tra
     });
 
     if (!response.ok) {
+      const errorText = shortText(await response.text());
+      console.error("[ingest-voice-telegram] transcription_request_failed", {
+        status: response.status,
+        model,
+        body: errorText
+      });
       return {
         status: "failed",
         text: null,
         language: null,
         provider: "openai",
-        error: "transcription_request_failed"
+        error: `transcription_request_failed:${response.status}:${errorText || "no_body"}`
       };
     }
 
@@ -246,7 +257,11 @@ async function transcribeVoice(bytes: Uint8Array, mimeType: string): Promise<Tra
       provider: "openai",
       error: null
     };
-  } catch {
+  } catch (error) {
+    console.error("[ingest-voice-telegram] transcription_exception", {
+      model,
+      error: error instanceof Error ? error.message : "unknown_error"
+    });
     return {
       status: "failed",
       text: null,
@@ -396,7 +411,11 @@ async function parseTranscriptWithAi(transcript: string): Promise<ParseResult> {
         }
       })
     });
-  } catch {
+  } catch (error) {
+    console.error("[ingest-voice-telegram] parse_exception", {
+      model,
+      error: error instanceof Error ? error.message : "unknown_error"
+    });
     return {
       status: "failed",
       provider: "openai",
@@ -406,11 +425,17 @@ async function parseTranscriptWithAi(transcript: string): Promise<ParseResult> {
   }
 
   if (!response.ok) {
+    const errorText = shortText(await response.text());
+    console.error("[ingest-voice-telegram] parse_request_failed", {
+      status: response.status,
+      model,
+      body: errorText
+    });
     return {
       status: "failed",
       provider: "openai",
       suggestion: null,
-      error: "parse_request_failed"
+      error: `parse_request_failed:${response.status}:${errorText || "no_body"}`
     };
   }
 
@@ -429,6 +454,9 @@ async function parseTranscriptWithAi(transcript: string): Promise<ParseResult> {
 
   const suggestion = parseAiSuggestion(content);
   if (!suggestion) {
+    console.error("[ingest-voice-telegram] parse_invalid_structure", {
+      content: shortText(content)
+    });
     return {
       status: "failed",
       provider: "openai",
@@ -558,6 +586,10 @@ Deno.serve(async (req) => {
   let filePath: string | null = null;
 
   if (!fileFetch.ok) {
+    console.warn("[ingest-voice-telegram] telegram_file_fetch_failed", {
+      voiceFileId: body.voiceFileId,
+      error: fileFetch.error
+    });
     transcript = {
       status: "failed",
       text: null,
@@ -646,6 +678,11 @@ Deno.serve(async (req) => {
     .single();
 
   if (insertError || !inboxItem) {
+    console.error("[ingest-voice-telegram] inbox_insert_failed", {
+      message: insertError?.message ?? null,
+      details: insertError?.details ?? null,
+      hint: insertError?.hint ?? null
+    });
     return jsonResponse({ ok: false, error: "capture_failed" }, 500);
   }
 

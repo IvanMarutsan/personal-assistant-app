@@ -16,6 +16,7 @@ type VoiceConfirmModalProps = {
   } | null;
   projects: ProjectItem[];
   busy: boolean;
+  errorMessage?: string | null;
   onCancel: () => void;
   onConfirm: (payload: {
     targetKind: VoiceConfirmKind;
@@ -121,6 +122,7 @@ export function VoiceConfirmModal(props: VoiceConfirmModalProps) {
         {props.projectMatch?.status === "suggested_only" ? (
           <p className="inbox-meta">AI запропонував проєкт, але точного зіставлення не знайдено.</p>
         ) : null}
+        {props.errorMessage ? <p className="error-note">{props.errorMessage}</p> : null}
 
         <label>
           Тип результату

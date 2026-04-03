@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
-import { getAiAdvisor, getPlanningAssistant, getTasks } from "../../lib/api";
+import { useDiagnostics } from "../../lib/diagnostics";
+import { ApiError, getAiAdvisor, getPlanningAssistant, getTasks } from "../../lib/api";
 import type { AiAdvisorSummary, PlanningSummary, TaskItem } from "../../types/api";
 
 const SESSION_KEY = "personal_assistant_app_session_token";
@@ -34,6 +35,7 @@ export function TodayPage() {
   const [aiAdvisor, setAiAdvisor] = useState<AiAdvisorSummary | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
+  const diagnostics = useDiagnostics();
 
   const sessionToken = localStorage.getItem(SESSION_KEY) ?? "";
 
@@ -48,6 +50,7 @@ export function TodayPage() {
 
       setLoading(true);
       setError(null);
+      diagnostics.trackAction("load_today", { route: "/today" });
 
       try {
         const [tasks, planningSummary, aiSummary] = await Promise.all([
@@ -58,7 +61,20 @@ export function TodayPage() {
         setItems(tasks);
         setPlanning(planningSummary);
         setAiAdvisor(aiSummary);
+        diagnostics.markRefresh();
+        diagnostics.setScreenDataSource(
+          aiSummary.source === "ai" ? "today:deterministic+ai" : "today:deterministic+ai_fallback"
+        );
       } catch (loadError) {
+        if (loadError instanceof ApiError) {
+          diagnostics.trackFailure({
+            path: loadError.path,
+            status: loadError.status,
+            code: loadError.code,
+            message: loadError.message,
+            details: loadError.details
+          });
+        }
         setError(loadError instanceof Error ? loadError.message : "Failed to load today view");
       } finally {
         setLoading(false);

@@ -1,7 +1,8 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { InboxTriageModal } from "../../components/InboxTriageModal";
 import { VoiceConfirmModal } from "../../components/VoiceConfirmModal";
-import { authTelegram, getInbox, getProjects, getTelegramInitDataRaw, triageInboxItem } from "../../lib/api";
+import { useDiagnostics } from "../../lib/diagnostics";
+import { ApiError, authTelegram, getInbox, getProjects, getTelegramInitDataRaw, triageInboxItem } from "../../lib/api";
 import type { InboxItem, ProjectItem, TaskType, VoiceAiSuggestion, VoiceDetectedIntent } from "../../types/api";
 
 const SESSION_KEY = "personal_assistant_app_session_token";
@@ -20,12 +21,32 @@ type VoiceConfirmState = {
   } | null;
 } | null;
 
+type PreparedInboxItem = {
+  item: InboxItem;
+  suggestion: VoiceAiSuggestion | null;
+  projectMatch: {
+    status: "matched" | "suggested_only" | "none";
+    matchedProjectId: string | null;
+    matchedProjectName: string | null;
+    score: number | null;
+  } | null;
+  statuses: {
+    transcriptStatus: string | null;
+    parseStatus: string | null;
+    transcriptError: string | null;
+    parseError: string | null;
+  };
+  isVoiceItem: boolean;
+};
+
 function previewText(item: InboxItem): string {
-  return item.raw_text ?? item.transcript_text ?? "(voice placeholder)";
+  return item.raw_text ?? item.transcript_text ?? "(голосове без транскрипту)";
 }
 
 function sourceLabel(item: InboxItem): string {
-  return `${item.source_channel} / ${item.source_type}`;
+  const channel = item.source_channel === "telegram_bot" ? "telegram_bot" : "mini_app";
+  const source = item.source_type === "voice" ? "voice" : "text";
+  return `${channel} / ${source}`;
 }
 
 function asRecord(value: unknown): Record<string, unknown> | null {
@@ -115,15 +136,46 @@ function extractProjectMatch(item: InboxItem): {
   };
 }
 
-function extractVoiceStatuses(item: InboxItem): { transcriptStatus: string | null; parseStatus: string | null } {
+function extractVoiceStatuses(item: InboxItem): {
+  transcriptStatus: string | null;
+  parseStatus: string | null;
+  transcriptError: string | null;
+  parseError: string | null;
+} {
   const meta = asRecord(item.meta);
   const voiceAi = asRecord(meta?.voice_ai);
   const transcript = asRecord(voiceAi?.transcript);
   const parse = asRecord(voiceAi?.parse);
   return {
     transcriptStatus: toNullableString(transcript?.status),
-    parseStatus: toNullableString(parse?.status)
+    parseStatus: toNullableString(parse?.status),
+    transcriptError: toNullableString(transcript?.error),
+    parseError: toNullableString(parse?.error)
   };
+}
+
+function mapInboxError(error: unknown, fallback: string): string {
+  if (error instanceof ApiError) {
+    if (error.code === "unauthorized") {
+      return "Сесія завершилась. Натисни «Скинути сесію» і авторизуйся знову.";
+    }
+    if (error.code === "inbox_item_not_new") {
+      return "Елемент вже оброблений в іншому запиті. Оновлюю список.";
+    }
+    if (error.code === "project_not_found") {
+      return "Вибраний проєкт більше недоступний. Обери інший і спробуй ще раз.";
+    }
+    if (error.code === "invalid_importance") {
+      return "Важливість має бути від 1 до 5.";
+    }
+    if (error.code === "invalid_due_at" || error.code === "invalid_scheduled_for") {
+      return "Невалідна дата або час. Перевір формат і спробуй ще раз.";
+    }
+    if (error.status === 0) {
+      return "Немає з'єднання з сервером. Перевір інтернет і спробуй ще раз.";
+    }
+  }
+  return fallback;
 }
 
 function intentLabel(intent: VoiceDetectedIntent): string {
@@ -164,11 +216,31 @@ export function InboxPage() {
   const [manualInitData, setManualInitData] = useState("");
   const [sessionToken, setSessionToken] = useState<string>(localStorage.getItem(SESSION_KEY) ?? "");
   const [triageLoading, setTriageLoading] = useState(false);
+  const [workingItemId, setWorkingItemId] = useState<string | null>(null);
   const [pendingTriage, setPendingTriage] = useState<{ item: InboxItem; mode: "task" | "note" } | null>(null);
   const [pendingVoiceConfirm, setPendingVoiceConfirm] = useState<VoiceConfirmState>(null);
   const [projects, setProjects] = useState<ProjectItem[]>([]);
+  const inFlightTriageRef = useRef<Set<string>>(new Set());
+  const diagnostics = useDiagnostics();
 
   const initDataRaw = useMemo(() => getTelegramInitDataRaw(), []);
+  const preparedItems = useMemo<PreparedInboxItem[]>(
+    () =>
+      items.map((item) => ({
+        item,
+        suggestion: extractVoiceSuggestion(item),
+        projectMatch: extractProjectMatch(item),
+        statuses: extractVoiceStatuses(item),
+        isVoiceItem: item.source_type === "voice"
+      })),
+    [items]
+  );
+
+  function invalidateSession() {
+    localStorage.removeItem(SESSION_KEY);
+    setSessionToken("");
+    setAuthState("idle");
+  }
 
   function resetSession() {
     localStorage.removeItem(SESSION_KEY);
@@ -185,11 +257,27 @@ export function InboxPage() {
 
   async function loadInbox(token: string) {
     setLoadingItems(true);
+    diagnostics.trackAction("load_inbox", { route: "/" });
     try {
       const inboxItems = await getInbox(token);
       setItems(inboxItems);
+      diagnostics.markRefresh();
+      diagnostics.setScreenDataSource("inbox_data");
     } catch (loadError) {
-      setError(loadError instanceof Error ? loadError.message : "Не вдалося завантажити Inbox");
+      console.error("[inbox] load_failed", loadError);
+      if (loadError instanceof ApiError) {
+        diagnostics.trackFailure({
+          path: loadError.path,
+          status: loadError.status,
+          code: loadError.code,
+          message: loadError.message,
+          details: loadError.details
+        });
+      }
+      if (loadError instanceof ApiError && loadError.code === "unauthorized") {
+        invalidateSession();
+      }
+      setError(mapInboxError(loadError, "Не вдалося завантажити Inbox"));
     } finally {
       setLoadingItems(false);
     }
@@ -199,7 +287,17 @@ export function InboxPage() {
     try {
       const projectItems = await getProjects(token);
       setProjects(projectItems);
-    } catch {
+    } catch (error) {
+      console.error("[inbox] projects_load_failed", error);
+      if (error instanceof ApiError) {
+        diagnostics.trackFailure({
+          path: error.path,
+          status: error.status,
+          code: error.code,
+          message: error.message,
+          details: error.details
+        });
+      }
       setProjects([]);
     }
   }
@@ -207,16 +305,28 @@ export function InboxPage() {
   async function runAuth(initData: string) {
     setAuthState("authenticating");
     setError(null);
+    diagnostics.trackAction("auth_telegram_start", { route: "/" });
 
     try {
       const session = await authTelegram(initData);
       localStorage.setItem(SESSION_KEY, session.token);
       setSessionToken(session.token);
       setAuthState("ready");
+      diagnostics.trackAction("auth_telegram_success", { route: "/" });
       await Promise.all([loadInbox(session.token), loadProjects(session.token)]);
     } catch (authError) {
+      console.error("[inbox] auth_failed", authError);
+      if (authError instanceof ApiError) {
+        diagnostics.trackFailure({
+          path: authError.path,
+          status: authError.status,
+          code: authError.code,
+          message: authError.message,
+          details: authError.details
+        });
+      }
       setAuthState("error");
-      setError(authError instanceof Error ? authError.message : "Помилка авторизації");
+      setError(mapInboxError(authError, "Помилка авторизації"));
     }
   }
 
@@ -240,8 +350,29 @@ export function InboxPage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
+  function markItemOptimisticTriaged(itemId: string) {
+    setItems((prev) => prev.filter((item) => item.id !== itemId));
+  }
+
+  function beginTriage(itemId: string): boolean {
+    if (inFlightTriageRef.current.has(itemId)) return false;
+    inFlightTriageRef.current.add(itemId);
+    setWorkingItemId(itemId);
+    return true;
+  }
+
+  function endTriage(itemId: string) {
+    inFlightTriageRef.current.delete(itemId);
+    setWorkingItemId((current) => (current === itemId ? null : current));
+  }
+
   async function handleTriage(item: InboxItem, action: "task" | "note" | "discard") {
     if (!sessionToken) return;
+    if (!beginTriage(item.id)) return;
+    diagnostics.trackAction(action === "discard" ? "discard_inbox_item" : "open_inbox_confirm", {
+      itemId: item.id,
+      action
+    });
 
     setError(null);
 
@@ -252,18 +383,41 @@ export function InboxPage() {
           inboxItemId: item.id,
           action
         });
-        await loadInbox(sessionToken);
+        markItemOptimisticTriaged(item.id);
+        void loadInbox(sessionToken);
         return;
       }
 
       setPendingTriage({ item, mode: action });
+      endTriage(item.id);
+      return;
     } catch (triageError) {
-      setError(triageError instanceof Error ? triageError.message : "Не вдалося обробити inbox item");
+      console.error("[inbox] triage_open_failed", { itemId: item.id, action, triageError });
+      if (triageError instanceof ApiError) {
+        diagnostics.trackFailure({
+          path: triageError.path,
+          status: triageError.status,
+          code: triageError.code,
+          message: triageError.message,
+          details: triageError.details
+        });
+      }
+      if (triageError instanceof ApiError && triageError.code === "unauthorized") {
+        invalidateSession();
+      }
+      setError(mapInboxError(triageError, "Не вдалося обробити вхідний запис."));
+    } finally {
+      endTriage(item.id);
     }
   }
 
   async function confirmModalTriage(payload: { title?: string; noteBody?: string }) {
     if (!sessionToken || !pendingTriage) return;
+    if (!beginTriage(pendingTriage.item.id)) return;
+    diagnostics.trackAction(pendingTriage.mode === "task" ? "confirm_as_task" : "confirm_as_note", {
+      itemId: pendingTriage.item.id,
+      mode: pendingTriage.mode
+    });
 
     setTriageLoading(true);
     setError(null);
@@ -278,11 +432,30 @@ export function InboxPage() {
       });
 
       setPendingTriage(null);
-      await loadInbox(sessionToken);
+      markItemOptimisticTriaged(pendingTriage.item.id);
+      void loadInbox(sessionToken);
     } catch (triageError) {
-      setError(triageError instanceof Error ? triageError.message : "Не вдалося обробити inbox item");
+      console.error("[inbox] triage_confirm_failed", {
+        itemId: pendingTriage.item.id,
+        mode: pendingTriage.mode,
+        triageError
+      });
+      if (triageError instanceof ApiError) {
+        diagnostics.trackFailure({
+          path: triageError.path,
+          status: triageError.status,
+          code: triageError.code,
+          message: triageError.message,
+          details: triageError.details
+        });
+      }
+      if (triageError instanceof ApiError && triageError.code === "unauthorized") {
+        invalidateSession();
+      }
+      setError(mapInboxError(triageError, "Не вдалося зберегти зміни."));
     } finally {
       setTriageLoading(false);
+      endTriage(pendingTriage.item.id);
     }
   }
 
@@ -298,6 +471,11 @@ export function InboxPage() {
     scheduledFor: string | null;
   }) {
     if (!sessionToken || !pendingVoiceConfirm) return;
+    if (!beginTriage(pendingVoiceConfirm.item.id)) return;
+    diagnostics.trackAction(
+      payload.targetKind === "task" ? "confirm_voice_as_task" : "confirm_voice_as_note",
+      { itemId: pendingVoiceConfirm.item.id, targetKind: payload.targetKind }
+    );
 
     setTriageLoading(true);
     setError(null);
@@ -325,11 +503,30 @@ export function InboxPage() {
         });
       }
       setPendingVoiceConfirm(null);
-      await loadInbox(sessionToken);
+      markItemOptimisticTriaged(pendingVoiceConfirm.item.id);
+      void loadInbox(sessionToken);
     } catch (triageError) {
-      setError(triageError instanceof Error ? triageError.message : "Не вдалося підтвердити голосову пропозицію");
+      console.error("[inbox] voice_confirm_failed", {
+        itemId: pendingVoiceConfirm.item.id,
+        payload,
+        triageError
+      });
+      if (triageError instanceof ApiError) {
+        diagnostics.trackFailure({
+          path: triageError.path,
+          status: triageError.status,
+          code: triageError.code,
+          message: triageError.message,
+          details: triageError.details
+        });
+      }
+      if (triageError instanceof ApiError && triageError.code === "unauthorized") {
+        invalidateSession();
+      }
+      setError(mapInboxError(triageError, "Не вдалося підтвердити голосову пропозицію."));
     } finally {
       setTriageLoading(false);
+      endTriage(pendingVoiceConfirm.item.id);
     }
   }
 
@@ -366,15 +563,12 @@ export function InboxPage() {
       {authState === "authenticating" ? <p>Авторизація...</p> : null}
       {loadingItems ? <p>Завантаження Inbox...</p> : null}
 
-      {!loadingItems && items.length === 0 ? (
+      {!loadingItems && preparedItems.length === 0 ? (
         <p className="empty-note">Inbox порожній.</p>
       ) : (
         <ul className="inbox-list">
-          {items.map((item) => {
-            const suggestion = extractVoiceSuggestion(item);
-            const projectMatch = extractProjectMatch(item);
-            const statuses = extractVoiceStatuses(item);
-            const isVoiceItem = item.source_type === "voice";
+          {preparedItems.map(({ item, suggestion, projectMatch, statuses, isVoiceItem }) => {
+            const isBusyItem = triageLoading && workingItemId === item.id;
 
             return (
               <li key={item.id} className="inbox-item">
@@ -432,33 +626,47 @@ export function InboxPage() {
                         <p className="inbox-meta">Пояснення: {suggestion.reasoningSummary}</p>
                         <div className="inbox-actions">
                           <button
-                            onClick={() =>
+                            onClick={() => {
+                              diagnostics.trackAction("open_voice_confirm", {
+                                itemId: item.id,
+                                defaultKind: "task"
+                              });
                               setPendingVoiceConfirm({
                                 item,
                                 defaultKind: "task",
                                 suggestion,
                                 projectMatch
-                              })
-                            }
+                              });
+                            }}
+                            disabled={isBusyItem}
                           >
                             Підтвердити / редагувати
                           </button>
                           <button
-                            onClick={() =>
+                            onClick={() => {
+                              diagnostics.trackAction("open_voice_confirm", {
+                                itemId: item.id,
+                                defaultKind: "note"
+                              });
                               setPendingVoiceConfirm({
                                 item,
                                 defaultKind: "note",
                                 suggestion,
                                 projectMatch
-                              })
-                            }
+                              });
+                            }}
+                            disabled={isBusyItem}
                           >
                             У нотатку
                           </button>
                           <button type="button" className="ghost" disabled>
                             Залишити в Inbox
                           </button>
-                          <button className="danger" onClick={() => void handleTriage(item, "discard")}>
+                          <button
+                            className="danger"
+                            onClick={() => void handleTriage(item, "discard")}
+                            disabled={isBusyItem}
+                          >
                             Відхилити
                           </button>
                         </div>
@@ -466,26 +674,39 @@ export function InboxPage() {
                     ) : (
                       <>
                         <p className="empty-note">
-                          AI-розбір недоступний ({statuses.parseStatus ?? "unknown"}). Оброби вручну.
+                          AI-розбір недоступний ({statuses.parseStatus ?? "невідомо"}). Оброби вручну.
                         </p>
                         <div className="inbox-actions">
-                          <button onClick={() => void handleTriage(item, "task")}>У задачу</button>
-                          <button onClick={() => void handleTriage(item, "note")}>У нотатку</button>
-                          <button className="danger" onClick={() => void handleTriage(item, "discard")}>
+                          <button onClick={() => void handleTriage(item, "task")} disabled={isBusyItem}>
+                            У задачу
+                          </button>
+                          <button onClick={() => void handleTriage(item, "note")} disabled={isBusyItem}>
+                            У нотатку
+                          </button>
+                          <button className="danger" onClick={() => void handleTriage(item, "discard")} disabled={isBusyItem}>
                             Відхилити
                           </button>
                         </div>
                       </>
                     )}
                     <p className="inbox-meta">
-                      Transcript status: {statuses.transcriptStatus ?? "n/a"} · Parse status: {statuses.parseStatus ?? "n/a"}
+                      Статус транскрипції: {statuses.transcriptStatus ?? "нема"} · Статус розбору:{" "}
+                      {statuses.parseStatus ?? "нема"}
                     </p>
+                    {statuses.transcriptError ? (
+                      <p className="inbox-meta">Помилка транскрипції: {statuses.transcriptError}</p>
+                    ) : null}
+                    {statuses.parseError ? <p className="inbox-meta">Помилка розбору: {statuses.parseError}</p> : null}
                   </section>
                 ) : (
                   <div className="inbox-actions">
-                    <button onClick={() => void handleTriage(item, "task")}>У задачу</button>
-                    <button onClick={() => void handleTriage(item, "note")}>У нотатку</button>
-                    <button className="danger" onClick={() => void handleTriage(item, "discard")}>
+                    <button onClick={() => void handleTriage(item, "task")} disabled={isBusyItem}>
+                      У задачу
+                    </button>
+                    <button onClick={() => void handleTriage(item, "note")} disabled={isBusyItem}>
+                      У нотатку
+                    </button>
+                    <button className="danger" onClick={() => void handleTriage(item, "discard")} disabled={isBusyItem}>
                       Відхилити
                     </button>
                   </div>
@@ -515,6 +736,7 @@ export function InboxPage() {
         projects={projects}
         transcript={pendingVoiceConfirm?.item.transcript_text ?? ""}
         busy={triageLoading}
+        errorMessage={pendingVoiceConfirm ? error : null}
         onCancel={() => setPendingVoiceConfirm(null)}
         onConfirm={(payload) => {
           void confirmVoiceTriage(payload);

@@ -38,6 +38,17 @@ a {
   color: #4a5f4f;
 }
 
+.debug-badge {
+  margin-top: 6px;
+  display: inline-block;
+  font-size: 0.8rem;
+  color: #1d4f38;
+  border: 1px dashed #7aa68d;
+  border-radius: 999px;
+  padding: 2px 8px;
+  background: #eef8f2;
+}
+
 .app-nav {
   display: flex;
   gap: 12px;
@@ -55,6 +66,34 @@ a {
   display: flex;
   flex-direction: column;
   gap: 8px;
+}
+
+.diagnostics-panel {
+  border: 1px solid #d8e5dd;
+  border-radius: 10px;
+  background: #f8fbf9;
+  padding: 8px 10px;
+  margin-bottom: 10px;
+}
+
+.diagnostics-panel summary {
+  cursor: pointer;
+  color: #2f5a44;
+  font-weight: 600;
+}
+
+.diagnostics-grid {
+  margin-top: 8px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.diagnostics-error-box {
+  border: 1px solid #eccccc;
+  background: #fff6f6;
+  border-radius: 8px;
+  padding: 8px;
 }
 
 .empty-note {

@@ -2,6 +2,13 @@
 
 React Mini App scaffold for Personal Assistant.
 
+See stabilization runbook: `docs/voice-miniapp-stabilization-runbook.md`.
+See hosting runbook: `docs/miniapp-hosting-vercel.md`.
+
+Testing diagnostics mode:
+- Enable with `?debug=1` in Mini App URL
+- Disable with `?debug=0`
+
 ## Setup
 1. Copy `.env.example` to `.env`.
 2. Install deps: `npm install`.
@@ -15,6 +22,15 @@ React Mini App scaffold for Personal Assistant.
 - Use Edge Functions for all app data access.
 - Keep client table access disabled by default.
 - Keep AI and planning logic server-side.
+
+## Local vs Hosted env
+- Local dev:
+  - `VITE_SUPABASE_URL`
+  - `VITE_SUPABASE_ANON_KEY`
+  - `VITE_EDGE_BASE_URL` optional (derived automatically when omitted)
+- Hosted deploy (Vercel):
+  - Same env names in Vercel project settings
+  - Prefer explicit `VITE_EDGE_BASE_URL=https://<project-ref>.supabase.co/functions/v1`
 
 ## Edge Functions in V1 loop
 - `auth-telegram`
@@ -37,10 +53,10 @@ React Mini App scaffold for Personal Assistant.
 - `APP_SESSION_PEPPER` (optional, defaults to service role key)
 - `OPENAI_API_KEY` (for AI advisor)
 - `OPENAI_MODEL` (optional, defaults to `gpt-4.1-mini`)
-- `OPENAI_TRANSCRIBE_MODEL` (optional, defaults to `gpt-4o-mini-transcribe`)
+- `OPENAI_TRANSCRIBE_MODEL` (recommended: `whisper-1` for stable voice transcription)
 
 ## Smoke Test
-Run lightweight integration smoke coverage:
+Run lightweight integration smoke coverage (includes voice-confirm triage path, duplicate-submit conflict, and validation failures):
 
 `npm run test:smoke`
 
