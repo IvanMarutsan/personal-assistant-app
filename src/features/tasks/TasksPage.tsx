@@ -1,10 +1,19 @@
 import { useEffect, useMemo, useState } from "react";
+import { CalendarEventModal } from "../../components/CalendarEventModal";
 import { TaskActionModal } from "../../components/TaskActionModal";
 import { TaskDetailModal } from "../../components/TaskDetailModal";
 import { useDiagnostics } from "../../lib/diagnostics";
-import { ApiError, getProjects, getTasks, updateTask, updateTaskStatus } from "../../lib/api";
+import {
+  ApiError,
+  createGoogleCalendarEvent,
+  getGoogleCalendarStatus,
+  getProjects,
+  getTasks,
+  updateTask,
+  updateTaskStatus
+} from "../../lib/api";
 import { moveReasonLabel } from "../../lib/reasons";
-import type { MoveReasonCode, ProjectItem, TaskItem, TaskType } from "../../types/api";
+import type { GoogleCalendarStatus, MoveReasonCode, ProjectItem, TaskItem, TaskType } from "../../types/api";
 
 const SESSION_KEY = "personal_assistant_app_session_token";
 const TASK_TYPE_FILTERS: Array<{ label: string; value: TaskType }> = [
@@ -137,6 +146,10 @@ export function TasksPage() {
   const [pendingAction, setPendingAction] = useState<PendingAction | null>(null);
   const [activeTask, setActiveTask] = useState<TaskItem | null>(null);
   const [projects, setProjects] = useState<ProjectItem[]>([]);
+  const [calendarStatus, setCalendarStatus] = useState<GoogleCalendarStatus | null>(null);
+  const [pendingCalendarTask, setPendingCalendarTask] = useState<TaskItem | null>(null);
+  const [calendarCreating, setCalendarCreating] = useState(false);
+  const [calendarError, setCalendarError] = useState<string | null>(null);
   const diagnostics = useDiagnostics();
 
   const sessionToken = localStorage.getItem(SESSION_KEY) ?? "";
@@ -185,10 +198,61 @@ export function TasksPage() {
     }
   }
 
+  async function loadCalendarStatus() {
+    if (!sessionToken) {
+      setCalendarStatus(null);
+      return;
+    }
+    try {
+      const status = await getGoogleCalendarStatus(sessionToken);
+      setCalendarStatus(status);
+    } catch {
+      setCalendarStatus(null);
+    }
+  }
+
   useEffect(() => {
-    void Promise.all([loadTasks(), loadProjects()]);
+    void Promise.all([loadTasks(), loadProjects(), loadCalendarStatus()]);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  async function createCalendarFromTask(payload: {
+    title: string;
+    description: string;
+    startAt: string;
+    endAt: string | null;
+    timezone: string;
+  }) {
+    if (!sessionToken || !pendingCalendarTask) return;
+    setCalendarCreating(true);
+    setCalendarError(null);
+    diagnostics.trackAction("create_calendar_event_from_task", { taskId: pendingCalendarTask.id });
+    try {
+      await createGoogleCalendarEvent({
+        sessionToken,
+        title: payload.title,
+        description: payload.description || undefined,
+        startAt: payload.startAt,
+        endAt: payload.endAt,
+        timezone: payload.timezone
+      });
+      setPendingCalendarTask(null);
+      setActiveTask(null);
+    } catch (error) {
+      if (error instanceof ApiError) {
+        diagnostics.trackFailure({
+          path: error.path,
+          status: error.status,
+          code: error.code,
+          message: error.message,
+          details: error.details
+        });
+      }
+      setCalendarError(error instanceof Error ? error.message : "Не вдалося створити подію в Google Calendar.");
+    } finally {
+      setCalendarCreating(false);
+    }
+  }
 
   function toggleType(type: TaskType) {
     setSelectedTypes((prev) =>
@@ -528,6 +592,33 @@ export function TasksPage() {
           }
           setActiveTask(null);
           setPendingAction({ task: activeTask, action });
+        }}
+        onCreateCalendarEvent={() => {
+          if (!activeTask) return;
+          if (!calendarStatus?.connected) {
+            setError("Google Calendar не підключено. Відкрий вкладку «Календар» і підключи акаунт.");
+            return;
+          }
+          setPendingCalendarTask(activeTask);
+          setCalendarError(null);
+        }}
+      />
+
+      <CalendarEventModal
+        open={!!pendingCalendarTask}
+        titleHint={pendingCalendarTask?.title ?? ""}
+        detailsHint={pendingCalendarTask?.details ?? ""}
+        startHint={pendingCalendarTask?.scheduled_for ?? pendingCalendarTask?.due_at ?? new Date().toISOString()}
+        endHint={pendingCalendarTask?.due_at ?? null}
+        busy={calendarCreating}
+        errorMessage={calendarError}
+        onCancel={() => {
+          if (calendarCreating) return;
+          setPendingCalendarTask(null);
+          setCalendarError(null);
+        }}
+        onConfirm={(payload) => {
+          void createCalendarFromTask(payload);
         }}
       />
     </section>

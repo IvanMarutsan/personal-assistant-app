@@ -81,9 +81,19 @@ Run lightweight integration smoke coverage (includes voice-confirm triage path, 
 
 `npm run test:smoke`
 
+Calendar smoke (status/upcoming, optional explicit event create):
+
+`npm run test:smoke:calendar`
+
 Required shell env vars:
 - `SUPABASE_URL`
 - `SUPABASE_SERVICE_ROLE_KEY`
 - `SUPABASE_ANON_KEY`
 - `EDGE_BASE_URL`
 - `APP_SESSION_PEPPER` (optional)
+
+Calendar smoke env vars:
+- `EDGE_BASE_URL`
+- `SUPABASE_ANON_KEY`
+- `CALENDAR_SMOKE_SESSION_TOKEN` (valid app session token)
+- `CALENDAR_SMOKE_CREATE=1` (optional, to actually create a test event)

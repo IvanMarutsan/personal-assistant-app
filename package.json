@@ -8,7 +8,8 @@
     "build": "tsc --noEmit && vite build",
     "preview": "vite preview",
     "typecheck": "tsc --noEmit",
-    "test:smoke": "tsx scripts/smoke-v1.ts"
+    "test:smoke": "tsx scripts/smoke-v1.ts",
+    "test:smoke:calendar": "tsx scripts/smoke-calendar-v1.ts"
   },
   "dependencies": {
     "@supabase/supabase-js": "^2.53.0",

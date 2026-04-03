@@ -21,6 +21,7 @@ type TaskDetailModalProps = {
     scheduledFor: string | null;
   }) => void;
   onAction: (action: TaskActionKind) => void;
+  onCreateCalendarEvent: () => void;
 };
 
 const TASK_TYPE_OPTIONS: Array<{ value: TaskType; label: string }> = [
@@ -198,6 +199,9 @@ export function TaskDetailModal(props: TaskDetailModalProps) {
               <div className="inbox-actions">
                 <button type="button" onClick={() => setEditMode(true)} disabled={props.busy}>
                   Редагувати
+                </button>
+                <button type="button" onClick={props.onCreateCalendarEvent} disabled={props.busy || task.status === "cancelled"}>
+                  У Google Calendar
                 </button>
                 {task.status !== "done" ? (
                   <button type="button" onClick={() => props.onAction("done")} disabled={props.busy}>

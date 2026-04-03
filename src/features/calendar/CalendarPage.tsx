@@ -46,6 +46,15 @@ function mapCalendarError(error: unknown, fallback: string): string {
   return fallback;
 }
 
+function oauthReasonLabel(reason: string | null): string {
+  if (!reason) return "Помилка підключення.";
+  if (reason === "invalid_or_expired_state") return "Сесія підключення застаріла. Спробуй ще раз із Mini App.";
+  if (reason === "missing_code_or_state") return "Google не повернув потрібні параметри авторизації.";
+  if (reason === "google_oauth_callback_failed") return "Не вдалося завершити авторизацію Google.";
+  if (reason.startsWith("oauth_")) return "Google скасував або відхилив авторизацію.";
+  return "Підключення Google Calendar не вдалося.";
+}
+
 export function CalendarPage() {
   const diagnostics = useDiagnostics();
   const sessionToken = localStorage.getItem(SESSION_KEY) ?? "";
@@ -63,7 +72,7 @@ export function CalendarPage() {
     const marker = params.get("calendar_connect");
     const reason = params.get("reason");
     if (marker === "success") return "Google Calendar успішно підключено.";
-    if (marker === "error") return `Підключення Google Calendar не вдалося${reason ? ` (${reason})` : ""}.`;
+    if (marker === "error") return oauthReasonLabel(reason);
     return null;
   }, []);
 
