@@ -1,8 +1,10 @@
 import { useEffect, useMemo, useState } from "react";
 import { TaskActionModal } from "../../components/TaskActionModal";
+import { TaskDetailModal } from "../../components/TaskDetailModal";
 import { useDiagnostics } from "../../lib/diagnostics";
-import { ApiError, getTasks, updateTaskStatus } from "../../lib/api";
-import type { MoveReasonCode, TaskItem, TaskType } from "../../types/api";
+import { ApiError, getProjects, getTasks, updateTask, updateTaskStatus } from "../../lib/api";
+import { moveReasonLabel } from "../../lib/reasons";
+import type { MoveReasonCode, ProjectItem, TaskItem, TaskType } from "../../types/api";
 
 const SESSION_KEY = "personal_assistant_app_session_token";
 const TASK_TYPE_FILTERS: Array<{ label: string; value: TaskType }> = [
@@ -67,6 +69,13 @@ function parseDate(value: string | null): Date | null {
   return Number.isNaN(parsed.getTime()) ? null : parsed;
 }
 
+function formatLocalDateTime(value: Date): string {
+  return new Intl.DateTimeFormat("uk-UA", {
+    dateStyle: "short",
+    timeStyle: "short"
+  }).format(value);
+}
+
 function isToday(date: Date): boolean {
   const now = new Date();
   return (
@@ -87,10 +96,10 @@ function timingLine(task: TaskItem): { label: string; tone: "neutral" | "warn" |
 
   const fragments: string[] = [];
   if (scheduled) {
-    fragments.push(`Заплановано: ${scheduled.toLocaleString()}`);
+    fragments.push(`Заплановано: ${formatLocalDateTime(scheduled)}`);
   }
   if (due) {
-    fragments.push(`Дедлайн: ${due.toLocaleString()}`);
+    fragments.push(`Дедлайн: ${formatLocalDateTime(due)}`);
   }
 
   const reference = scheduled ?? due;
@@ -126,6 +135,8 @@ export function TasksPage() {
   const [selectedTypes, setSelectedTypes] = useState<TaskType[]>([]);
   const [selectedStatuses, setSelectedStatuses] = useState<TaskStatusScope[]>(["active"]);
   const [pendingAction, setPendingAction] = useState<PendingAction | null>(null);
+  const [activeTask, setActiveTask] = useState<TaskItem | null>(null);
+  const [projects, setProjects] = useState<ProjectItem[]>([]);
   const diagnostics = useDiagnostics();
 
   const sessionToken = localStorage.getItem(SESSION_KEY) ?? "";
@@ -161,8 +172,21 @@ export function TasksPage() {
     }
   }
 
+  async function loadProjects() {
+    if (!sessionToken) {
+      setProjects([]);
+      return;
+    }
+    try {
+      const projectItems = await getProjects(sessionToken);
+      setProjects(projectItems);
+    } catch {
+      setProjects([]);
+    }
+  }
+
   useEffect(() => {
-    void loadTasks();
+    void Promise.all([loadTasks(), loadProjects()]);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
@@ -233,6 +257,7 @@ export function TasksPage() {
         taskId: task.id,
         status: "done"
       });
+      if (activeTask?.id === task.id) setActiveTask(null);
       await loadTasks();
     } catch (actionError) {
       if (actionError instanceof ApiError) {
@@ -311,6 +336,7 @@ export function TasksPage() {
       }
 
       setPendingAction(null);
+      setActiveTask(null);
       await loadTasks();
     } catch (actionError) {
       if (actionError instanceof ApiError) {
@@ -334,54 +360,59 @@ export function TasksPage() {
       <p>Список задач по проєктах з фільтрами та базовими діями виконання.</p>
 
       <div className="filters-wrap">
-        <p className="inbox-meta">Фільтр статусу:</p>
-        <div className="chip-row">
-          <button
-            type="button"
-            className={selectedStatuses.includes("active") ? "chip chip-active" : "chip"}
-            onClick={() => toggleStatus("active")}
-          >
-            Активні ({counts.active})
-          </button>
-          <button
-            type="button"
-            className={selectedStatuses.includes("completed") ? "chip chip-active" : "chip"}
-            onClick={() => toggleStatus("completed")}
-          >
-            Виконані ({counts.completed})
-          </button>
-          <button
-            type="button"
-            className={selectedStatuses.includes("blocked") ? "chip chip-active" : "chip"}
-            onClick={() => toggleStatus("blocked")}
-          >
-            Заблоковані ({counts.blocked})
-          </button>
-          <button
-            type="button"
-            className={selectedStatuses.includes("cancelled") ? "chip chip-active" : "chip"}
-            onClick={() => toggleStatus("cancelled")}
-          >
-            Скасовані ({counts.cancelled})
-          </button>
-        </div>
+        <details className="filter-dropdown">
+          <summary>Статус ({selectedStatuses.length || "всі"})</summary>
+          <div className="filter-dropdown-body">
+            <label>
+              <input
+                type="checkbox"
+                checked={selectedStatuses.includes("active")}
+                onChange={() => toggleStatus("active")}
+              />
+              Активні ({counts.active})
+            </label>
+            <label>
+              <input
+                type="checkbox"
+                checked={selectedStatuses.includes("completed")}
+                onChange={() => toggleStatus("completed")}
+              />
+              Виконані ({counts.completed})
+            </label>
+            <label>
+              <input
+                type="checkbox"
+                checked={selectedStatuses.includes("blocked")}
+                onChange={() => toggleStatus("blocked")}
+              />
+              Заблоковані ({counts.blocked})
+            </label>
+            <label>
+              <input
+                type="checkbox"
+                checked={selectedStatuses.includes("cancelled")}
+                onChange={() => toggleStatus("cancelled")}
+              />
+              Скасовані ({counts.cancelled})
+            </label>
+          </div>
+        </details>
 
-        <p className="inbox-meta">Фільтр типу (можна кілька):</p>
-        <div className="chip-row">
-          {TASK_TYPE_FILTERS.map((filter) => {
-            const selected = selectedTypes.includes(filter.value);
-            return (
-              <button
-                key={filter.value}
-                type="button"
-                className={selected ? "chip chip-active" : "chip"}
-                onClick={() => toggleType(filter.value)}
-              >
+        <details className="filter-dropdown">
+          <summary>Тип ({selectedTypes.length || "всі"})</summary>
+          <div className="filter-dropdown-body">
+            {TASK_TYPE_FILTERS.map((filter) => (
+              <label key={filter.value}>
+                <input
+                  type="checkbox"
+                  checked={selectedTypes.includes(filter.value)}
+                  onChange={() => toggleType(filter.value)}
+                />
                 {filter.label}
-              </button>
-            );
-          })}
-        </div>
+              </label>
+            ))}
+          </div>
+        </details>
       </div>
 
       <p className="inbox-meta">
@@ -412,6 +443,12 @@ export function TasksPage() {
                   <p className="inbox-meta">
                     {taskTypeLabel(task.task_type)} · {statusLabel(task.status)}
                   </p>
+                  {task.status === "cancelled" ? (
+                    <p className="inbox-meta">
+                      Причина: {moveReasonLabel(task.last_moved_reason) ?? "Не вказано"}
+                      {task.cancel_reason_text ? ` · ${task.cancel_reason_text}` : ""}
+                    </p>
+                  ) : null}
                   <p className={timing.tone === "warn" ? "error-note" : "inbox-meta"}>{timing.label}</p>
                   <div className="inbox-actions">
                     {task.status !== "done" ? (
@@ -419,45 +456,9 @@ export function TasksPage() {
                         Виконано
                       </button>
                     ) : null}
-                    {(task.status === "planned" || task.status === "in_progress") && (
-                      <>
-                        <button
-                          onClick={() => setPendingAction({ task, action: "postpone" })}
-                          disabled={workingTaskId === task.id}
-                        >
-                          Відкласти (хв)
-                        </button>
-                        <button
-                          onClick={() => setPendingAction({ task, action: "reschedule" })}
-                          disabled={workingTaskId === task.id}
-                        >
-                          Перенести (дата/час)
-                        </button>
-                        <button
-                          onClick={() => setPendingAction({ task, action: "block" })}
-                          disabled={workingTaskId === task.id}
-                        >
-                          Заблокувати
-                        </button>
-                      </>
-                    )}
-                    {task.status === "blocked" ? (
-                      <button
-                        onClick={() => setPendingAction({ task, action: "unblock" })}
-                        disabled={workingTaskId === task.id}
-                      >
-                        Розблокувати
-                      </button>
-                    ) : null}
-                    {task.status !== "cancelled" ? (
-                      <button
-                        className="danger"
-                        onClick={() => setPendingAction({ task, action: "cancel" })}
-                        disabled={workingTaskId === task.id || task.status === "done"}
-                      >
-                        Скасувати
-                      </button>
-                    ) : null}
+                    <button type="button" className="ghost" onClick={() => setActiveTask(task)}>
+                      Деталі
+                    </button>
                   </div>
                 </li>
               );
@@ -474,6 +475,59 @@ export function TasksPage() {
         onCancel={() => setPendingAction(null)}
         onConfirm={(payload) => {
           void confirmAction(payload);
+        }}
+      />
+
+      <TaskDetailModal
+        open={!!activeTask}
+        task={activeTask}
+        projects={projects}
+        busy={workingTaskId !== null}
+        onClose={() => setActiveTask(null)}
+        onSave={(payload) => {
+          void (async () => {
+            if (!sessionToken) return;
+            setWorkingTaskId(payload.taskId);
+            setError(null);
+            diagnostics.trackAction("update_task_fields", { taskId: payload.taskId });
+            try {
+              await updateTask({
+                sessionToken,
+                taskId: payload.taskId,
+                title: payload.title,
+                details: payload.details,
+                projectId: payload.projectId,
+                taskType: payload.taskType,
+                dueAt: payload.dueAt,
+                scheduledFor: payload.scheduledFor
+              });
+
+              setActiveTask(null);
+              await loadTasks();
+            } catch (saveError) {
+              if (saveError instanceof ApiError) {
+                diagnostics.trackFailure({
+                  path: saveError.path,
+                  status: saveError.status,
+                  code: saveError.code,
+                  message: saveError.message,
+                  details: saveError.details
+                });
+              }
+              setError(saveError instanceof Error ? saveError.message : "Не вдалося зберегти зміни задачі");
+            } finally {
+              setWorkingTaskId(null);
+            }
+          })();
+        }}
+        onAction={(action) => {
+          if (!activeTask) return;
+          if (action === "done") {
+            void runDone(activeTask);
+            return;
+          }
+          setActiveTask(null);
+          setPendingAction({ task: activeTask, action });
         }}
       />
     </section>

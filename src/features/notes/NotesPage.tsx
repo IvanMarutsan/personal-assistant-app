@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
+import { NoteDetailModal } from "../../components/NoteDetailModal";
 import { useDiagnostics } from "../../lib/diagnostics";
-import { ApiError, getNotes } from "../../lib/api";
+import { ApiError, getNotes, updateNote } from "../../lib/api";
 import type { NoteItem } from "../../types/api";
 
 const SESSION_KEY = "personal_assistant_app_session_token";
@@ -27,6 +28,8 @@ export function NotesPage() {
   const [items, setItems] = useState<NoteItem[]>([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [pendingNote, setPendingNote] = useState<NoteItem | null>(null);
+  const [saving, setSaving] = useState(false);
   const diagnostics = useDiagnostics();
   const sessionToken = localStorage.getItem(SESSION_KEY) ?? "";
 
@@ -68,10 +71,41 @@ export function NotesPage() {
 
   const hasItems = useMemo(() => items.length > 0, [items]);
 
+  async function saveNote(payload: { title: string; body: string; convertToTask: boolean }) {
+    if (!pendingNote || !sessionToken) return;
+    setSaving(true);
+    setError(null);
+    diagnostics.trackAction("save_note", { noteId: pendingNote.id, convertToTask: payload.convertToTask });
+    try {
+      await updateNote({
+        sessionToken,
+        noteId: pendingNote.id,
+        title: payload.title || null,
+        body: payload.body,
+        convertToTask: payload.convertToTask
+      });
+      await loadNotes();
+      setPendingNote(null);
+    } catch (saveError) {
+      if (saveError instanceof ApiError) {
+        diagnostics.trackFailure({
+          path: saveError.path,
+          status: saveError.status,
+          code: saveError.code,
+          message: saveError.message,
+          details: saveError.details
+        });
+      }
+      setError(saveError instanceof Error ? saveError.message : "Не вдалося зберегти нотатку");
+    } finally {
+      setSaving(false);
+    }
+  }
+
   return (
     <section className="panel">
       <h2>Нотатки</h2>
-      <p>Збережені нотатки з інбоксу та голосового triage.</p>
+      <p>Збережені нотатки з інбоксу та голосового розбору.</p>
 
       {!sessionToken ? <p className="empty-note">Відкрий Інбокс для авторизації сесії.</p> : null}
       {error ? <p className="error-note">{error}</p> : null}
@@ -85,13 +119,28 @@ export function NotesPage() {
             <li key={note.id} className="inbox-item">
               <p className="inbox-main-text">{noteTitle(note)}</p>
               <p className="inbox-meta">
-                {projectName(note)} · {new Date(note.created_at).toLocaleString()}
+                {projectName(note)} · створено: {new Date(note.created_at).toLocaleString()}
               </p>
               <p className="inbox-meta">{previewBody(note)}</p>
+              <div className="inbox-actions">
+                <button type="button" onClick={() => setPendingNote(note)}>
+                  Відкрити
+                </button>
+              </div>
             </li>
           ))}
         </ul>
       ) : null}
+
+      <NoteDetailModal
+        open={!!pendingNote}
+        note={pendingNote}
+        busy={saving}
+        onClose={() => setPendingNote(null)}
+        onSave={(payload) => {
+          void saveNote(payload);
+        }}
+      />
     </section>
   );
 }

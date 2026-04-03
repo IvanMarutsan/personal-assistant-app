@@ -21,6 +21,7 @@ export type InboxItem = {
 };
 
 export type VoiceDetectedIntent = "task" | "note" | "meeting_candidate" | "reminder_candidate";
+export type VoiceConfirmTargetKind = "task" | "note" | "calendar_event";
 
 export type VoiceAiSuggestion = {
   detectedIntent: VoiceDetectedIntent;
@@ -56,8 +57,28 @@ export type NoteItem = {
   title: string | null;
   body: string;
   created_at: string;
+  updated_at: string;
   project_id: string | null;
   projects?: { name: string } | { name: string }[] | null;
+};
+
+export type GoogleCalendarStatus = {
+  connected: boolean;
+  provider: "google";
+  email: string | null;
+  calendarId: string | null;
+  expiresAt: string | null;
+};
+
+export type GoogleCalendarEventItem = {
+  id: string;
+  title: string;
+  description: string | null;
+  status: string | null;
+  htmlLink: string | null;
+  startAt: string | null;
+  endAt: string | null;
+  timezone: string | null;
 };
 
 export type TriageAction = "task" | "note" | "discard";
@@ -75,8 +96,11 @@ export type TaskType =
 export type TaskItem = {
   id: string;
   title: string;
+  details?: string | null;
   task_type: TaskType;
   status: TaskStatus;
+  last_moved_reason?: MoveReasonCode | null;
+  cancel_reason_text?: string | null;
   project_id: string | null;
   due_at: string | null;
   scheduled_for: string | null;

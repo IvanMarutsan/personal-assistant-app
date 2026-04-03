@@ -200,30 +200,44 @@ button.danger {
 
 .filters-wrap {
   display: flex;
-  flex-direction: column;
+  flex-direction: row;
+  flex-wrap: wrap;
   gap: 6px;
   margin-bottom: 8px;
 }
 
-.chip-row {
-  display: flex;
-  gap: 8px;
-  flex-wrap: wrap;
+.filter-dropdown {
+  border: 1px solid #d5e2d8;
+  border-radius: 8px;
+  background: #fff;
+  min-width: 170px;
+  padding: 2px 8px;
 }
 
-.chip {
-  border: 1px solid #b7cfc0;
-  background: #ffffff;
+.filter-dropdown > summary {
+  cursor: pointer;
   color: #2f4b3a;
-  border-radius: 999px;
-  padding: 5px 10px;
-  font-size: 0.86rem;
+  font-size: 0.92rem;
+  list-style: none;
 }
 
-.chip-active {
-  border-color: #0f6a45;
-  background: #0f6a45;
-  color: #ffffff;
+.filter-dropdown > summary::-webkit-details-marker {
+  display: none;
+}
+
+.filter-dropdown-body {
+  margin-top: 6px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.filter-dropdown-body label {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 0.88rem;
+  color: #2f4b3a;
 }
 
 .toolbar-row label {
@@ -380,11 +394,25 @@ button.danger {
   padding: 10px 14px calc(10px + env(safe-area-inset-bottom));
 }
 
+.inline-retry-btn {
+  margin-left: 8px;
+  padding: 2px 8px;
+  font-size: 0.8rem;
+}
+
 .modal-card--voice {
   margin-top: 0;
 }
 
 @media (max-width: 600px) {
+  .filters-wrap {
+    flex-direction: column;
+  }
+
+  .filter-dropdown {
+    width: 100%;
+  }
+
   .modal-backdrop {
     padding-left: 8px;
     padding-right: 8px;

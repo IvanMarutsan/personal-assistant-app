@@ -11,6 +11,13 @@ function parseDate(value: string | null): Date | null {
   return Number.isNaN(parsed.getTime()) ? null : parsed;
 }
 
+function formatLocalDateTime(value: Date): string {
+  return new Intl.DateTimeFormat("uk-UA", {
+    dateStyle: "short",
+    timeStyle: "short"
+  }).format(value);
+}
+
 function projectName(task: TaskItem): string {
   if (!task.projects) return "Без проєкту";
   if (Array.isArray(task.projects)) return task.projects[0]?.name ?? "Без проєкту";
@@ -66,9 +73,9 @@ function timingLine(task: TaskItem): string {
   const scheduled = parseDate(task.scheduled_for);
   const due = parseDate(task.due_at);
   if (!scheduled && !due) return "Без часу";
-  if (scheduled && due) return `Заплановано: ${scheduled.toLocaleString()} · Дедлайн: ${due.toLocaleString()}`;
-  if (scheduled) return `Заплановано: ${scheduled.toLocaleString()}`;
-  return `Дедлайн: ${due?.toLocaleString()}`;
+  if (scheduled && due) return `Заплановано: ${formatLocalDateTime(scheduled)} · Дедлайн: ${formatLocalDateTime(due)}`;
+  if (scheduled) return `Заплановано: ${formatLocalDateTime(scheduled)}`;
+  return `Дедлайн: ${due ? formatLocalDateTime(due) : ""}`;
 }
 
 export function TodayPage() {
@@ -81,49 +88,88 @@ export function TodayPage() {
 
   const sessionToken = localStorage.getItem(SESSION_KEY) ?? "";
 
+  async function loadToday() {
+    if (!sessionToken) {
+      setItems([]);
+      setPlanning(null);
+      setAiAdvisor(null);
+      return;
+    }
+
+    setLoading(true);
+    setError(null);
+    diagnostics.trackAction("load_today", { route: "/today" });
+    const errors: string[] = [];
+
+    const [tasksResult, planningResult, aiResult] = await Promise.allSettled([
+      getTasks(sessionToken),
+      getPlanningAssistant(sessionToken),
+      getAiAdvisor(sessionToken)
+    ]);
+
+    if (tasksResult.status === "fulfilled") {
+      setItems(tasksResult.value);
+    } else {
+      const loadError = tasksResult.reason;
+      if (loadError instanceof ApiError) {
+        diagnostics.trackFailure({
+          path: loadError.path,
+          status: loadError.status,
+          code: loadError.code,
+          message: loadError.message,
+          details: loadError.details
+        });
+      }
+      errors.push("Не вдалося завантажити задачі для «Сьогодні». Спробуй оновити.");
+    }
+
+    if (planningResult.status === "fulfilled") {
+      setPlanning(planningResult.value);
+    } else {
+      const loadError = planningResult.reason;
+      if (loadError instanceof ApiError) {
+        diagnostics.trackFailure({
+          path: loadError.path,
+          status: loadError.status,
+          code: loadError.code,
+          message: loadError.message,
+          details: loadError.details
+        });
+      }
+      errors.push("Не вдалося завантажити блок детермінованого планування.");
+      setPlanning(null);
+    }
+
+    if (aiResult.status === "fulfilled") {
+      setAiAdvisor(aiResult.value);
+      diagnostics.setScreenDataSource(
+        aiResult.value.source === "ai" ? "today:deterministic+ai" : "today:deterministic+ai_fallback"
+      );
+    } else {
+      const loadError = aiResult.reason;
+      if (loadError instanceof ApiError) {
+        diagnostics.trackFailure({
+          path: loadError.path,
+          status: loadError.status,
+          code: loadError.code,
+          message: loadError.message,
+          details: loadError.details
+        });
+      }
+      setAiAdvisor(null);
+    }
+
+    if (errors.length > 0) {
+      setError(errors.join(" "));
+    }
+
+    diagnostics.markRefresh();
+    setLoading(false);
+  }
+
   useEffect(() => {
-    const load = async () => {
-      if (!sessionToken) {
-        setItems([]);
-        setPlanning(null);
-        setAiAdvisor(null);
-        return;
-      }
-
-      setLoading(true);
-      setError(null);
-      diagnostics.trackAction("load_today", { route: "/today" });
-
-      try {
-        const [tasks, planningSummary, aiSummary] = await Promise.all([
-          getTasks(sessionToken),
-          getPlanningAssistant(sessionToken),
-          getAiAdvisor(sessionToken)
-        ]);
-        setItems(tasks);
-        setPlanning(planningSummary);
-        setAiAdvisor(aiSummary);
-        diagnostics.markRefresh();
-        diagnostics.setScreenDataSource(
-          aiSummary.source === "ai" ? "today:deterministic+ai" : "today:deterministic+ai_fallback"
-        );
-      } catch (loadError) {
-        if (loadError instanceof ApiError) {
-          diagnostics.trackFailure({
-            path: loadError.path,
-            status: loadError.status,
-            code: loadError.code,
-            message: loadError.message,
-            details: loadError.details
-          });
-        }
-        setError(loadError instanceof Error ? loadError.message : "Не вдалося завантажити розділ «Сьогодні»");
-      } finally {
-        setLoading(false);
-      }
-    };
-
-    void load();
+    void loadToday();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [sessionToken]);
 
   const now = new Date();
@@ -190,15 +236,24 @@ export function TodayPage() {
       <p>Зріз дня: рекомендації, перевантаження, ризики й підсумок.</p>
 
       {!sessionToken ? <p className="empty-note">Відкрий Інбокс для авторизації сесії.</p> : null}
-      {error ? <p className="error-note">{error}</p> : null}
+      {error ? (
+        <p className="error-note">
+          {error}{" "}
+          <button type="button" className="ghost inline-retry-btn" onClick={() => void loadToday()}>
+            Оновити
+          </button>
+        </p>
+      ) : null}
       {loading ? <p>Завантаження...</p> : null}
 
       {planning ? (
         <section className="assistant-block deterministic-block">
-          <h3>Детермінований асистент (базові правила)</h3>
-          <p className="inbox-meta">
-            Правила: {planning.rulesVersion} · Таймзона: {planning.timezone}
-          </p>
+          <h3>План дня</h3>
+          {diagnostics.debugEnabled ? (
+            <p className="inbox-meta">
+              Правила: {planning.rulesVersion} · Таймзона: {planning.timezone}
+            </p>
+          ) : null}
 
           <h3>Що робити зараз?</h3>
           {planning.whatNow.primary ? (
@@ -280,12 +335,14 @@ export function TodayPage() {
 
       {aiAdvisor ? (
         <section className="assistant-block ai-block">
-          <h3>AI-радник (лише рекомендації)</h3>
-          <p className="inbox-meta">
-            Джерело: {aiAdvisor.source === "ai" ? `OpenAI (${aiAdvisor.model ?? "невідома модель"})` : "Fallback-правила"} ·
-            Згенеровано: {new Date(aiAdvisor.generatedAt).toLocaleTimeString()}
-          </p>
-          {aiAdvisor.fallbackReason ? (
+          <h3>Порада AI</h3>
+          {diagnostics.debugEnabled ? (
+            <p className="inbox-meta">
+              Джерело: {aiAdvisor.source === "ai" ? `OpenAI (${aiAdvisor.model ?? "невідома модель"})` : "Fallback-правила"} ·
+              Згенеровано: {new Date(aiAdvisor.generatedAt).toLocaleTimeString()}
+            </p>
+          ) : null}
+          {aiAdvisor.fallbackReason && diagnostics.debugEnabled ? (
             <p className="empty-note">AI fallback увімкнений: {aiAdvisor.fallbackReason}</p>
           ) : null}
 

@@ -19,7 +19,7 @@ Deno.serve(async (req) => {
   const { data, error } = await supabase
     .from("tasks")
     .select(
-      "id, title, task_type, status, project_id, due_at, scheduled_for, is_protected_essential, projects(name)"
+      "id, title, details, task_type, status, last_moved_reason, project_id, due_at, scheduled_for, is_protected_essential, projects(name)"
     )
     .eq("user_id", sessionUser.userId)
     .order("created_at", { ascending: false })
@@ -29,5 +29,30 @@ Deno.serve(async (req) => {
     return jsonResponse({ ok: false, error: "tasks_fetch_failed" }, 500);
   }
 
-  return jsonResponse({ ok: true, items: data ?? [] });
+  const taskIds = (data ?? []).map((item) => item.id);
+  const cancelReasonByTaskId = new Map<string, string | null>();
+
+  if (taskIds.length > 0) {
+    const { data: cancelEvents } = await supabase
+      .from("task_events")
+      .select("task_id, reason_text, created_at")
+      .eq("user_id", sessionUser.userId)
+      .eq("event_type", "status_changed")
+      .eq("new_status", "cancelled")
+      .in("task_id", taskIds)
+      .order("created_at", { ascending: false });
+
+    for (const event of cancelEvents ?? []) {
+      if (!cancelReasonByTaskId.has(event.task_id)) {
+        cancelReasonByTaskId.set(event.task_id, event.reason_text ?? null);
+      }
+    }
+  }
+
+  const items = (data ?? []).map((task) => ({
+    ...task,
+    cancel_reason_text: cancelReasonByTaskId.get(task.id) ?? null
+  }));
+
+  return jsonResponse({ ok: true, items });
 });

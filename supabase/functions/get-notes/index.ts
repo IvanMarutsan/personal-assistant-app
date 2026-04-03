@@ -18,9 +18,9 @@ Deno.serve(async (req) => {
   const supabase = createAdminClient();
   const { data, error } = await supabase
     .from("notes")
-    .select("id, title, body, created_at, project_id, projects(name)")
+    .select("id, title, body, created_at, updated_at, project_id, projects(name)")
     .eq("user_id", sessionUser.userId)
-    .order("created_at", { ascending: false })
+    .order("updated_at", { ascending: false })
     .limit(200);
 
   if (error) {

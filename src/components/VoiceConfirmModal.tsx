@@ -1,12 +1,11 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import type { ProjectItem, TaskType, VoiceAiSuggestion } from "../types/api";
-
-type VoiceConfirmKind = "task" | "note";
+import type { ProjectItem, TaskType, VoiceAiSuggestion, VoiceConfirmTargetKind } from "../types/api";
 
 type VoiceConfirmModalProps = {
   open: boolean;
   contextId?: string | null;
-  defaultKind: VoiceConfirmKind;
+  defaultKind: VoiceConfirmTargetKind;
+  allowCalendarEvent?: boolean;
   suggestion: VoiceAiSuggestion | null;
   transcript: string;
   projectMatch?: {
@@ -20,7 +19,7 @@ type VoiceConfirmModalProps = {
   errorMessage?: string | null;
   onCancel: () => void;
   onConfirm: (payload: {
-    targetKind: VoiceConfirmKind;
+    targetKind: VoiceConfirmTargetKind;
     title: string;
     details: string;
     noteBody: string;
@@ -29,6 +28,7 @@ type VoiceConfirmModalProps = {
     importance: number | null;
     dueAt: string | null;
     scheduledFor: string | null;
+    timezone: string;
   }) => void;
 };
 
@@ -59,13 +59,65 @@ function parseReasonableDate(value: string | null | undefined): Date | null {
   return date;
 }
 
-function nextQuarterHour(date: Date): Date {
-  const d = new Date(date);
-  d.setSeconds(0, 0);
-  const minutes = d.getMinutes();
-  const next = Math.ceil(minutes / 15) * 15;
-  d.setMinutes(next);
-  return d;
+function extractTime(hint: string): { hours: number; minutes: number } | null {
+  const match = hint.match(/(\d{1,2})[:.](\d{2})/);
+  if (!match) return null;
+  const hours = Number(match[1]);
+  const minutes = Number(match[2]);
+  if (Number.isNaN(hours) || Number.isNaN(minutes)) return null;
+  if (hours < 0 || hours > 23 || minutes < 0 || minutes > 59) return null;
+  return { hours, minutes };
+}
+
+function nextWeekdayIndex(now: Date, targetWeekday: number): Date {
+  const base = new Date(now);
+  base.setHours(0, 0, 0, 0);
+  const current = base.getDay();
+  let diff = (targetWeekday - current + 7) % 7;
+  if (diff === 0) diff = 7;
+  base.setDate(base.getDate() + diff);
+  return base;
+}
+
+function parseNaturalDateHint(hint: string | null | undefined): Date | null {
+  if (!hint) return null;
+  const text = hint.trim().toLowerCase();
+  if (!text) return null;
+  const now = new Date();
+  const time = extractTime(text) ?? { hours: 9, minutes: 0 };
+
+  const setTime = (d: Date): Date => {
+    const out = new Date(d);
+    out.setHours(time.hours, time.minutes, 0, 0);
+    return out;
+  };
+
+  if (text.includes("today") || text.includes("сьогодні")) {
+    return setTime(now);
+  }
+  if (text.includes("tomorrow") || text.includes("завтра")) {
+    const d = new Date(now);
+    d.setDate(d.getDate() + 1);
+    return setTime(d);
+  }
+
+  const weekdays: Array<{ keys: string[]; index: number }> = [
+    { keys: ["sunday", "неділя", "недiля", "недiлю", "неділю"], index: 0 },
+    { keys: ["monday", "понеділок", "понедiлок"], index: 1 },
+    { keys: ["tuesday", "вівторок", "вiвторок"], index: 2 },
+    { keys: ["wednesday", "середа"], index: 3 },
+    { keys: ["thursday", "четвер"], index: 4 },
+    { keys: ["friday", "пʼятниця", "п'ятниця", "пятниця"], index: 5 },
+    { keys: ["saturday", "субота"], index: 6 }
+  ];
+
+  for (const weekday of weekdays) {
+    if (weekday.keys.some((key) => text.includes(key))) {
+      return setTime(nextWeekdayIndex(now, weekday.index));
+    }
+  }
+
+  return null;
 }
 
 function localInputToIso(value: string): string | null {
@@ -96,7 +148,7 @@ function buildNoteBody(title: string, details: string, dueAt: string, scheduledF
 
 export function VoiceConfirmModal(props: VoiceConfirmModalProps) {
   const bodyRef = useRef<HTMLDivElement | null>(null);
-  const [targetKind, setTargetKind] = useState<VoiceConfirmKind>("task");
+  const [targetKind, setTargetKind] = useState<VoiceConfirmTargetKind>("task");
   const [title, setTitle] = useState("");
   const [details, setDetails] = useState("");
   const [projectId, setProjectId] = useState<string>("");
@@ -104,30 +156,40 @@ export function VoiceConfirmModal(props: VoiceConfirmModalProps) {
   const [importance, setImportance] = useState<number | "">("");
   const [dueAtInput, setDueAtInput] = useState("");
   const [scheduledForInput, setScheduledForInput] = useState("");
+  const [timezone, setTimezone] = useState("UTC");
 
   useEffect(() => {
     if (!props.open || !props.suggestion) return;
-    const now = new Date();
-    const fallbackScheduled = nextQuarterHour(now);
-    const fallbackDue = new Date(fallbackScheduled.getTime() + 2 * 60 * 60 * 1000);
+    const normalizedDefaultKind: VoiceConfirmTargetKind =
+      props.defaultKind === "calendar_event" && !props.allowCalendarEvent ? "task" : props.defaultKind;
     const scheduledCandidate =
       parseReasonableDate(props.suggestion.scheduledForIso) ??
-      parseReasonableDate(props.suggestion.datetimeHint) ??
-      fallbackScheduled;
+      parseNaturalDateHint(props.suggestion.datetimeHint) ??
+      parseReasonableDate(props.suggestion.datetimeHint);
     const dueCandidate =
       parseReasonableDate(props.suggestion.dueAtIso) ??
-      parseReasonableDate(props.suggestion.dueHint) ??
-      fallbackDue;
+      parseNaturalDateHint(props.suggestion.dueHint) ??
+      parseReasonableDate(props.suggestion.dueHint);
 
-    setTargetKind(props.defaultKind);
+    setTargetKind(normalizedDefaultKind);
     setTitle(props.suggestion.title ?? "");
     setDetails(props.suggestion.details || props.transcript || "");
     setProjectId(props.projectMatch?.matchedProjectId ?? "");
     setTaskType(props.suggestion.taskTypeGuess ?? "");
     setImportance(props.suggestion.importanceGuess ?? "");
-    setDueAtInput(toLocalInputFromDate(dueCandidate));
-    setScheduledForInput(toLocalInputFromDate(scheduledCandidate));
-  }, [props.open, props.contextId, props.suggestion, props.transcript, props.defaultKind, props.projectMatch]);
+    setDueAtInput(dueCandidate ? toLocalInputFromDate(dueCandidate) : "");
+    setScheduledForInput(scheduledCandidate ? toLocalInputFromDate(scheduledCandidate) : "");
+    setTimezone(Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC");
+    console.debug("[voice-confirm] datetime_mapping", {
+      title: props.suggestion.title,
+      dueHint: props.suggestion.dueHint,
+      datetimeHint: props.suggestion.datetimeHint,
+      dueAtIso: props.suggestion.dueAtIso,
+      scheduledForIso: props.suggestion.scheduledForIso,
+      mappedDueAt: dueCandidate ? dueCandidate.toISOString() : null,
+      mappedScheduledFor: scheduledCandidate ? scheduledCandidate.toISOString() : null
+    });
+  }, [props.open, props.contextId, props.suggestion, props.transcript, props.defaultKind, props.projectMatch, props.allowCalendarEvent]);
 
   useEffect(() => {
     if (!props.open) return;
@@ -152,7 +214,13 @@ export function VoiceConfirmModal(props: VoiceConfirmModalProps) {
 
   if (!props.open || !props.suggestion) return null;
 
-  const submitDisabled = props.busy || (targetKind === "task" ? !title.trim() : !noteBody.trim());
+  const submitDisabled =
+    props.busy ||
+    (targetKind === "task"
+      ? !title.trim()
+      : targetKind === "note"
+      ? !noteBody.trim()
+      : !title.trim() || !scheduledForInput.trim());
 
   return (
     <div className="modal-backdrop" role="dialog" aria-modal="true">
@@ -177,9 +245,13 @@ export function VoiceConfirmModal(props: VoiceConfirmModalProps) {
         <div className="modal-body" ref={bodyRef}>
           <label>
             Тип результату
-            <select value={targetKind} onChange={(event) => setTargetKind(event.target.value as VoiceConfirmKind)}>
+            <select
+              value={targetKind}
+              onChange={(event) => setTargetKind(event.target.value as VoiceConfirmTargetKind)}
+            >
               <option value="task">Задача</option>
               <option value="note">Нотатка</option>
+              {props.allowCalendarEvent ? <option value="calendar_event">Подія Google Calendar</option> : null}
             </select>
           </label>
 
@@ -274,6 +346,30 @@ export function VoiceConfirmModal(props: VoiceConfirmModalProps) {
               </label>
             </>
           ) : null}
+          {targetKind === "calendar_event" ? (
+            <>
+              <label>
+                Початок події
+                <input
+                  type="datetime-local"
+                  value={scheduledForInput}
+                  onChange={(event) => setScheduledForInput(event.target.value)}
+                />
+              </label>
+              <label>
+                Кінець події (необов'язково)
+                <input
+                  type="datetime-local"
+                  value={dueAtInput}
+                  onChange={(event) => setDueAtInput(event.target.value)}
+                />
+              </label>
+              <label>
+                Таймзона
+                <input value={timezone} onChange={(event) => setTimezone(event.target.value)} />
+              </label>
+            </>
+          ) : null}
         </div>
 
         <footer className="modal-actions modal-footer">
@@ -292,7 +388,8 @@ export function VoiceConfirmModal(props: VoiceConfirmModalProps) {
                 taskType: taskType || null,
                 importance: typeof importance === "number" ? importance : null,
                 dueAt: localInputToIso(dueAtInput),
-                scheduledFor: localInputToIso(scheduledForInput)
+                scheduledFor: localInputToIso(scheduledForInput),
+                timezone: timezone.trim() || "UTC"
               })
             }
             disabled={submitDisabled}

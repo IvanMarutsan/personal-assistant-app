@@ -17,6 +17,7 @@ Testing diagnostics mode:
 5. Apply Supabase migration from `supabase/migrations/0002_v1_atomic_workflow.sql`.
 6. Apply Supabase migration from `supabase/migrations/0003_v1_planning_primitives.sql`.
 7. Apply Supabase migration from `supabase/migrations/0004_v1_5_voice_structured_triage.sql`.
+8. Apply Supabase migration from `supabase/migrations/0005_v1_google_calendar.sql`.
 
 ## Access model (V0/V1)
 - Use Edge Functions for all app data access.
@@ -44,6 +45,11 @@ Testing diagnostics mode:
 - `get-planning-assistant`
 - `get-ai-advisor`
 - `update-task-status`
+- `start-google-calendar-connect`
+- `google-calendar-oauth-callback`
+- `get-google-calendar-status`
+- `get-google-calendar-upcoming`
+- `create-google-calendar-event`
 
 ## Deploy note for custom app session auth
 - These functions use custom app sessions (`x-app-session`), not Supabase Auth JWT.
@@ -62,6 +68,13 @@ Testing diagnostics mode:
 - `OPENAI_API_KEY` (for AI advisor)
 - `OPENAI_MODEL` (optional, defaults to `gpt-4.1-mini`)
 - `OPENAI_TRANSCRIBE_MODEL` (recommended: `whisper-1` for stable voice transcription)
+- `GOOGLE_CLIENT_ID` (Google OAuth client)
+- `GOOGLE_CLIENT_SECRET` (Google OAuth secret)
+- `GOOGLE_REDIRECT_URI` (must point to deployed `google-calendar-oauth-callback`)
+- `MINI_APP_BASE_URL` (hosted Mini App base, e.g. `https://your-app.vercel.app`)
+- `GOOGLE_CALENDAR_SCOPES` (optional override)
+- `GOOGLE_OAUTH_STATE_TTL_SECONDS` (optional, default `600`)
+- `GOOGLE_TOKEN_REFRESH_BUFFER_SECONDS` (optional, default `90`)
 
 ## Smoke Test
 Run lightweight integration smoke coverage (includes voice-confirm triage path, duplicate-submit conflict, and validation failures):

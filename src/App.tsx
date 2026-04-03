@@ -4,6 +4,7 @@ import { InboxPage } from "./features/inbox/InboxPage";
 import { NotesPage } from "./features/notes/NotesPage";
 import { TasksPage } from "./features/tasks/TasksPage";
 import { TodayPage } from "./features/today/TodayPage";
+import { CalendarPage } from "./features/calendar/CalendarPage";
 import { useDiagnostics } from "./lib/diagnostics";
 
 export function App() {
@@ -12,8 +13,8 @@ export function App() {
   return (
     <div className="app-shell">
       <header className="app-header">
-        <h1>Personal Assistant</h1>
-        <p>Unified inbox and adaptive planning workspace.</p>
+        <h1>Персональний Асистент</h1>
+        <p>Єдиний інбокс і простір адаптивного планування.</p>
         {diagnostics.debugEnabled ? (
           <p className="debug-badge">
             debug · {diagnostics.environmentLabel} · {diagnostics.buildMarker} · {diagnostics.currentRoute}
@@ -26,6 +27,7 @@ export function App() {
         <Link to="/today">Сьогодні</Link>
         <Link to="/tasks">Задачі</Link>
         <Link to="/notes">Нотатки</Link>
+        <Link to="/calendar">Календар</Link>
       </nav>
 
       <main className="app-content">
@@ -35,6 +37,7 @@ export function App() {
           <Route path="/today" element={<TodayPage />} />
           <Route path="/tasks" element={<TasksPage />} />
           <Route path="/notes" element={<NotesPage />} />
+          <Route path="/calendar" element={<CalendarPage />} />
         </Routes>
       </main>
     </div>

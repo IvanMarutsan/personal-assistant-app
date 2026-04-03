@@ -24,29 +24,25 @@ export function InboxTriageModal(props: InboxTriageModalProps) {
   return (
     <div className="modal-backdrop" role="dialog" aria-modal="true">
       <div className="modal-card">
-        <h3>{props.mode === "task" ? "Triage to task" : "Triage to note"}</h3>
+        <h3>{props.mode === "task" ? "Перетворення в задачу" : "Перетворення в нотатку"}</h3>
 
         {props.mode === "task" ? (
           <label>
-            Task title
+            Назва задачі
             <input value={title} onChange={(event) => setTitle(event.target.value)} maxLength={120} />
           </label>
         ) : null}
 
         {props.mode === "note" ? (
           <label>
-            Note body
-            <textarea
-              value={noteBody}
-              onChange={(event) => setNoteBody(event.target.value)}
-              rows={5}
-            />
+            Текст нотатки
+            <textarea value={noteBody} onChange={(event) => setNoteBody(event.target.value)} rows={5} />
           </label>
         ) : null}
 
         <div className="modal-actions">
           <button type="button" onClick={props.onCancel} disabled={props.busy}>
-            Cancel
+            Скасувати
           </button>
           <button
             type="button"
@@ -58,7 +54,7 @@ export function InboxTriageModal(props: InboxTriageModalProps) {
             }
             disabled={props.busy}
           >
-            Confirm
+            Підтвердити
           </button>
         </div>
       </div>

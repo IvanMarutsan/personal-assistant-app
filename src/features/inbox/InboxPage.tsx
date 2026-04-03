@@ -2,8 +2,25 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { InboxTriageModal } from "../../components/InboxTriageModal";
 import { VoiceConfirmModal } from "../../components/VoiceConfirmModal";
 import { useDiagnostics } from "../../lib/diagnostics";
-import { ApiError, authTelegram, getInbox, getProjects, getTelegramInitDataRaw, triageInboxItem } from "../../lib/api";
-import type { InboxItem, ProjectItem, TaskType, VoiceAiSuggestion, VoiceDetectedIntent } from "../../types/api";
+import {
+  ApiError,
+  authTelegram,
+  createGoogleCalendarEvent,
+  getGoogleCalendarStatus,
+  getInbox,
+  getProjects,
+  getTelegramInitDataRaw,
+  triageInboxItem
+} from "../../lib/api";
+import type {
+  GoogleCalendarStatus,
+  InboxItem,
+  ProjectItem,
+  TaskType,
+  VoiceAiSuggestion,
+  VoiceConfirmTargetKind,
+  VoiceDetectedIntent
+} from "../../types/api";
 
 const SESSION_KEY = "personal_assistant_app_session_token";
 
@@ -11,7 +28,7 @@ type AuthState = "idle" | "authenticating" | "ready" | "error";
 
 type VoiceConfirmState = {
   item: InboxItem;
-  defaultKind: "task" | "note";
+  defaultKind: VoiceConfirmTargetKind;
   suggestion: VoiceAiSuggestion;
   projectMatch: {
     status: "matched" | "suggested_only" | "none";
@@ -171,6 +188,12 @@ function mapInboxError(error: unknown, fallback: string): string {
     if (error.code === "invalid_due_at" || error.code === "invalid_scheduled_for") {
       return "Невалідна дата або час. Перевір формат і спробуй ще раз.";
     }
+    if (error.code === "calendar_not_connected") {
+      return "Google Calendar не підключено. Відкрий вкладку «Календар» і підключи акаунт.";
+    }
+    if (error.code === "calendar_event_create_failed") {
+      return "Не вдалося створити подію в Google Calendar. Спробуй ще раз.";
+    }
     if (error.status === 0) {
       return "Немає з'єднання з сервером. Перевір інтернет і спробуй ще раз.";
     }
@@ -220,6 +243,7 @@ export function InboxPage() {
   const [pendingTriage, setPendingTriage] = useState<{ item: InboxItem; mode: "task" | "note" } | null>(null);
   const [pendingVoiceConfirm, setPendingVoiceConfirm] = useState<VoiceConfirmState>(null);
   const [projects, setProjects] = useState<ProjectItem[]>([]);
+  const [calendarStatus, setCalendarStatus] = useState<GoogleCalendarStatus | null>(null);
   const inFlightTriageRef = useRef<Set<string>>(new Set());
   const diagnostics = useDiagnostics();
 
@@ -302,6 +326,15 @@ export function InboxPage() {
     }
   }
 
+  async function loadCalendarStatus(token: string) {
+    try {
+      const status = await getGoogleCalendarStatus(token);
+      setCalendarStatus(status);
+    } catch {
+      setCalendarStatus(null);
+    }
+  }
+
   async function runAuth(initData: string) {
     setAuthState("authenticating");
     setError(null);
@@ -313,7 +346,7 @@ export function InboxPage() {
       setSessionToken(session.token);
       setAuthState("ready");
       diagnostics.trackAction("auth_telegram_success", { route: "/" });
-      await Promise.all([loadInbox(session.token), loadProjects(session.token)]);
+      await Promise.all([loadInbox(session.token), loadProjects(session.token), loadCalendarStatus(session.token)]);
     } catch (authError) {
       console.error("[inbox] auth_failed", authError);
       if (authError instanceof ApiError) {
@@ -337,7 +370,7 @@ export function InboxPage() {
     const boot = async () => {
       if (sessionToken) {
         setAuthState("ready");
-        await Promise.all([loadInbox(sessionToken), loadProjects(sessionToken)]);
+        await Promise.all([loadInbox(sessionToken), loadProjects(sessionToken), loadCalendarStatus(sessionToken)]);
         return;
       }
 
@@ -460,7 +493,7 @@ export function InboxPage() {
   }
 
   async function confirmVoiceTriage(payload: {
-    targetKind: "task" | "note";
+    targetKind: VoiceConfirmTargetKind;
     title: string;
     details: string;
     noteBody: string;
@@ -469,11 +502,16 @@ export function InboxPage() {
     importance: number | null;
     dueAt: string | null;
     scheduledFor: string | null;
+    timezone: string;
   }) {
     if (!sessionToken || !pendingVoiceConfirm) return;
     if (!beginTriage(pendingVoiceConfirm.item.id)) return;
     diagnostics.trackAction(
-      payload.targetKind === "task" ? "confirm_voice_as_task" : "confirm_voice_as_note",
+      payload.targetKind === "task"
+        ? "confirm_voice_as_task"
+        : payload.targetKind === "note"
+        ? "confirm_voice_as_note"
+        : "confirm_voice_as_calendar_event",
       { itemId: pendingVoiceConfirm.item.id, targetKind: payload.targetKind }
     );
 
@@ -493,13 +531,28 @@ export function InboxPage() {
           dueAt: payload.dueAt ?? undefined,
           scheduledFor: payload.scheduledFor ?? undefined
         });
-      } else {
+      } else if (payload.targetKind === "note") {
         await triageInboxItem({
           sessionToken,
           inboxItemId: pendingVoiceConfirm.item.id,
           action: "note",
           noteBody: payload.noteBody,
           projectId: payload.projectId ?? undefined
+        });
+      } else {
+        await createGoogleCalendarEvent({
+          sessionToken,
+          sourceInboxItemId: pendingVoiceConfirm.item.id,
+          title: payload.title || "Подія з голосового інбоксу",
+          description: payload.details || pendingVoiceConfirm.item.transcript_text || undefined,
+          startAt: payload.scheduledFor || new Date().toISOString(),
+          endAt: payload.dueAt ?? null,
+          timezone: payload.timezone || "UTC"
+        });
+        await triageInboxItem({
+          sessionToken,
+          inboxItemId: pendingVoiceConfirm.item.id,
+          action: "discard"
         });
       }
       setPendingVoiceConfirm(null);
@@ -593,9 +646,14 @@ export function InboxPage() {
                         </p>
                         {suggestion.detectedIntent === "meeting_candidate" ||
                         suggestion.detectedIntent === "reminder_candidate" ? (
-                          <p className="inbox-meta">
-                            Це лише пропозиція. Подія в календар не створюється автоматично.
-                          </p>
+                          <>
+                            <p className="inbox-meta">
+                              Це лише пропозиція. Подія в календар не створюється автоматично.
+                            </p>
+                            {!calendarStatus?.connected ? (
+                              <p className="inbox-meta">Щоб створити подію, спочатку підключи Google Calendar на вкладці «Календар».</p>
+                            ) : null}
+                          </>
                         ) : null}
                         <p className="inbox-meta">Назва: {suggestion.title}</p>
                         {suggestion.projectGuess ? <p className="inbox-meta">Проєкт: {suggestion.projectGuess}</p> : null}
@@ -659,6 +717,27 @@ export function InboxPage() {
                           >
                             У нотатку
                           </button>
+                          {(suggestion.detectedIntent === "meeting_candidate" ||
+                            suggestion.detectedIntent === "reminder_candidate") &&
+                          calendarStatus?.connected ? (
+                            <button
+                              onClick={() => {
+                                diagnostics.trackAction("open_voice_confirm", {
+                                  itemId: item.id,
+                                  defaultKind: "calendar_event"
+                                });
+                                setPendingVoiceConfirm({
+                                  item,
+                                  defaultKind: "calendar_event",
+                                  suggestion,
+                                  projectMatch
+                                });
+                              }}
+                              disabled={isBusyItem}
+                            >
+                              У Google Calendar
+                            </button>
+                          ) : null}
                           <button
                             type="button"
                             className="ghost"
@@ -741,6 +820,11 @@ export function InboxPage() {
         open={Boolean(pendingVoiceConfirm)}
         contextId={pendingVoiceConfirm?.item.id ?? null}
         defaultKind={pendingVoiceConfirm?.defaultKind ?? "task"}
+        allowCalendarEvent={
+          (pendingVoiceConfirm?.suggestion.detectedIntent === "meeting_candidate" ||
+            pendingVoiceConfirm?.suggestion.detectedIntent === "reminder_candidate") &&
+          Boolean(calendarStatus?.connected)
+        }
         suggestion={pendingVoiceConfirm?.suggestion ?? null}
         projectMatch={pendingVoiceConfirm?.projectMatch ?? null}
         projects={projects}

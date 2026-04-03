@@ -2,6 +2,8 @@ import { appEnv } from "./env";
 import type {
   AiAdvisorSummary,
   AppSession,
+  GoogleCalendarEventItem,
+  GoogleCalendarStatus,
   InboxItem,
   MoveReasonCode,
   NoteItem,
@@ -147,6 +149,104 @@ export async function getInbox(sessionToken: string): Promise<InboxItem[]> {
   return result.items;
 }
 
+export async function startGoogleCalendarConnect(input: {
+  sessionToken: string;
+  returnPath?: string;
+}): Promise<{ authUrl: string }> {
+  const result = await request<{
+    ok: true;
+    authUrl: string;
+  }>("start-google-calendar-connect", {
+    method: "POST",
+    headers: sessionHeaders(input.sessionToken),
+    body: JSON.stringify({
+      returnPath: input.returnPath ?? "/calendar"
+    })
+  });
+
+  return { authUrl: result.authUrl };
+}
+
+export async function getGoogleCalendarStatus(sessionToken: string): Promise<GoogleCalendarStatus> {
+  const result = await request<{
+    ok: true;
+    connected: boolean;
+    provider: "google";
+    email: string | null;
+    calendarId: string | null;
+    expiresAt: string | null;
+  }>("get-google-calendar-status", {
+    method: "GET",
+    headers: sessionHeaders(sessionToken)
+  });
+
+  return {
+    connected: result.connected,
+    provider: result.provider,
+    email: result.email,
+    calendarId: result.calendarId,
+    expiresAt: result.expiresAt
+  };
+}
+
+export async function getGoogleCalendarUpcoming(sessionToken: string): Promise<GoogleCalendarEventItem[]> {
+  const result = await request<{
+    ok: true;
+    items: GoogleCalendarEventItem[];
+  }>("get-google-calendar-upcoming", {
+    method: "GET",
+    headers: sessionHeaders(sessionToken)
+  });
+
+  return result.items;
+}
+
+export async function createGoogleCalendarEvent(input: {
+  sessionToken: string;
+  title: string;
+  description?: string;
+  startAt: string;
+  endAt?: string | null;
+  durationMinutes?: number;
+  timezone?: string;
+  sourceInboxItemId?: string;
+}): Promise<{
+  id: string;
+  htmlLink: string | null;
+  status: string | null;
+  title: string;
+  startAt: string;
+  endAt: string;
+  timezone: string;
+}> {
+  const result = await request<{
+    ok: true;
+    event: {
+      id: string;
+      htmlLink: string | null;
+      status: string | null;
+      title: string;
+      startAt: string;
+      endAt: string;
+      timezone: string;
+    };
+  }>("create-google-calendar-event", {
+    method: "POST",
+    headers: sessionHeaders(input.sessionToken),
+    body: JSON.stringify({
+      title: input.title,
+      description: input.description,
+      startAt: input.startAt,
+      endAt: input.endAt ?? null,
+      durationMinutes: input.durationMinutes ?? 30,
+      timezone: input.timezone ?? "UTC",
+      sourceInboxItemId: input.sourceInboxItemId
+    })
+  });
+
+  return result.event;
+}
+
 export async function triageInboxItem(input: {
   sessionToken: string;
   inboxItemId: string;
@@ -237,6 +337,56 @@ export async function updateTaskStatus(input: {
       postponeMinutes: input.postponeMinutes
     })
   });
+}
+
+export async function updateTask(input: {
+  sessionToken: string;
+  taskId: string;
+  title: string;
+  details?: string | null;
+  projectId?: string | null;
+  taskType: TaskType;
+  dueAt?: string | null;
+  scheduledFor?: string | null;
+}): Promise<void> {
+  await request<{ ok: true }>("update-task", {
+    method: "POST",
+    headers: sessionHeaders(input.sessionToken),
+    body: JSON.stringify({
+      taskId: input.taskId,
+      title: input.title,
+      details: input.details ?? null,
+      projectId: input.projectId ?? null,
+      taskType: input.taskType,
+      dueAt: input.dueAt ?? null,
+      scheduledFor: input.scheduledFor ?? null
+    })
+  });
+}
+
+export async function updateNote(input: {
+  sessionToken: string;
+  noteId: string;
+  title?: string | null;
+  body?: string;
+  convertToTask?: boolean;
+}): Promise<{ createdTaskId: string | null }> {
+  const result = await request<{
+    ok: true;
+    noteId: string;
+    createdTaskId: string | null;
+  }>("update-note", {
+    method: "POST",
+    headers: sessionHeaders(input.sessionToken),
+    body: JSON.stringify({
+      noteId: input.noteId,
+      title: input.title ?? null,
+      body: input.body,
+      convertToTask: input.convertToTask ?? false
+    })
+  });
+
+  return { createdTaskId: result.createdTaskId };
 }
 
 export async function getPlanningAssistant(sessionToken: string): Promise<PlanningSummary> {

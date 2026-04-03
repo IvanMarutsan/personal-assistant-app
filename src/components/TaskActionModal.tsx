@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import type { MoveReasonCode } from "../types/api";
 
 type TaskActionModalAction = "postpone" | "reschedule" | "block" | "unblock" | "cancel";
@@ -51,6 +51,7 @@ function helperForAction(action: TaskActionModalAction | null): string {
 }
 
 export function TaskActionModal(props: TaskActionModalProps) {
+  const bodyRef = useRef<HTMLDivElement | null>(null);
   const [reasonCode, setReasonCode] = useState<MoveReasonCode>("reprioritized");
   const [reasonText, setReasonText] = useState("");
   const [postponeMinutes, setPostponeMinutes] = useState("1440");
@@ -64,6 +65,22 @@ export function TaskActionModal(props: TaskActionModalProps) {
     setPostponeMinutes("1440");
     setRescheduleTo("");
     setError(null);
+  }, [props.open, props.action]);
+
+  useEffect(() => {
+    if (!props.open) return;
+    const previousOverflow = document.body.style.overflow;
+    document.body.style.overflow = "hidden";
+    return () => {
+      document.body.style.overflow = previousOverflow;
+    };
+  }, [props.open]);
+
+  useEffect(() => {
+    if (!props.open) return;
+    requestAnimationFrame(() => {
+      if (bodyRef.current) bodyRef.current.scrollTop = 0;
+    });
   }, [props.open, props.action]);
 
   const needsPostponeMinutes = props.action === "postpone";
@@ -107,64 +124,70 @@ export function TaskActionModal(props: TaskActionModalProps) {
   return (
     <div className="modal-backdrop" role="dialog" aria-modal="true">
       <div className="modal-card">
-        <h3>{actionLabel}</h3>
-        {props.taskTitle ? <p className="modal-task-title">{props.taskTitle}</p> : null}
-        {actionHelper ? <p className="inbox-meta">{actionHelper}</p> : null}
+        <header className="modal-header">
+          <h3>{actionLabel}</h3>
+          {props.taskTitle ? <p className="modal-task-title">{props.taskTitle}</p> : null}
+          {actionHelper ? <p className="inbox-meta">{actionHelper}</p> : null}
+        </header>
 
-        <label>
-          Причина
-          <select value={reasonCode} onChange={(event) => setReasonCode(event.target.value as MoveReasonCode)}>
-            {MOVE_REASONS.map((reason) => (
-              <option key={reason.code} value={reason.code}>
-                {reason.label}
-              </option>
-            ))}
-          </select>
-        </label>
-
-        <label>
-          Коментар (необов'язково)
-          <textarea
-            value={reasonText}
-            onChange={(event) => setReasonText(event.target.value)}
-            rows={3}
-            placeholder="Деталі причини"
-          />
-        </label>
-
-        {needsPostponeMinutes ? (
+        <div className="modal-body" ref={bodyRef}>
           <label>
-            На скільки хвилин відкласти
-            <input
-              type="number"
-              min={1}
-              value={postponeMinutes}
-              onChange={(event) => setPostponeMinutes(event.target.value)}
+            Причина
+            <select value={reasonCode} onChange={(event) => setReasonCode(event.target.value as MoveReasonCode)}>
+              {MOVE_REASONS.map((reason) => (
+                <option key={reason.code} value={reason.code}>
+                  {reason.label}
+                </option>
+              ))}
+            </select>
+          </label>
+
+          <label>
+            Коментар (необов'язково)
+            <textarea
+              value={reasonText}
+              onChange={(event) => setReasonText(event.target.value)}
+              rows={3}
+              placeholder="Деталі причини"
             />
           </label>
-        ) : null}
 
-        {needsRescheduleTo ? (
-          <label>
-            Нова дата й час
-            <input
-              type="datetime-local"
-              value={rescheduleTo}
-              onChange={(event) => setRescheduleTo(event.target.value)}
-            />
-          </label>
-        ) : null}
+          {needsPostponeMinutes ? (
+            <label>
+              На скільки хвилин відкласти
+              <input
+                type="number"
+                min={1}
+                value={postponeMinutes}
+                onChange={(event) => setPostponeMinutes(event.target.value)}
+              />
+            </label>
+          ) : null}
 
-        {error ? <p className="error-note">{error}</p> : null}
+          {needsRescheduleTo ? (
+            <label>
+              Нова дата й час
+              <input
+                type="datetime-local"
+                value={rescheduleTo}
+                onChange={(event) => setRescheduleTo(event.target.value)}
+              />
+            </label>
+          ) : null}
 
-        <div className="modal-actions">
-          <button type="button" onClick={props.onCancel} disabled={props.busy}>
-            Скасувати
-          </button>
-          <button type="button" onClick={submit} disabled={props.busy}>
-            Підтвердити
-          </button>
+          {error ? <p className="error-note">{error}</p> : null}
         </div>
+
+        <footer className="modal-footer">
+          <div className="modal-actions">
+            <button type="button" onClick={props.onCancel} disabled={props.busy}>
+              Скасувати
+            </button>
+            <button type="button" onClick={submit} disabled={props.busy}>
+              Підтвердити
+            </button>
+          </div>
+        </footer>
       </div>
     </div>
   );
