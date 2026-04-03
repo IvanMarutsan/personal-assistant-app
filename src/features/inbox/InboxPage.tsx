@@ -27,6 +27,18 @@ export function InboxPage() {
 
   const initDataRaw = useMemo(() => getTelegramInitDataRaw(), []);
 
+  function resetSession() {
+    localStorage.removeItem(SESSION_KEY);
+    setSessionToken("");
+    setItems([]);
+    setError(null);
+    setAuthState("idle");
+
+    if (initDataRaw) {
+      void runAuth(initDataRaw);
+    }
+  }
+
   async function loadInbox(token: string) {
     setLoadingItems(true);
     try {
@@ -125,6 +137,11 @@ export function InboxPage() {
     <section className="panel">
       <h2>Inbox</h2>
       <p>Real capture queue from Telegram bot and Mini App.</p>
+      {sessionToken ? (
+        <div className="toolbar-row">
+          <button onClick={resetSession}>Reset session</button>
+        </div>
+      ) : null}
 
       {!initDataRaw && !sessionToken ? (
         <div className="dev-auth-box">

@@ -238,11 +238,6 @@ export function TodayPage() {
             {aiAdvisor.advisor.protectedEssentialsWarning.message}
           </p>
           <p className="inbox-meta">{aiAdvisor.advisor.explanation}</p>
-          <ul className="assistant-secondary">
-            {aiAdvisor.advisor.evidence.map((item, index) => (
-              <li key={`${item}-${index}`}>{item}</li>
-            ))}
-          </ul>
         </section>
       ) : null}
 

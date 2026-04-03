@@ -51,8 +51,8 @@ export function verifyAndParseTelegramInitData(initDataRaw: string, botToken: st
     throw new Error("Telegram user id not present");
   }
 
-  const displayName =
-    user.username ?? [user.first_name, user.last_name].filter(Boolean).join(" ").trim() || null;
+  const fallbackName = [user.first_name, user.last_name].filter(Boolean).join(" ").trim();
+  const displayName = user.username ?? (fallbackName || null);
 
   return {
     telegramUserId: user.id,
