@@ -51,6 +51,15 @@ export type ProjectItem = {
   rank: number;
 };
 
+export type NoteItem = {
+  id: string;
+  title: string | null;
+  body: string;
+  created_at: string;
+  project_id: string | null;
+  projects?: { name: string } | { name: string }[] | null;
+};
+
 export type TriageAction = "task" | "note" | "discard";
 
 export type TaskStatus = "planned" | "in_progress" | "blocked" | "done" | "cancelled";

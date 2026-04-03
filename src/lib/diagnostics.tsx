@@ -22,6 +22,7 @@ type DiagnosticsRequestFailure = {
 
 type DiagnosticsContextValue = {
   debugEnabled: boolean;
+  buildMarker: string;
   environmentLabel: string;
   currentRoute: string;
   timezone: string;
@@ -185,6 +186,7 @@ export function DiagnosticsProvider({ children }: { children: ReactNode }) {
 
   const value: DiagnosticsContextValue = {
     debugEnabled,
+    buildMarker: import.meta.env.VITE_APP_BUILD ?? "dev-local",
     environmentLabel,
     currentRoute: location.pathname,
     timezone: Intl.DateTimeFormat().resolvedOptions().timeZone,

@@ -659,7 +659,16 @@ export function InboxPage() {
                           >
                             У нотатку
                           </button>
-                          <button type="button" className="ghost" disabled>
+                          <button
+                            type="button"
+                            className="ghost"
+                            onClick={() => {
+                              diagnostics.trackAction("keep_in_inbox", { itemId: item.id });
+                              setPendingVoiceConfirm(null);
+                              setError(null);
+                            }}
+                            disabled={isBusyItem}
+                          >
                             Залишити в Inbox
                           </button>
                           <button
@@ -730,6 +739,7 @@ export function InboxPage() {
 
       <VoiceConfirmModal
         open={Boolean(pendingVoiceConfirm)}
+        contextId={pendingVoiceConfirm?.item.id ?? null}
         defaultKind={pendingVoiceConfirm?.defaultKind ?? "task"}
         suggestion={pendingVoiceConfirm?.suggestion ?? null}
         projectMatch={pendingVoiceConfirm?.projectMatch ?? null}

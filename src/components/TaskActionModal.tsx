@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import type { MoveReasonCode } from "../types/api";
 
-type TaskActionModalAction = "postpone" | "reschedule" | "block" | "cancel";
+type TaskActionModalAction = "postpone" | "reschedule" | "block" | "unblock" | "cancel";
 
 type TaskActionPayload = {
   reasonCode: MoveReasonCode;
@@ -20,23 +20,34 @@ type TaskActionModalProps = {
 };
 
 const MOVE_REASONS: Array<{ code: MoveReasonCode; label: string }> = [
-  { code: "reprioritized", label: "reprioritized" },
-  { code: "urgent_interrupt", label: "urgent_interrupt" },
-  { code: "low_energy", label: "low_energy" },
-  { code: "waiting_response", label: "waiting_response" },
-  { code: "underestimated", label: "underestimated" },
-  { code: "blocked_dependency", label: "blocked_dependency" },
-  { code: "calendar_conflict", label: "calendar_conflict" },
-  { code: "personal_issue", label: "personal_issue" },
-  { code: "other", label: "other" }
+  { code: "reprioritized", label: "Репріоритизація" },
+  { code: "urgent_interrupt", label: "Термінове переривання" },
+  { code: "low_energy", label: "Низький рівень енергії" },
+  { code: "waiting_response", label: "Очікую відповідь" },
+  { code: "waiting_on_external", label: "Очікую зовнішній сигнал" },
+  { code: "underestimated", label: "Недооцінив(ла) обсяг" },
+  { code: "blocked_dependency", label: "Блокер / залежність" },
+  { code: "calendar_conflict", label: "Конфлікт у календарі" },
+  { code: "personal_issue", label: "Особисті обставини" },
+  { code: "other", label: "Інше" }
 ];
 
 function titleForAction(action: TaskActionModalAction | null): string {
-  if (action === "postpone") return "Postpone task";
-  if (action === "reschedule") return "Reschedule task";
-  if (action === "block") return "Block task";
-  if (action === "cancel") return "Cancel task";
-  return "Task action";
+  if (action === "postpone") return "Відкласти задачу";
+  if (action === "reschedule") return "Перенести задачу";
+  if (action === "block") return "Позначити як заблоковану";
+  if (action === "unblock") return "Розблокувати задачу";
+  if (action === "cancel") return "Скасувати задачу";
+  return "Дія із задачею";
+}
+
+function helperForAction(action: TaskActionModalAction | null): string {
+  if (action === "postpone") return "Швидка затримка на відносний час (хвилини).";
+  if (action === "reschedule") return "Постав нову конкретну дату й час.";
+  if (action === "block") return "Задача лишається у списку, але позначається як заблокована.";
+  if (action === "unblock") return "Поверне задачу у статус «Заплановано».";
+  if (action === "cancel") return "Задача буде скасована і зникне з активного фокусу.";
+  return "";
 }
 
 export function TaskActionModal(props: TaskActionModalProps) {
@@ -59,6 +70,7 @@ export function TaskActionModal(props: TaskActionModalProps) {
   const needsRescheduleTo = props.action === "reschedule";
 
   const actionLabel = useMemo(() => titleForAction(props.action), [props.action]);
+  const actionHelper = useMemo(() => helperForAction(props.action), [props.action]);
 
   if (!props.open || !props.action) {
     return null;
@@ -75,7 +87,7 @@ export function TaskActionModal(props: TaskActionModalProps) {
     if (needsPostponeMinutes) {
       const parsed = Number.parseInt(postponeMinutes, 10);
       if (!Number.isFinite(parsed) || parsed <= 0) {
-        setError("Postpone minutes must be a positive number.");
+        setError("Кількість хвилин має бути додатним числом.");
         return;
       }
       payload.postponeMinutes = parsed;
@@ -83,7 +95,7 @@ export function TaskActionModal(props: TaskActionModalProps) {
 
     if (needsRescheduleTo) {
       if (!rescheduleTo.trim()) {
-        setError("Reschedule datetime is required.");
+        setError("Вкажи нову дату й час.");
         return;
       }
       payload.rescheduleTo = rescheduleTo.trim();
@@ -97,9 +109,10 @@ export function TaskActionModal(props: TaskActionModalProps) {
       <div className="modal-card">
         <h3>{actionLabel}</h3>
         {props.taskTitle ? <p className="modal-task-title">{props.taskTitle}</p> : null}
+        {actionHelper ? <p className="inbox-meta">{actionHelper}</p> : null}
 
         <label>
-          Reason code
+          Причина
           <select value={reasonCode} onChange={(event) => setReasonCode(event.target.value as MoveReasonCode)}>
             {MOVE_REASONS.map((reason) => (
               <option key={reason.code} value={reason.code}>
@@ -110,18 +123,18 @@ export function TaskActionModal(props: TaskActionModalProps) {
         </label>
 
         <label>
-          Optional note
+          Коментар (необов'язково)
           <textarea
             value={reasonText}
             onChange={(event) => setReasonText(event.target.value)}
             rows={3}
-            placeholder="Optional context"
+            placeholder="Деталі причини"
           />
         </label>
 
         {needsPostponeMinutes ? (
           <label>
-            Postpone minutes
+            На скільки хвилин відкласти
             <input
               type="number"
               min={1}
@@ -133,7 +146,7 @@ export function TaskActionModal(props: TaskActionModalProps) {
 
         {needsRescheduleTo ? (
           <label>
-            Reschedule to
+            Нова дата й час
             <input
               type="datetime-local"
               value={rescheduleTo}
@@ -146,10 +159,10 @@ export function TaskActionModal(props: TaskActionModalProps) {
 
         <div className="modal-actions">
           <button type="button" onClick={props.onCancel} disabled={props.busy}>
-            Cancel
+            Скасувати
           </button>
           <button type="button" onClick={submit} disabled={props.busy}>
-            Confirm
+            Підтвердити
           </button>
         </div>
       </div>

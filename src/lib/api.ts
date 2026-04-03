@@ -4,6 +4,7 @@ import type {
   AppSession,
   InboxItem,
   MoveReasonCode,
+  NoteItem,
   PlanningSummary,
   ProjectItem,
   TaskItem,
@@ -44,6 +45,13 @@ function edgeUrl(path: string): string {
   return `${appEnv.edgeBaseUrl.replace(/\/$/, "")}/${path}`;
 }
 
+function sessionHeaders(sessionToken: string): Record<string, string> {
+  return {
+    "x-app-session": sessionToken,
+    authorization: `Bearer ${sessionToken}`
+  };
+}
+
 async function parseBody(response: Response): Promise<unknown> {
   const text = await response.text();
   if (!text) return null;
@@ -52,6 +60,16 @@ async function parseBody(response: Response): Promise<unknown> {
   } catch {
     return { message: text };
   }
+}
+
+function resolveUserSafeMessage(status: number, code: string | null, fallback: string): string {
+  if (status === 401 || code === "unauthorized" || code === "invalid_session") {
+    return "Сесія недійсна або завершилась. Відкрий Інбокс і авторизуйся знову.";
+  }
+  if (status === 403 || code === "forbidden") {
+    return "Недостатньо прав для цієї дії.";
+  }
+  return fallback;
 }
 
 async function request<T>(path: string, init: RequestInit): Promise<T> {
@@ -79,7 +97,8 @@ async function request<T>(path: string, init: RequestInit): Promise<T> {
 
   if (!response.ok) {
     const errorBody = body as ErrorResponse & { details?: string };
-    const message = errorBody.message ?? errorBody.error ?? `Request failed (${response.status})`;
+    const rawMessage = errorBody.message ?? errorBody.error ?? `Request failed (${response.status})`;
+    const message = resolveUserSafeMessage(response.status, errorBody.error ?? null, rawMessage);
     console.error("[api] request_failed", {
       path,
       status: response.status,
@@ -122,9 +141,7 @@ export async function getInbox(sessionToken: string): Promise<InboxItem[]> {
     items: InboxItem[];
   }>("get-inbox", {
     method: "GET",
-    headers: {
-      "x-app-session": sessionToken
-    }
+    headers: sessionHeaders(sessionToken)
   });
 
   return result.items;
@@ -145,9 +162,7 @@ export async function triageInboxItem(input: {
 }): Promise<void> {
   await request<{ ok: true }>("triage-inbox-item", {
     method: "POST",
-    headers: {
-      "x-app-session": input.sessionToken
-    },
+    headers: sessionHeaders(input.sessionToken),
     body: JSON.stringify({
       inboxItemId: input.inboxItemId,
       action: input.action,
@@ -169,9 +184,7 @@ export async function getProjects(sessionToken: string): Promise<ProjectItem[]> 
     items: ProjectItem[];
   }>("get-projects", {
     method: "GET",
-    headers: {
-      "x-app-session": sessionToken
-    }
+    headers: sessionHeaders(sessionToken)
   });
 
   return result.items;
@@ -183,9 +196,19 @@ export async function getTasks(sessionToken: string): Promise<TaskItem[]> {
     items: TaskItem[];
   }>("get-tasks", {
     method: "GET",
-    headers: {
-      "x-app-session": sessionToken
-    }
+    headers: sessionHeaders(sessionToken)
+  });
+
+  return result.items;
+}
+
+export async function getNotes(sessionToken: string): Promise<NoteItem[]> {
+  const result = await request<{
+    ok: true;
+    items: NoteItem[];
+  }>("get-notes", {
+    method: "GET",
+    headers: sessionHeaders(sessionToken)
   });
 
   return result.items;
@@ -203,9 +226,7 @@ export async function updateTaskStatus(input: {
 }): Promise<void> {
   await request<{ ok: true }>("update-task-status", {
     method: "POST",
-    headers: {
-      "x-app-session": input.sessionToken
-    },
+    headers: sessionHeaders(input.sessionToken),
     body: JSON.stringify({
       taskId: input.taskId,
       status: input.status,
@@ -231,9 +252,7 @@ export async function getPlanningAssistant(sessionToken: string): Promise<Planni
     appliedThresholds: PlanningSummary["appliedThresholds"];
   }>("get-planning-assistant", {
     method: "GET",
-    headers: {
-      "x-app-session": sessionToken
-    }
+    headers: sessionHeaders(sessionToken)
   });
 
   return {
@@ -260,9 +279,7 @@ export async function getAiAdvisor(sessionToken: string): Promise<AiAdvisorSumma
     advisor: AiAdvisorSummary["advisor"];
   }>("get-ai-advisor", {
     method: "GET",
-    headers: {
-      "x-app-session": sessionToken
-    }
+    headers: sessionHeaders(sessionToken)
   });
 
   return {

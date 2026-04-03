@@ -198,6 +198,34 @@ button.danger {
   margin-bottom: 8px;
 }
 
+.filters-wrap {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-bottom: 8px;
+}
+
+.chip-row {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.chip {
+  border: 1px solid #b7cfc0;
+  background: #ffffff;
+  color: #2f4b3a;
+  border-radius: 999px;
+  padding: 5px 10px;
+  font-size: 0.86rem;
+}
+
+.chip-active {
+  border-color: #0f6a45;
+  background: #0f6a45;
+  color: #ffffff;
+}
+
 .toolbar-row label {
   display: flex;
   align-items: center;
@@ -228,6 +256,7 @@ button.danger {
 .today-section h3 {
   margin: 0 0 8px;
   font-size: 1rem;
+  color: #2e4f3d;
 }
 
 .essential-badge {
@@ -276,10 +305,11 @@ button.danger {
   inset: 0;
   background: rgba(20, 32, 25, 0.35);
   display: flex;
-  align-items: center;
+  align-items: flex-start;
   justify-content: center;
-  padding: 12px;
+  padding: max(8px, env(safe-area-inset-top)) 12px max(8px, env(safe-area-inset-bottom));
   z-index: 1000;
+  overflow: hidden;
 }
 
 .modal-card {
@@ -287,19 +317,34 @@ button.danger {
   background: #ffffff;
   border: 1px solid #d6e3d9;
   border-radius: 12px;
-  padding: 14px;
   display: flex;
   flex-direction: column;
-  gap: 10px;
+  max-height: min(92dvh, 760px);
+  overflow: hidden;
 }
 
 .modal-card h3 {
   margin: 0;
 }
 
+.modal-header {
+  padding: 14px 14px 8px;
+  border-bottom: 1px solid #e2ebe4;
+}
+
 .modal-task-title {
   margin: 0;
   color: #51685b;
+}
+
+.modal-body {
+  padding: 10px 14px;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  -webkit-overflow-scrolling: touch;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
 }
 
 .modal-card label {
@@ -316,10 +361,42 @@ button.danger {
   border-radius: 8px;
   padding: 8px;
   font: inherit;
+  color: #1f2f25;
+  background: #ffffff;
+  caret-color: #0f6a45;
 }
 
 .modal-actions {
   display: flex;
   justify-content: flex-end;
   gap: 8px;
+}
+
+.modal-footer {
+  position: sticky;
+  bottom: 0;
+  background: #ffffff;
+  border-top: 1px solid #e2ebe4;
+  padding: 10px 14px calc(10px + env(safe-area-inset-bottom));
+}
+
+.modal-card--voice {
+  margin-top: 0;
+}
+
+@media (max-width: 600px) {
+  .modal-backdrop {
+    padding-left: 8px;
+    padding-right: 8px;
+  }
+
+  .modal-card {
+    width: 100%;
+    max-height: 94dvh;
+    border-radius: 12px;
+  }
+
+  .modal-body {
+    padding-bottom: 14px;
+  }
 }

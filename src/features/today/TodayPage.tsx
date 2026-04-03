@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { useDiagnostics } from "../../lib/diagnostics";
 import { ApiError, getAiAdvisor, getPlanningAssistant, getTasks } from "../../lib/api";
-import type { AiAdvisorSummary, PlanningSummary, TaskItem } from "../../types/api";
+import type { AiAdvisorSummary, PlanningSummary, TaskItem, TaskType } from "../../types/api";
 
 const SESSION_KEY = "personal_assistant_app_session_token";
 
@@ -12,9 +12,42 @@ function parseDate(value: string | null): Date | null {
 }
 
 function projectName(task: TaskItem): string {
-  if (!task.projects) return "No project";
-  if (Array.isArray(task.projects)) return task.projects[0]?.name ?? "No project";
-  return task.projects.name ?? "No project";
+  if (!task.projects) return "Без проєкту";
+  if (Array.isArray(task.projects)) return task.projects[0]?.name ?? "Без проєкту";
+  return task.projects.name ?? "Без проєкту";
+}
+
+function taskTypeLabel(value: TaskType): string {
+  switch (value) {
+    case "deep_work":
+      return "Глибока робота";
+    case "quick_communication":
+      return "Швидка комунікація";
+    case "admin_operational":
+      return "Адміністративне";
+    case "recurring_essential":
+      return "Регулярне важливе";
+    case "personal_essential":
+      return "Особисто важливе";
+    case "someday":
+      return "Колись";
+  }
+}
+
+function reasonLabel(reason: string): string {
+  const map: Record<string, string> = {
+    reprioritized: "Репріоритизація",
+    urgent_interrupt: "Термінове переривання",
+    low_energy: "Низька енергія",
+    waiting_response: "Очікування відповіді",
+    waiting_on_external: "Очікування зовнішнього",
+    underestimated: "Недооцінка обсягу",
+    blocked_dependency: "Блокер/залежність",
+    calendar_conflict: "Конфлікт у календарі",
+    personal_issue: "Особисті обставини",
+    other: "Інше"
+  };
+  return map[reason] ?? reason;
 }
 
 function startOfToday(now: Date): Date {
@@ -27,6 +60,15 @@ function endOfToday(now: Date): Date {
   const d = new Date(now);
   d.setHours(23, 59, 59, 999);
   return d;
+}
+
+function timingLine(task: TaskItem): string {
+  const scheduled = parseDate(task.scheduled_for);
+  const due = parseDate(task.due_at);
+  if (!scheduled && !due) return "Без часу";
+  if (scheduled && due) return `Заплановано: ${scheduled.toLocaleString()} · Дедлайн: ${due.toLocaleString()}`;
+  if (scheduled) return `Заплановано: ${scheduled.toLocaleString()}`;
+  return `Дедлайн: ${due?.toLocaleString()}`;
 }
 
 export function TodayPage() {
@@ -75,7 +117,7 @@ export function TodayPage() {
             details: loadError.details
           });
         }
-        setError(loadError instanceof Error ? loadError.message : "Failed to load today view");
+        setError(loadError instanceof Error ? loadError.message : "Не вдалося завантажити розділ «Сьогодні»");
       } finally {
         setLoading(false);
       }
@@ -107,9 +149,10 @@ export function TodayPage() {
   const protectedEssentials = useMemo(() => {
     return items.filter(
       (task) =>
-        task.is_protected_essential ||
-        task.task_type === "recurring_essential" ||
-        task.task_type === "personal_essential"
+        (task.status === "planned" || task.status === "in_progress" || task.status === "blocked") &&
+        (task.is_protected_essential ||
+          task.task_type === "recurring_essential" ||
+          task.task_type === "personal_essential")
     );
   }, [items]);
 
@@ -118,7 +161,7 @@ export function TodayPage() {
       <section className="today-section">
         <h3>{title}</h3>
         {list.length === 0 ? (
-          <p className="empty-note">None</p>
+          <p className="empty-note">Порожньо.</p>
         ) : (
           <ul className="inbox-list">
             {list.map((task) => (
@@ -126,12 +169,13 @@ export function TodayPage() {
                 <p className="inbox-main-text">
                   {task.title}
                   {task.is_protected_essential ? (
-                    <span className="essential-badge">Protected essential</span>
+                    <span className="essential-badge">Захищене важливе</span>
                   ) : null}
                 </p>
                 <p className="inbox-meta">
-                  {projectName(task)} · {task.task_type} · {task.status}
+                  {projectName(task)} · {taskTypeLabel(task.task_type)} · {task.status === "blocked" ? "Заблоковано" : "Заплановано"}
                 </p>
+                <p className="inbox-meta">{timingLine(task)}</p>
               </li>
             ))}
           </ul>
@@ -142,27 +186,28 @@ export function TodayPage() {
 
   return (
     <section className="panel">
-      <h2>Today</h2>
-      <p>Rules-based snapshot: recommendations, overload, risks, and daily review.</p>
+      <h2>Сьогодні</h2>
+      <p>Зріз дня: рекомендації, перевантаження, ризики й підсумок.</p>
 
-      {!sessionToken ? <p className="empty-note">Open Inbox first to authenticate session.</p> : null}
+      {!sessionToken ? <p className="empty-note">Відкрий Інбокс для авторизації сесії.</p> : null}
       {error ? <p className="error-note">{error}</p> : null}
-      {loading ? <p>Loading today view...</p> : null}
+      {loading ? <p>Завантаження...</p> : null}
 
       {planning ? (
         <section className="assistant-block deterministic-block">
-          <h3>Deterministic Assistant (rules baseline)</h3>
+          <h3>Детермінований асистент (базові правила)</h3>
           <p className="inbox-meta">
-            Rules: {planning.rulesVersion} · Timezone: {planning.timezone}
+            Правила: {planning.rulesVersion} · Таймзона: {planning.timezone}
           </p>
-          <h3>What should I do now?</h3>
+
+          <h3>Що робити зараз?</h3>
           {planning.whatNow.primary ? (
             <div className="assistant-primary">
-              <p className="assistant-title">Primary: {planning.whatNow.primary.title}</p>
+              <p className="assistant-title">Пріоритет: {planning.whatNow.primary.title}</p>
               <p className="inbox-meta">{planning.whatNow.primary.reason}</p>
             </div>
           ) : (
-            <p className="empty-note">No clear primary recommendation.</p>
+            <p className="empty-note">Немає чіткої головної рекомендації.</p>
           )}
 
           {planning.whatNow.secondary.length > 0 ? (
@@ -170,19 +215,19 @@ export function TodayPage() {
               {planning.whatNow.secondary.map((item, index) => (
                 <li key={`${item.title}-${index}`}>
                   <strong>{item.title}</strong>
-                  <span> - {item.reason}</span>
+                  <span> — {item.reason}</span>
                 </li>
               ))}
             </ul>
           ) : null}
 
-          <h3>Overload Signals</h3>
+          <h3>Сигнали перевантаження</h3>
           <p className="inbox-meta">
-            Quick communication open: {planning.overload.quickCommunicationOpenCount}
-            {planning.overload.quickCommunicationBatchingRecommended ? " · batching recommended" : ""}
+            Відкритих швидких комунікацій: {planning.overload.quickCommunicationOpenCount}
+            {planning.overload.quickCommunicationBatchingRecommended ? " · рекомендується батчинг" : ""}
           </p>
           {planning.overload.flags.length === 0 ? (
-            <p className="empty-note">No overload signals right now.</p>
+            <p className="empty-note">Сигналів перевантаження зараз немає.</p>
           ) : (
             <ul className="assistant-secondary">
               {planning.overload.flags.map((flag) => (
@@ -191,37 +236,43 @@ export function TodayPage() {
             </ul>
           )}
 
-          <h3>Daily Review</h3>
+          <h3>Щоденний підсумок</h3>
           <p className="inbox-meta">
-            Completed: {planning.dailyReview.completedTodayCount} · Moved: {planning.dailyReview.movedTodayCount} ·
-            Cancelled: {planning.dailyReview.cancelledTodayCount} · Protected missed: {" "}
+            Виконано: {planning.dailyReview.completedTodayCount} · Перенесено: {planning.dailyReview.movedTodayCount} ·
+            Скасовано: {planning.dailyReview.cancelledTodayCount} · Пропущено захищених: {" "}
             {planning.dailyReview.protectedEssentialsMissedToday}
           </p>
           {planning.dailyReview.topMovedReasons.length > 0 ? (
             <ul className="assistant-secondary">
               {planning.dailyReview.topMovedReasons.map((reason) => (
                 <li key={reason.reason}>
-                  {reason.reason}: {reason.count}
+                  {reasonLabel(reason.reason)}: {reason.count}
                 </li>
               ))}
             </ul>
           ) : null}
 
-          <h3>Essential Risk</h3>
+          <h3>Ризики по essential</h3>
           <ul className="assistant-secondary">
             {planning.essentialRisk.protectedEssentialRisk.slice(0, 3).map((risk) => (
-              <li key={`p-${risk.taskId}`}>{risk.title} ({risk.reason})</li>
+              <li key={`p-${risk.taskId}`}>
+                {risk.title} ({risk.reason})
+              </li>
             ))}
             {planning.essentialRisk.recurringEssentialRisk.slice(0, 3).map((risk) => (
-              <li key={`r-${risk.taskId}`}>{risk.title} ({risk.reason})</li>
+              <li key={`r-${risk.taskId}`}>
+                {risk.title} ({risk.reason})
+              </li>
             ))}
             {planning.essentialRisk.squeezedOutRisk.slice(0, 3).map((risk) => (
-              <li key={`s-${risk.taskId}`}>{risk.title} ({risk.reason})</li>
+              <li key={`s-${risk.taskId}`}>
+                {risk.title} ({risk.reason})
+              </li>
             ))}
             {planning.essentialRisk.protectedEssentialRisk.length === 0 &&
             planning.essentialRisk.recurringEssentialRisk.length === 0 &&
             planning.essentialRisk.squeezedOutRisk.length === 0 ? (
-              <li>No essential risk signals detected.</li>
+              <li>Критичних ризиків не виявлено.</li>
             ) : null}
           </ul>
         </section>
@@ -229,24 +280,24 @@ export function TodayPage() {
 
       {aiAdvisor ? (
         <section className="assistant-block ai-block">
-          <h3>AI Advisor (read-only recommendations)</h3>
+          <h3>AI-радник (лише рекомендації)</h3>
           <p className="inbox-meta">
-            Source: {aiAdvisor.source === "ai" ? `OpenAI (${aiAdvisor.model ?? "unknown model"})` : "Fallback rules"} ·
-            Generated: {new Date(aiAdvisor.generatedAt).toLocaleTimeString()}
+            Джерело: {aiAdvisor.source === "ai" ? `OpenAI (${aiAdvisor.model ?? "невідома модель"})` : "Fallback-правила"} ·
+            Згенеровано: {new Date(aiAdvisor.generatedAt).toLocaleTimeString()}
           </p>
           {aiAdvisor.fallbackReason ? (
-            <p className="empty-note">AI fallback active: {aiAdvisor.fallbackReason}</p>
+            <p className="empty-note">AI fallback увімкнений: {aiAdvisor.fallbackReason}</p>
           ) : null}
 
           <p className="assistant-title">{aiAdvisor.advisor.whatMattersMostNow}</p>
 
           <div className="assistant-primary">
-            <p className="assistant-title">Suggested next action: {aiAdvisor.advisor.suggestedNextAction.title}</p>
+            <p className="assistant-title">Рекомендована наступна дія: {aiAdvisor.advisor.suggestedNextAction.title}</p>
             <p className="inbox-meta">{aiAdvisor.advisor.suggestedNextAction.reason}</p>
           </div>
 
           <div className="assistant-primary">
-            <p className="assistant-title">Suggested defer: {aiAdvisor.advisor.suggestedDefer.title}</p>
+            <p className="assistant-title">Що варто відкласти: {aiAdvisor.advisor.suggestedDefer.title}</p>
             <p className="inbox-meta">{aiAdvisor.advisor.suggestedDefer.reason}</p>
           </div>
 
@@ -259,9 +310,9 @@ export function TodayPage() {
 
       {!loading ? (
         <>
-          {renderSection("Planned Today", plannedToday)}
-          {renderSection("Overdue Planned", overduePlanned)}
-          {renderSection("Protected Essentials", protectedEssentials)}
+          {renderSection("Заплановано на сьогодні", plannedToday)}
+          {renderSection("Прострочені заплановані", overduePlanned)}
+          {renderSection("Захищені / регулярні essentials", protectedEssentials)}
         </>
       ) : null}
     </section>

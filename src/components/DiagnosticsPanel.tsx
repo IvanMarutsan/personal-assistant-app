@@ -26,6 +26,7 @@ export function DiagnosticsPanel() {
       <div className="diagnostics-grid">
         <p className="inbox-meta">Route: {diagnostics.currentRoute}</p>
         <p className="inbox-meta">Environment: {diagnostics.environmentLabel}</p>
+        <p className="inbox-meta">Build: {diagnostics.buildMarker}</p>
         <p className="inbox-meta">Session: {diagnostics.sessionState}</p>
         <p className="inbox-meta">Timezone: {diagnostics.timezone}</p>
         <p className="inbox-meta">

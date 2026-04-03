@@ -17,16 +17,14 @@ Deno.serve(async (req) => {
 
   const supabase = createAdminClient();
   const { data, error } = await supabase
-    .from("tasks")
-    .select(
-      "id, title, task_type, status, project_id, due_at, scheduled_for, is_protected_essential, projects(name)"
-    )
+    .from("notes")
+    .select("id, title, body, created_at, project_id, projects(name)")
     .eq("user_id", sessionUser.userId)
     .order("created_at", { ascending: false })
     .limit(200);
 
   if (error) {
-    return jsonResponse({ ok: false, error: "tasks_fetch_failed" }, 500);
+    return jsonResponse({ ok: false, error: "notes_fetch_failed" }, 500);
   }
 
   return jsonResponse({ ok: true, items: data ?? [] });

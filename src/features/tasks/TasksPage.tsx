@@ -5,17 +5,18 @@ import { ApiError, getTasks, updateTaskStatus } from "../../lib/api";
 import type { MoveReasonCode, TaskItem, TaskType } from "../../types/api";
 
 const SESSION_KEY = "personal_assistant_app_session_token";
-const TASK_TYPE_FILTERS: Array<{ label: string; value: "all" | TaskType }> = [
-  { label: "All types", value: "all" },
-  { label: "Deep work", value: "deep_work" },
-  { label: "Quick communication", value: "quick_communication" },
-  { label: "Admin/operational", value: "admin_operational" },
-  { label: "Recurring essential", value: "recurring_essential" },
-  { label: "Personal essential", value: "personal_essential" },
-  { label: "Someday", value: "someday" }
+const TASK_TYPE_FILTERS: Array<{ label: string; value: TaskType }> = [
+  { label: "Глибока робота", value: "deep_work" },
+  { label: "Швидка комунікація", value: "quick_communication" },
+  { label: "Адміністративне", value: "admin_operational" },
+  { label: "Регулярне важливе", value: "recurring_essential" },
+  { label: "Особисто важливе", value: "personal_essential" },
+  { label: "Колись", value: "someday" }
 ];
 
-type TaskActionKind = "postpone" | "reschedule" | "block" | "cancel";
+type TaskStatusScope = "active" | "completed" | "blocked" | "cancelled";
+
+type TaskActionKind = "postpone" | "reschedule" | "block" | "unblock" | "cancel";
 
 type PendingAction = {
   task: TaskItem;
@@ -23,9 +24,98 @@ type PendingAction = {
 };
 
 function projectName(task: TaskItem): string {
-  if (!task.projects) return "No project";
-  if (Array.isArray(task.projects)) return task.projects[0]?.name ?? "No project";
-  return task.projects.name ?? "No project";
+  if (!task.projects) return "Без проєкту";
+  if (Array.isArray(task.projects)) return task.projects[0]?.name ?? "Без проєкту";
+  return task.projects.name ?? "Без проєкту";
+}
+
+function taskTypeLabel(value: TaskType): string {
+  switch (value) {
+    case "deep_work":
+      return "Глибока робота";
+    case "quick_communication":
+      return "Швидка комунікація";
+    case "admin_operational":
+      return "Адміністративне";
+    case "recurring_essential":
+      return "Регулярне важливе";
+    case "personal_essential":
+      return "Особисто важливе";
+    case "someday":
+      return "Колись";
+  }
+}
+
+function statusLabel(status: TaskItem["status"]): string {
+  switch (status) {
+    case "planned":
+      return "Заплановано";
+    case "in_progress":
+      return "В роботі";
+    case "blocked":
+      return "Заблоковано";
+    case "done":
+      return "Виконано";
+    case "cancelled":
+      return "Скасовано";
+  }
+}
+
+function parseDate(value: string | null): Date | null {
+  if (!value) return null;
+  const parsed = new Date(value);
+  return Number.isNaN(parsed.getTime()) ? null : parsed;
+}
+
+function isToday(date: Date): boolean {
+  const now = new Date();
+  return (
+    date.getFullYear() === now.getFullYear() &&
+    date.getMonth() === now.getMonth() &&
+    date.getDate() === now.getDate()
+  );
+}
+
+function timingLine(task: TaskItem): { label: string; tone: "neutral" | "warn" | "ok" } {
+  const scheduled = parseDate(task.scheduled_for);
+  const due = parseDate(task.due_at);
+  const now = new Date();
+
+  if (!scheduled && !due) {
+    return { label: "Без часу", tone: "neutral" };
+  }
+
+  const fragments: string[] = [];
+  if (scheduled) {
+    fragments.push(`Заплановано: ${scheduled.toLocaleString()}`);
+  }
+  if (due) {
+    fragments.push(`Дедлайн: ${due.toLocaleString()}`);
+  }
+
+  const reference = scheduled ?? due;
+  if (!reference) {
+    return { label: fragments.join(" · "), tone: "neutral" };
+  }
+
+  if (task.status !== "done" && task.status !== "cancelled" && reference < now) {
+    return { label: `${fragments.join(" · ")} · Прострочено`, tone: "warn" };
+  }
+  if (isToday(reference)) {
+    return { label: `${fragments.join(" · ")} · Сьогодні`, tone: "ok" };
+  }
+  return { label: `${fragments.join(" · ")} · Майбутнє`, tone: "neutral" };
+}
+
+function statusScopeMatch(task: TaskItem, scopes: TaskStatusScope[]): boolean {
+  if (scopes.length === 0) return true;
+  return scopes.some((scope) => {
+    if (scope === "active") return task.status === "planned" || task.status === "in_progress";
+    if (scope === "completed") return task.status === "done";
+    if (scope === "blocked") return task.status === "blocked";
+    if (scope === "cancelled") return task.status === "cancelled";
+    return false;
+  });
 }
 
 export function TasksPage() {
@@ -33,7 +123,8 @@ export function TasksPage() {
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
   const [workingTaskId, setWorkingTaskId] = useState<string | null>(null);
-  const [typeFilter, setTypeFilter] = useState<"all" | TaskType>("all");
+  const [selectedTypes, setSelectedTypes] = useState<TaskType[]>([]);
+  const [selectedStatuses, setSelectedStatuses] = useState<TaskStatusScope[]>(["active"]);
   const [pendingAction, setPendingAction] = useState<PendingAction | null>(null);
   const diagnostics = useDiagnostics();
 
@@ -64,7 +155,7 @@ export function TasksPage() {
           details: loadError.details
         });
       }
-      setError(loadError instanceof Error ? loadError.message : "Failed to load tasks");
+      setError(loadError instanceof Error ? loadError.message : "Не вдалося завантажити задачі");
     } finally {
       setLoading(false);
     }
@@ -75,9 +166,36 @@ export function TasksPage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
+  function toggleType(type: TaskType) {
+    setSelectedTypes((prev) =>
+      prev.includes(type) ? prev.filter((value) => value !== type) : [...prev, type]
+    );
+  }
+
+  function toggleStatus(scope: TaskStatusScope) {
+    setSelectedStatuses((prev) =>
+      prev.includes(scope) ? prev.filter((value) => value !== scope) : [...prev, scope]
+    );
+  }
+
+  const counts = useMemo(
+    () => ({
+      active: items.filter((task) => task.status === "planned" || task.status === "in_progress").length,
+      completed: items.filter((task) => task.status === "done").length,
+      blocked: items.filter((task) => task.status === "blocked").length,
+      cancelled: items.filter((task) => task.status === "cancelled").length
+    }),
+    [items]
+  );
+
   const filteredItems = useMemo(
-    () => items.filter((task) => (typeFilter === "all" ? true : task.task_type === typeFilter)),
-    [items, typeFilter]
+    () =>
+      items.filter((task) => {
+        const typeOk = selectedTypes.length === 0 ? true : selectedTypes.includes(task.task_type);
+        const statusOk = statusScopeMatch(task, selectedStatuses);
+        return typeOk && statusOk;
+      }),
+    [items, selectedStatuses, selectedTypes]
   );
 
   const groupedByProject = useMemo(() => {
@@ -101,7 +219,7 @@ export function TasksPage() {
 
   async function runDone(task: TaskItem) {
     if (!sessionToken) {
-      setError("Authenticate in Inbox first.");
+      setError("Спочатку авторизуйся в Інбоксі.");
       return;
     }
 
@@ -126,7 +244,7 @@ export function TasksPage() {
           details: actionError.details
         });
       }
-      setError(actionError instanceof Error ? actionError.message : "Task update failed");
+      setError(actionError instanceof Error ? actionError.message : "Не вдалося оновити задачу");
     } finally {
       setWorkingTaskId(null);
     }
@@ -178,6 +296,13 @@ export function TasksPage() {
         });
       }
 
+      if (pendingAction.action === "unblock") {
+        await updateTaskStatus({
+          ...common,
+          status: "planned"
+        });
+      }
+
       if (pendingAction.action === "cancel") {
         await updateTaskStatus({
           ...common,
@@ -197,7 +322,7 @@ export function TasksPage() {
           details: actionError.details
         });
       }
-      setError(actionError instanceof Error ? actionError.message : "Task update failed");
+      setError(actionError instanceof Error ? actionError.message : "Не вдалося оновити задачу");
     } finally {
       setWorkingTaskId(null);
     }
@@ -205,87 +330,147 @@ export function TasksPage() {
 
   return (
     <section className="panel">
-      <h2>Tasks</h2>
-      <p>Grouped by project with task type visibility and basic execution actions.</p>
+      <h2>Задачі</h2>
+      <p>Список задач по проєктах з фільтрами та базовими діями виконання.</p>
 
-      <div className="toolbar-row">
-        <label>
-          Type filter:
-          <select value={typeFilter} onChange={(event) => setTypeFilter(event.target.value as "all" | TaskType)}>
-            {TASK_TYPE_FILTERS.map((filter) => (
-              <option key={filter.value} value={filter.value}>
+      <div className="filters-wrap">
+        <p className="inbox-meta">Фільтр статусу:</p>
+        <div className="chip-row">
+          <button
+            type="button"
+            className={selectedStatuses.includes("active") ? "chip chip-active" : "chip"}
+            onClick={() => toggleStatus("active")}
+          >
+            Активні ({counts.active})
+          </button>
+          <button
+            type="button"
+            className={selectedStatuses.includes("completed") ? "chip chip-active" : "chip"}
+            onClick={() => toggleStatus("completed")}
+          >
+            Виконані ({counts.completed})
+          </button>
+          <button
+            type="button"
+            className={selectedStatuses.includes("blocked") ? "chip chip-active" : "chip"}
+            onClick={() => toggleStatus("blocked")}
+          >
+            Заблоковані ({counts.blocked})
+          </button>
+          <button
+            type="button"
+            className={selectedStatuses.includes("cancelled") ? "chip chip-active" : "chip"}
+            onClick={() => toggleStatus("cancelled")}
+          >
+            Скасовані ({counts.cancelled})
+          </button>
+        </div>
+
+        <p className="inbox-meta">Фільтр типу (можна кілька):</p>
+        <div className="chip-row">
+          {TASK_TYPE_FILTERS.map((filter) => {
+            const selected = selectedTypes.includes(filter.value);
+            return (
+              <button
+                key={filter.value}
+                type="button"
+                className={selected ? "chip chip-active" : "chip"}
+                onClick={() => toggleType(filter.value)}
+              >
                 {filter.label}
-              </option>
-            ))}
-          </select>
-        </label>
+              </button>
+            );
+          })}
+        </div>
       </div>
 
       <p className="inbox-meta">
-        Quick communication open: {quickCommunicationOpenCount}
-        {quickCommunicationOpenCount >= 3 ? " · batching recommended" : ""}
+        Відкритих швидких комунікацій: {quickCommunicationOpenCount}
+        {quickCommunicationOpenCount >= 3 ? " · рекомендується батчинг" : ""}
       </p>
 
-      {!sessionToken ? <p className="empty-note">Open Inbox first to authenticate session.</p> : null}
+      {!sessionToken ? <p className="empty-note">Відкрий Інбокс для авторизації сесії.</p> : null}
       {error ? <p className="error-note">{error}</p> : null}
-      {loading ? <p>Loading tasks...</p> : null}
+      {loading ? <p>Завантаження задач...</p> : null}
 
-      {!loading && filteredItems.length === 0 ? <p className="empty-note">No active tasks.</p> : null}
+      {!loading && filteredItems.length === 0 ? (
+        <p className="empty-note">Задач за поточним фільтром немає.</p>
+      ) : null}
 
       {Object.entries(groupedByProject).map(([project, tasks]) => (
         <section key={project} className="project-group">
           <h3>{project}</h3>
           <ul className="inbox-list">
-            {tasks.map((task) => (
-              <li key={task.id} className="inbox-item">
-                <p className="inbox-main-text">
-                  {task.title}
-                  {task.is_protected_essential ? <span className="essential-badge">Protected essential</span> : null}
-                </p>
-                <p className="inbox-meta">
-                  {task.task_type} · {task.status}
-                </p>
-                <div className="inbox-actions">
-                  <button onClick={() => void runDone(task)} disabled={workingTaskId === task.id}>
-                    Done
-                  </button>
-                  <button
-                    onClick={() => setPendingAction({ task, action: "postpone" })}
-                    disabled={workingTaskId === task.id}
-                  >
-                    Postpone
-                  </button>
-                  <button
-                    onClick={() => setPendingAction({ task, action: "reschedule" })}
-                    disabled={workingTaskId === task.id}
-                  >
-                    Reschedule
-                  </button>
-                  <button
-                    onClick={() => setPendingAction({ task, action: "block" })}
-                    disabled={workingTaskId === task.id}
-                  >
-                    Block
-                  </button>
-                  <button
-                    className="danger"
-                    onClick={() => setPendingAction({ task, action: "cancel" })}
-                    disabled={workingTaskId === task.id}
-                  >
-                    Cancel
-                  </button>
-                </div>
-              </li>
-            ))}
+            {tasks.map((task) => {
+              const timing = timingLine(task);
+              return (
+                <li key={task.id} className="inbox-item">
+                  <p className="inbox-main-text">
+                    {task.title}
+                    {task.is_protected_essential ? <span className="essential-badge">Захищене важливе</span> : null}
+                  </p>
+                  <p className="inbox-meta">
+                    {taskTypeLabel(task.task_type)} · {statusLabel(task.status)}
+                  </p>
+                  <p className={timing.tone === "warn" ? "error-note" : "inbox-meta"}>{timing.label}</p>
+                  <div className="inbox-actions">
+                    {task.status !== "done" ? (
+                      <button onClick={() => void runDone(task)} disabled={workingTaskId === task.id}>
+                        Виконано
+                      </button>
+                    ) : null}
+                    {(task.status === "planned" || task.status === "in_progress") && (
+                      <>
+                        <button
+                          onClick={() => setPendingAction({ task, action: "postpone" })}
+                          disabled={workingTaskId === task.id}
+                        >
+                          Відкласти (хв)
+                        </button>
+                        <button
+                          onClick={() => setPendingAction({ task, action: "reschedule" })}
+                          disabled={workingTaskId === task.id}
+                        >
+                          Перенести (дата/час)
+                        </button>
+                        <button
+                          onClick={() => setPendingAction({ task, action: "block" })}
+                          disabled={workingTaskId === task.id}
+                        >
+                          Заблокувати
+                        </button>
+                      </>
+                    )}
+                    {task.status === "blocked" ? (
+                      <button
+                        onClick={() => setPendingAction({ task, action: "unblock" })}
+                        disabled={workingTaskId === task.id}
+                      >
+                        Розблокувати
+                      </button>
+                    ) : null}
+                    {task.status !== "cancelled" ? (
+                      <button
+                        className="danger"
+                        onClick={() => setPendingAction({ task, action: "cancel" })}
+                        disabled={workingTaskId === task.id || task.status === "done"}
+                      >
+                        Скасувати
+                      </button>
+                    ) : null}
+                  </div>
+                </li>
+              );
+            })}
           </ul>
         </section>
       ))}
 
       <TaskActionModal
-        open={Boolean(pendingAction)}
+        open={!!pendingAction}
         action={pendingAction?.action ?? null}
         taskTitle={pendingAction?.task.title ?? null}
-        busy={Boolean(workingTaskId)}
+        busy={workingTaskId !== null}
         onCancel={() => setPendingAction(null)}
         onConfirm={(payload) => {
           void confirmAction(payload);

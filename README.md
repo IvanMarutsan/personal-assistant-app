@@ -36,6 +36,7 @@ Testing diagnostics mode:
 - `auth-telegram`
 - `get-inbox`
 - `get-projects`
+- `get-notes`
 - `capture-inbox`
 - `ingest-voice-telegram`
 - `triage-inbox-item`
@@ -43,6 +44,13 @@ Testing diagnostics mode:
 - `get-planning-assistant`
 - `get-ai-advisor`
 - `update-task-status`
+
+## Deploy note for custom app session auth
+- These functions use custom app sessions (`x-app-session`), not Supabase Auth JWT.
+- Deploy them with JWT verification disabled, for example:
+  - `supabase functions deploy get-inbox --no-verify-jwt`
+  - `supabase functions deploy get-notes --no-verify-jwt`
+  - `supabase functions deploy get-tasks --no-verify-jwt`
 
 ## Required Edge Function env vars
 - `SUPABASE_URL`
