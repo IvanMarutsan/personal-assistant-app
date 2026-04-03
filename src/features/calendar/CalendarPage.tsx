@@ -25,6 +25,18 @@ function mapCalendarError(error: unknown, fallback: string): string {
     if (error.code === "calendar_not_connected") {
       return "Google Calendar ще не підключено.";
     }
+    if (error.code === "calendar_auth_expired") {
+      return "Сесія Google Calendar застаріла. Натисни «Перепідключити Google Calendar».";
+    }
+    if (error.code === "calendar_permission_denied") {
+      return "Немає доступу до подій календаря. Перепідключи Google Calendar і підтвердь усі дозволи.";
+    }
+    if (error.code === "calendar_not_found") {
+      return "Основний календар не знайдено. Спробуй перепідключення Google Calendar.";
+    }
+    if (error.code === "calendar_upcoming_fetch_failed") {
+      return "Не вдалося завантажити найближчі події. Спробуй оновити або перепідключити Google Calendar.";
+    }
     if (error.code === "unauthorized") {
       return "Сесія недійсна. Перейди в Inbox і авторизуйся знову.";
     }

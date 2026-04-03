@@ -41,10 +41,23 @@ Deno.serve(async (req) => {
 
     if (!response.ok) {
       const text = await response.text().catch(() => "");
+      const lower = text.toLowerCase();
       console.error("[get-google-calendar-upcoming] google_fetch_failed", {
         status: response.status,
         text: text.slice(0, 300)
       });
+      if (response.status === 401) {
+        return jsonResponse({ ok: false, error: "calendar_auth_expired" }, 401);
+      }
+      if (response.status === 403) {
+        return jsonResponse({ ok: false, error: "calendar_permission_denied" }, 403);
+      }
+      if (response.status === 404) {
+        return jsonResponse({ ok: false, error: "calendar_not_found" }, 404);
+      }
+      if (lower.includes("insufficient") || lower.includes("permission")) {
+        return jsonResponse({ ok: false, error: "calendar_permission_denied" }, 403);
+      }
       return jsonResponse({ ok: false, error: "calendar_upcoming_fetch_failed" }, 502);
     }
 
