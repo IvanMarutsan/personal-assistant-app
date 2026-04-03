@@ -225,38 +225,46 @@ async function fetchTelegramVoiceBytes(voiceFileId: string): Promise<{
   if (!botToken) {
     return { ok: false, error: "telegram_bot_token_missing" };
   }
-  const fileMetaUrl = `https://api.telegram.org/bot${botToken}/getFile?file_id=${encodeURIComponent(voiceFileId)}`;
+  try {
+    const fileMetaUrl = `https://api.telegram.org/bot${botToken}/getFile?file_id=${encodeURIComponent(voiceFileId)}`;
 
-  const fileMetaResponse = await fetch(fileMetaUrl);
-  if (!fileMetaResponse.ok) {
-    return { ok: false, error: "telegram_get_file_failed" };
+    const fileMetaResponse = await fetch(fileMetaUrl);
+    if (!fileMetaResponse.ok) {
+      return { ok: false, error: "telegram_get_file_failed" };
+    }
+
+    const fileMetaBody = (await fileMetaResponse.json()) as {
+      ok?: boolean;
+      result?: { file_path?: string };
+    };
+
+    const filePath = fileMetaBody.result?.file_path;
+    if (!fileMetaBody.ok || !filePath) {
+      return { ok: false, error: "telegram_file_path_missing" };
+    }
+
+    const fileDownloadUrl = `https://api.telegram.org/file/bot${botToken}/${filePath}`;
+    const fileResponse = await fetch(fileDownloadUrl);
+    if (!fileResponse.ok) {
+      return { ok: false, error: "telegram_file_download_failed" };
+    }
+
+    const arrayBuffer = await fileResponse.arrayBuffer();
+    const mimeType = fileResponse.headers.get("content-type") ?? "audio/ogg";
+
+    return {
+      ok: true,
+      bytes: new Uint8Array(arrayBuffer),
+      mimeType,
+      filePath
+    };
+  } catch (error) {
+    console.error("[ingest-voice-telegram] telegram_fetch_exception", {
+      voiceFileId,
+      error: error instanceof Error ? error.message : "unknown_error"
+    });
+    return { ok: false, error: "telegram_fetch_exception" };
   }
-
-  const fileMetaBody = (await fileMetaResponse.json()) as {
-    ok?: boolean;
-    result?: { file_path?: string };
-  };
-
-  const filePath = fileMetaBody.result?.file_path;
-  if (!fileMetaBody.ok || !filePath) {
-    return { ok: false, error: "telegram_file_path_missing" };
-  }
-
-  const fileDownloadUrl = `https://api.telegram.org/file/bot${botToken}/${filePath}`;
-  const fileResponse = await fetch(fileDownloadUrl);
-  if (!fileResponse.ok) {
-    return { ok: false, error: "telegram_file_download_failed" };
-  }
-
-  const arrayBuffer = await fileResponse.arrayBuffer();
-  const mimeType = fileResponse.headers.get("content-type") ?? "audio/ogg";
-
-  return {
-    ok: true,
-    bytes: new Uint8Array(arrayBuffer),
-    mimeType,
-    filePath
-  };
 }
 
 async function transcribeVoice(bytes: Uint8Array, mimeType: string): Promise<TranscriptResult> {
