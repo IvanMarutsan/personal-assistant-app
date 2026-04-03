@@ -7,6 +7,7 @@ declare global {
         initData?: string;
         ready?: () => void;
         expand?: () => void;
+        openLink?: (url: string) => void;
       };
     };
   }

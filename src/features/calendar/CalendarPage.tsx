@@ -42,6 +42,8 @@ export function CalendarPage() {
   const [events, setEvents] = useState<GoogleCalendarEventItem[]>([]);
   const [loading, setLoading] = useState(false);
   const [connectLoading, setConnectLoading] = useState(false);
+  const [authUrl, setAuthUrl] = useState<string | null>(null);
+  const [authUrlCopied, setAuthUrlCopied] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
   const connectHint = useMemo(() => {
@@ -111,13 +113,14 @@ export function CalendarPage() {
 
     setConnectLoading(true);
     setError(null);
+    setAuthUrlCopied(false);
     diagnostics.trackAction("start_google_calendar_connect", { route: "/calendar" });
     try {
-      const { authUrl } = await startGoogleCalendarConnect({
+      const result = await startGoogleCalendarConnect({
         sessionToken,
         returnPath: "/calendar"
       });
-      window.location.href = authUrl;
+      setAuthUrl(result.authUrl);
     } catch (connectError) {
       if (connectError instanceof ApiError) {
         diagnostics.trackFailure({
@@ -129,7 +132,33 @@ export function CalendarPage() {
         });
       }
       setError(mapCalendarError(connectError, "Не вдалося почати підключення Google Calendar."));
+    } finally {
       setConnectLoading(false);
+    }
+  }
+
+  function openAuthInBrowser() {
+    if (!authUrl) return;
+    diagnostics.trackAction("open_google_connect_external", { route: "/calendar" });
+    try {
+      if (window.Telegram?.WebApp?.openLink) {
+        window.Telegram.WebApp.openLink(authUrl);
+        return;
+      }
+      window.open(authUrl, "_blank", "noopener,noreferrer");
+    } catch {
+      window.location.href = authUrl;
+    }
+  }
+
+  async function copyAuthUrl() {
+    if (!authUrl) return;
+    try {
+      await navigator.clipboard.writeText(authUrl);
+      setAuthUrlCopied(true);
+      setError(null);
+    } catch {
+      setError("Не вдалося скопіювати посилання. Спробуй відкрити в браузері.");
     }
   }
 
@@ -145,12 +174,34 @@ export function CalendarPage() {
 
       <div className="toolbar-row">
         <button type="button" onClick={() => void startConnect()} disabled={connectLoading || !sessionToken}>
-          {connectLoading ? "Підключення..." : status?.connected ? "Перепідключити Google Calendar" : "Підключити Google Calendar"}
+          {connectLoading
+            ? "Підготовка підключення..."
+            : status?.connected
+            ? "Перепідключити Google Calendar"
+            : "Підключити Google Calendar"}
         </button>
         <button type="button" className="ghost" onClick={() => void loadCalendarData()} disabled={loading || !sessionToken}>
           Оновити
         </button>
       </div>
+
+      {authUrl ? (
+        <section className="project-group">
+          <h3>Підключення Google (через зовнішній браузер)</h3>
+          <p className="inbox-meta">
+            Google не дозволяє OAuth у Telegram WebView. Відкрий авторизацію у зовнішньому браузері.
+          </p>
+          <div className="toolbar-row">
+            <button type="button" onClick={openAuthInBrowser}>
+              Відкрити авторизацію в браузері
+            </button>
+            <button type="button" className="ghost" onClick={() => void copyAuthUrl()}>
+              Скопіювати посилання
+            </button>
+          </div>
+          {authUrlCopied ? <p className="inbox-meta">Посилання скопійовано.</p> : null}
+        </section>
+      ) : null}
 
       <section className="project-group">
         <h3>Статус підключення</h3>
