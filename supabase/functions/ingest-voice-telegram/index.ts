@@ -172,7 +172,7 @@ function localizeReasoningSummary(
 function hasStrongSplitSignals(transcript: string): boolean {
   const text = transcript.toLowerCase();
   const markerMatch =
-    /\b(перше|по[-\s]?перше|друге|по[-\s]?друге|третє|по[-\s]?третє|також|окремо|далі|потім|і ще|ще одне|1[\).\:-]|2[\).\:-]|3[\).\:-])\b/u.test(
+    /\b(перше|по[-\s]?перше|друге|по[-\s]?друге|третє|по[-\s]?третє|також|окремо|далі|потім|і ще|ще одне|1[).:-]|2[).:-]|3[).:-])\b/u.test(
       text
     );
   const sentenceLikeParts = text
