@@ -38,7 +38,7 @@ function mapCalendarError(error: unknown, fallback: string): string {
       return "Не вдалося завантажити найближчі події. Спробуй оновити або перепідключити Google Calendar.";
     }
     if (error.code === "unauthorized") {
-      return "Сесія недійсна. Перейди в Inbox і авторизуйся знову.";
+      return "Сесія недійсна. Перейди в Інбокс і авторизуйся знову.";
     }
     return error.message || fallback;
   }
@@ -128,7 +128,7 @@ export function CalendarPage() {
 
   async function startConnect() {
     if (!sessionToken) {
-      setError("Спочатку авторизуйся в Inbox.");
+      setError("Спочатку авторизуйся в Інбоксі.");
       return;
     }
 
@@ -188,7 +188,7 @@ export function CalendarPage() {
       <h2>Календар</h2>
       <p>Підключи Google Calendar, переглядай найближчі події й створюй нові події вручну.</p>
 
-      {!sessionToken ? <p className="empty-note">Відкрий Inbox для авторизації сесії.</p> : null}
+      {!sessionToken ? <p className="empty-note">Відкрий Інбокс для авторизації сесії.</p> : null}
       {connectHint ? <p className="inbox-meta">{connectHint}</p> : null}
       {error ? <p className="error-note">{error}</p> : null}
       {loading ? <p>Завантаження календаря...</p> : null}
@@ -262,3 +262,4 @@ export function CalendarPage() {
     </section>
   );
 }
+

@@ -26,7 +26,7 @@ type DiagnosticsContextValue = {
   environmentLabel: string;
   currentRoute: string;
   timezone: string;
-  sessionState: "present" | "missing";
+  sessionState: "активна" | "відсутня";
   lastRefreshAt: string | null;
   lastAction: DiagnosticsAction | null;
   lastFailure: DiagnosticsRequestFailure | null;
@@ -48,11 +48,11 @@ type DiagnosticsContextValue = {
 const DiagnosticsContext = createContext<DiagnosticsContextValue | null>(null);
 
 function detectEnvironmentLabel(hostname: string): string {
-  if (hostname === "localhost" || hostname === "127.0.0.1") return "local";
-  if (hostname.endsWith(".ngrok-free.app") || hostname.endsWith(".ngrok-free.dev")) return "tunnel-ngrok";
-  if (hostname.endsWith(".trycloudflare.com")) return "tunnel-cloudflare";
-  if (hostname.includes("vercel.app")) return "hosted-vercel";
-  return "hosted";
+  if (hostname === "localhost" || hostname === "127.0.0.1") return "локально";
+  if (hostname.endsWith(".ngrok-free.app") || hostname.endsWith(".ngrok-free.dev")) return "тунель ngrok";
+  if (hostname.endsWith(".trycloudflare.com")) return "тунель Cloudflare";
+  if (hostname.includes("vercel.app")) return "розгортання Vercel";
+  return "розгорнуте середовище";
 }
 
 function toIsoNow(): string {
@@ -88,7 +88,7 @@ export function DiagnosticsProvider({ children }: { children: ReactNode }) {
   const [lastFailure, setLastFailure] = useState<DiagnosticsRequestFailure | null>(null);
   const [lastRefreshAt, setLastRefreshAt] = useState<string | null>(null);
   const [screenDataSource, setScreenDataSourceState] = useState<string | null>(null);
-  const [sessionState, setSessionState] = useState<"present" | "missing">("missing");
+  const [sessionState, setSessionState] = useState<"активна" | "відсутня">("відсутня");
 
   useEffect(() => {
     const params = new URLSearchParams(location.search);
@@ -108,7 +108,7 @@ export function DiagnosticsProvider({ children }: { children: ReactNode }) {
 
   useEffect(() => {
     const token = localStorage.getItem(SESSION_KEY);
-    setSessionState(token ? "present" : "missing");
+    setSessionState(token ? "активна" : "відсутня");
   }, [location.pathname, location.search]);
 
   const environmentLabel = useMemo(() => detectEnvironmentLabel(window.location.hostname), []);
@@ -144,7 +144,7 @@ export function DiagnosticsProvider({ children }: { children: ReactNode }) {
 
   function buildDiagnosticsText(issueTemplate = false): string {
     const lines: string[] = [];
-    lines.push(issueTemplate ? "Звіт про проблему Mini App" : "Mini App diagnostics");
+    lines.push(issueTemplate ? "Звіт про проблему Mini App" : "Діагностика Mini App");
     lines.push(`timestamp=${toIsoNow()}`);
     lines.push(`route=${location.pathname}`);
     lines.push(`environment=${environmentLabel}`);

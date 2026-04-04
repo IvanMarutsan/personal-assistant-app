@@ -76,7 +76,7 @@ Deno.serve(async (req) => {
         details: nextBody,
         task_type: "admin_operational",
         status: "planned",
-        importance: 3
+        importance: 3,`r`n        scheduled_for: null,`r`n        due_at: null,`r`n        estimated_minutes: null
       })
       .select("id")
       .single();
@@ -100,3 +100,4 @@ Deno.serve(async (req) => {
 
   return jsonResponse({ ok: true, noteId: note.id, createdTaskId });
 });
+

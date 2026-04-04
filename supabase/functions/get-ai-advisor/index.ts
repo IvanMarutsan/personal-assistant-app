@@ -83,6 +83,8 @@ type AdvisorResponse = {
     currentLocalTime: string;
     quickCommunicationOpenCount: number;
     plannedTodayCount: number;
+    dueTodayWithoutPlannedStartCount: number;
+    backlogCount: number;
     overduePlannedCount: number;
     protectedPendingCount: number;
     recurringAtRiskCount: number;
@@ -103,11 +105,20 @@ function taskProjectName(task: TaskRow): string | null {
   return task.projects.name ?? null;
 }
 
-function taskTime(task: TaskRow, zone: string): DateTime | null {
-  const ref = task.scheduled_for ?? task.due_at;
-  if (!ref) return null;
-  const dt = DateTime.fromISO(ref, { zone: "utc" }).setZone(zone);
+function taskScheduledTime(task: TaskRow, zone: string): DateTime | null {
+  if (!task.scheduled_for) return null;
+  const dt = DateTime.fromISO(task.scheduled_for, { zone: "utc" }).setZone(zone);
   return dt.isValid ? dt : null;
+}
+
+function taskDueTime(task: TaskRow, zone: string): DateTime | null {
+  if (!task.due_at) return null;
+  const dt = DateTime.fromISO(task.due_at, { zone: "utc" }).setZone(zone);
+  return dt.isValid ? dt : null;
+}
+
+function taskReferenceTime(task: TaskRow, zone: string): DateTime | null {
+  return taskScheduledTime(task, zone) ?? taskDueTime(task, zone);
 }
 
 function isSameDay(dt: DateTime | null, dayStart: DateTime, dayEnd: DateTime): boolean {
@@ -115,12 +126,22 @@ function isSameDay(dt: DateTime | null, dayStart: DateTime, dayEnd: DateTime): b
   return dt >= dayStart && dt <= dayEnd;
 }
 
-function isOverdue(task: TaskRow, now: DateTime): boolean {
+function isScheduledForDay(task: TaskRow, zone: string, dayStart: DateTime, dayEnd: DateTime): boolean {
+  return isSameDay(taskScheduledTime(task, zone), dayStart, dayEnd);
+}
+
+function isDueOnDay(task: TaskRow, zone: string, dayStart: DateTime, dayEnd: DateTime): boolean {
+  return isSameDay(taskDueTime(task, zone), dayStart, dayEnd);
+}
+
+function isBacklogTask(task: TaskRow): boolean {
+  return !task.scheduled_for;
+}
+
+function isScheduledOverdue(task: TaskRow, now: DateTime): boolean {
   if (task.status !== "planned") return false;
-  const ref = task.scheduled_for ?? task.due_at;
-  if (!ref) return false;
-  const dt = DateTime.fromISO(ref, { zone: "utc" }).setZone(now.zoneName);
-  return dt.isValid && dt < now;
+  const scheduled = taskScheduledTime(task, now.zoneName);
+  return !!scheduled && scheduled < now;
 }
 
 function toRankedReasons(rows: TaskEventRow[]): Array<{ reason: string; count: number }> {
@@ -139,19 +160,23 @@ function toRankedReasons(rows: TaskEventRow[]): Array<{ reason: string; count: n
 function pickNextAction(
   overdue: TaskRow[],
   hardToday: TaskRow[],
+  dueTodayWithoutPlannedStart: TaskRow[],
   protectedPending: TaskRow[],
   highImportanceToday: TaskRow[]
 ): TaskRow | null {
-  const first = overdue[0] ?? hardToday[0] ?? protectedPending[0] ?? highImportanceToday[0];
+  const first = overdue[0] ?? hardToday[0] ?? dueTodayWithoutPlannedStart[0] ?? protectedPending[0] ?? highImportanceToday[0];
   return first ?? null;
 }
 
-function pickDeferCandidate(actionableTasks: TaskRow[]): TaskRow | null {
+function pickDeferCandidate(actionableTasks: TaskRow[], zone: string, dayStart: DateTime, dayEnd: DateTime): TaskRow | null {
   const deferable = actionableTasks.filter(
     (task) =>
-      task.task_type === "quick_communication" ||
-      task.task_type === "admin_operational" ||
-      task.task_type === "someday"
+      !isScheduledForDay(task, zone, dayStart, dayEnd) &&
+      !(isBacklogTask(task) && isDueOnDay(task, zone, dayStart, dayEnd)) &&
+      !task.is_protected_essential &&
+      (task.task_type === "quick_communication" ||
+        task.task_type === "admin_operational" ||
+        task.task_type === "someday")
   );
 
   const sorted = [...deferable].sort((a, b) => {
@@ -166,6 +191,8 @@ function fallbackAdvisor(input: {
   timezone: string;
   now: DateTime;
   plannedTodayCount: number;
+  dueTodayWithoutPlannedStartCount: number;
+  backlogCount: number;
   overduePlannedCount: number;
   quickCommunicationOpenCount: number;
   protectedPendingCount: number;
@@ -184,38 +211,39 @@ function fallbackAdvisor(input: {
 
   return {
     whatMattersMostNow: input.nextAction
-      ? `Focus on "${input.nextAction.title}" first.`
-      : "No urgent focus item found; pick one planned task and complete it end-to-end.",
+      ? `Почни з "${input.nextAction.title}".`
+      : "Термінового фокусу не виявлено. Обери одну вже заплановану на день задачу й доведи її до завершення.",
     suggestedNextAction: {
       taskId: input.nextAction?.id ?? null,
-      title: input.nextAction?.title ?? "Start one planned task",
+      title: input.nextAction?.title ?? "Почати одну заплановану задачу",
       reason:
         input.overduePlannedCount > 0
-          ? "There are overdue planned tasks; pulling one forward prevents compounding backlog."
-          : "This is the highest-priority actionable item from current deterministic signals."
+          ? "Є прострочені заплановані задачі. Якщо витягнути одну вперед, день стане керованішим."
+          : input.dueTodayWithoutPlannedStartCount > 0
+          ? "Є задача з дедлайном на сьогодні без планованого старту. Її варто свідомо включити в день або закрити."
+          : "Це найпріоритетніша наступна дія за поточними детермінованими сигналами."
     },
     suggestedDefer: {
       taskId: input.deferCandidate?.id ?? null,
-      title: input.deferCandidate?.title ?? "No clear defer candidate",
+      title: input.deferCandidate?.title ?? "Немає очевидної задачі для відкладання",
       reason: input.deferCandidate
-        ? "This item has lower strategic urgency relative to overdue/hard/protected work."
-        : "Keep the current plan and avoid adding more scope."
+        ? "Ця задача менш термінова, ніж уже заплановані, прострочені або дедлайнові справи на сьогодні."
+        : "Тримайся поточного плану й не додавай зайвого обсягу."
     },
     protectedEssentialsWarning: {
       hasWarning: warningActive,
       message: warningActive
-        ? "Protected or recurring essentials are at risk of being squeezed out today."
-        : "No immediate protected-essential squeeze-out signal detected."
+        ? "Є ризик, що захищені або регулярні важливі справи випадуть із сьогоднішнього дня."
+        : "Ознак негайного витіснення захищених важливих справ зараз немає."
     },
-    explanation: `As of ${input.now.toFormat("HH:mm")} (${input.timezone}), there are ${input.plannedTodayCount} planned tasks for today, ${input.overduePlannedCount} overdue planned tasks, and ${input.quickCommunicationOpenCount} open quick communication tasks.`,
+    explanation: `Станом на ${input.now.toFormat("HH:mm")} (${input.timezone}) на сьогодні є ${input.plannedTodayCount} задач у денному плані, ${input.dueTodayWithoutPlannedStartCount} задач із дедлайном сьогодні без планованого старту, ${input.overduePlannedCount} прострочених запланованих задач і ${input.backlogCount} задач у беклозі.`,
     evidence: [
       `planned_today=${input.plannedTodayCount}`,
+      `due_today_without_planned_start=${input.dueTodayWithoutPlannedStartCount}`,
+      `backlog_count=${input.backlogCount}`,
       `overdue_planned=${input.overduePlannedCount}`,
       `protected_pending=${input.protectedPendingCount}`,
-      `recurring_at_risk=${input.recurringAtRiskCount}`,
-      `quick_communication_open=${input.quickCommunicationOpenCount}`,
-      `top_moved_reasons_today=${JSON.stringify(input.topMovedReasonsToday)}`,
-      `daily_review=${JSON.stringify(input.dailyReview)}`
+      `quick_communication_open=${input.quickCommunicationOpenCount}`
     ]
   };
 }
@@ -252,11 +280,11 @@ async function generateAiAdvisor(input: {
       {
         role: "system",
         content:
-          "You are a read-only planning advisor for a personal execution app. Never suggest automatic task mutations. Use only the provided context. Be concise, deterministic, and practical."
+          "Ти планувальний радник лише для читання в застосунку персонального виконання. Ніколи не пропонуй автоматичних змін задач. Використовуй лише наданий контекст. Чітко розрізняй три категорії: задачі, заплановані на сьогодні; задачі з дедлайном на сьогодні без планованого старту; беклог без планового старту. Відповідай коротко, практично й українською мовою."
       },
       {
         role: "user",
-        content: `Return strict JSON only with keys: whatMattersMostNow, suggestedNextAction, suggestedDefer, protectedEssentialsWarning, explanation, evidence. Context: ${JSON.stringify(
+        content: `Поверни лише строгий JSON з ключами whatMattersMostNow, suggestedNextAction, suggestedDefer, protectedEssentialsWarning, explanation, evidence. Усі значення для користувача мають бути українською мовою. Не називай беклог "запланованим на сьогодні". Контекст: ${JSON.stringify(
           input.context
         )}`
       }
@@ -400,14 +428,24 @@ Deno.serve(async (req) => {
   });
 
   const actionableTasks = tasks.filter((task) => task.status === "planned" || task.status === "in_progress");
+  const scheduledToday = actionableTasks
+    .filter((task) => isScheduledForDay(task, timezone, dayStart, dayEnd))
+    .sort((a, b) => (taskScheduledTime(a, timezone)?.toMillis() ?? 0) - (taskScheduledTime(b, timezone)?.toMillis() ?? 0));
   const overduePlanned = actionableTasks
-    .filter((task) => isOverdue(task, now))
-    .sort((a, b) => (taskTime(a, timezone)?.toMillis() ?? 0) - (taskTime(b, timezone)?.toMillis() ?? 0));
-  const plannedToday = actionableTasks.filter((task) =>
-    isSameDay(taskTime(task, timezone), dayStart, dayEnd)
-  );
-  const hardToday = plannedToday.filter((task) => task.commitment_type === "hard");
-  const highImportanceToday = plannedToday.filter(
+    .filter((task) => isScheduledOverdue(task, now))
+    .sort((a, b) => (taskScheduledTime(a, timezone)?.toMillis() ?? 0) - (taskScheduledTime(b, timezone)?.toMillis() ?? 0));
+  const dueTodayWithoutPlannedStart = actionableTasks
+    .filter((task) => isBacklogTask(task) && isDueOnDay(task, timezone, dayStart, dayEnd))
+    .sort((a, b) => (taskDueTime(a, timezone)?.toMillis() ?? 0) - (taskDueTime(b, timezone)?.toMillis() ?? 0));
+  const backlog = actionableTasks
+    .filter((task) => isBacklogTask(task))
+    .sort((a, b) => {
+      const aImportance = b.importance - a.importance;
+      if (aImportance !== 0) return aImportance;
+      return a.title.localeCompare(b.title, "uk-UA");
+    });
+  const hardToday = scheduledToday.filter((task) => task.commitment_type === "hard");
+  const highImportanceToday = scheduledToday.filter(
     (task) => task.importance >= planningThresholds.highImportanceMin
   );
   const protectedPending = actionableTasks.filter((task) => task.is_protected_essential);
@@ -433,7 +471,7 @@ Deno.serve(async (req) => {
       (row) => row.event_type === "status_changed" && row.new_status === "cancelled"
     ).length,
     protectedEssentialsMissedToday: protectedPending.filter(
-      (task) => task.status !== "done" && !isSameDay(taskTime(task, timezone), dayStart, dayEnd)
+      (task) => !isScheduledForDay(task, timezone, dayStart, dayEnd)
     ).length
   };
 
@@ -442,17 +480,31 @@ Deno.serve(async (req) => {
     recentEvents.filter((event) => event.event_type === "postponed" || event.event_type === "rescheduled")
   );
 
-  const nextAction = pickNextAction(overduePlanned, hardToday, protectedPending, highImportanceToday);
-  const deferCandidate = pickDeferCandidate(actionableTasks);
+  const nextAction = pickNextAction(
+    overduePlanned,
+    hardToday,
+    dueTodayWithoutPlannedStart,
+    protectedPending,
+    highImportanceToday
+  );
+  const deferCandidate = pickDeferCandidate(actionableTasks, timezone, dayStart, dayEnd);
 
   const aiContext = {
     generatedAt: now.toUTC().toISO(),
     timezone,
     currentLocalTime: now.toISO(),
+    planningSemantics: {
+      scheduledTodayCount: scheduledToday.length,
+      dueTodayWithoutPlannedStartCount: dueTodayWithoutPlannedStart.length,
+      backlogCount: backlog.length,
+      overdueScheduledCount: overduePlanned.length,
+      note: "Backlog визначається як scheduled_for IS NULL. Due-at без scheduled_for не вважається запланованим на сьогодні."
+    },
     deterministicBaseline: {
       priorityOrder: [
         "overdue_planned",
         "hard_commitment_today",
+        "due_today_without_planned_start",
         "protected_essential_pending",
         "high_importance_today",
         "quick_communication_batching"
@@ -470,7 +522,7 @@ Deno.serve(async (req) => {
       last7d: topMovedReasonsLast7d
     },
     tasks: {
-      plannedToday: plannedToday.slice(0, 15).map((task) => ({
+      scheduledToday: scheduledToday.slice(0, 15).map((task) => ({
         id: task.id,
         title: task.title,
         project: taskProjectName(task),
@@ -482,6 +534,26 @@ Deno.serve(async (req) => {
         scheduledFor: task.scheduled_for,
         isProtectedEssential: task.is_protected_essential,
         isRecurring: task.is_recurring
+      })),
+      dueTodayWithoutPlannedStart: dueTodayWithoutPlannedStart.slice(0, 15).map((task) => ({
+        id: task.id,
+        title: task.title,
+        project: taskProjectName(task),
+        taskType: task.task_type,
+        status: task.status,
+        importance: task.importance,
+        dueAt: task.due_at,
+        scheduledFor: task.scheduled_for
+      })),
+      backlog: backlog.slice(0, 15).map((task) => ({
+        id: task.id,
+        title: task.title,
+        project: taskProjectName(task),
+        taskType: task.task_type,
+        status: task.status,
+        importance: task.importance,
+        dueAt: task.due_at,
+        scheduledFor: task.scheduled_for
       })),
       overduePlanned: overduePlanned.slice(0, 15).map((task) => ({
         id: task.id,
@@ -519,7 +591,9 @@ Deno.serve(async (req) => {
   const fallback = fallbackAdvisor({
     timezone,
     now,
-    plannedTodayCount: plannedToday.length,
+    plannedTodayCount: scheduledToday.length,
+    dueTodayWithoutPlannedStartCount: dueTodayWithoutPlannedStart.length,
+    backlogCount: backlog.length,
     overduePlannedCount: overduePlanned.length,
     quickCommunicationOpenCount: quickCommunicationOpen.length,
     protectedPendingCount: protectedPending.length,
@@ -566,7 +640,9 @@ Deno.serve(async (req) => {
     contextSnapshot: {
       currentLocalTime: now.toISO(),
       quickCommunicationOpenCount: quickCommunicationOpen.length,
-      plannedTodayCount: plannedToday.length,
+      plannedTodayCount: scheduledToday.length,
+      dueTodayWithoutPlannedStartCount: dueTodayWithoutPlannedStart.length,
+      backlogCount: backlog.length,
       overduePlannedCount: overduePlanned.length,
       protectedPendingCount: protectedPending.length,
       recurringAtRiskCount: recurringAtRisk.length,

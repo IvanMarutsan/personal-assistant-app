@@ -51,6 +51,7 @@ type ResolveBody = {
   importance?: number;
   dueAt?: string;
   scheduledFor?: string;
+  estimatedMinutes?: number | null;
   timezone?: string;
 };
 
@@ -149,6 +150,13 @@ Deno.serve(async (req) => {
   if (body.scheduledFor && !scheduledFor) {
     return jsonResponse({ ok: false, error: "invalid_scheduled_for" }, 400);
   }
+  if (
+    body?.estimatedMinutes !== undefined &&
+    body.estimatedMinutes !== null &&
+    (!Number.isInteger(body.estimatedMinutes) || body.estimatedMinutes <= 0)
+  ) {
+    return jsonResponse({ ok: false, error: "invalid_estimated_minutes" }, 400);
+  }
 
   const supabase = createAdminClient();
 
@@ -190,7 +198,7 @@ Deno.serve(async (req) => {
   let resolution: Record<string, unknown> = {};
 
   if (body.action === "task") {
-    const taskTitle = (body.title?.trim() || candidate.title || "Untitled task").slice(0, 160);
+    const taskTitle = (body.title?.trim() || candidate.title || "Задача без назви").slice(0, 160);
     const details = body.details?.trim() || candidate.details || null;
 
     if (body.projectId) {
@@ -224,7 +232,8 @@ Deno.serve(async (req) => {
         status: "planned",
         importance,
         due_at: dueAt ?? candidate.dueAtIso ?? null,
-        scheduled_for: scheduledFor ?? candidate.scheduledForIso ?? null
+        scheduled_for: scheduledFor ?? candidate.scheduledForIso ?? null,
+        estimated_minutes: body.estimatedMinutes ?? null
       })
       .select("id")
       .single();
@@ -385,3 +394,6 @@ Deno.serve(async (req) => {
     candidate: updatedCandidates[candidateIndex]
   });
 });
+
+
+

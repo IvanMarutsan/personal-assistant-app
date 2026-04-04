@@ -123,6 +123,7 @@ export type TaskItem = {
   project_id: string | null;
   due_at: string | null;
   scheduled_for: string | null;
+  estimated_minutes: number | null;
   is_protected_essential: boolean;
   projects?: { name: string } | { name: string }[] | null;
 };
@@ -143,7 +144,7 @@ export type PlanningRecommendation = {
   taskId?: string;
   title: string;
   reason: string;
-  tier: "overdue" | "hard_today" | "protected_essential" | "high_importance" | "quick_comm_batch";
+  tier: "overdue" | "hard_today" | "due_today_unscheduled" | "protected_essential" | "high_importance" | "quick_comm_batch";
 };
 
 export type PlanningSummary = {
@@ -157,6 +158,8 @@ export type PlanningSummary = {
   overload: {
     hasOverload: boolean;
     plannedTodayCount: number;
+    dueTodayWithoutPlannedStartCount: number;
+    backlogCount: number;
     overduePlannedCount: number;
     quickCommunicationOpenCount: number;
     quickCommunicationBatchingRecommended: boolean;
@@ -215,6 +218,8 @@ export type AiAdvisorSummary = {
     currentLocalTime: string;
     quickCommunicationOpenCount: number;
     plannedTodayCount: number;
+    dueTodayWithoutPlannedStartCount: number;
+    backlogCount: number;
     overduePlannedCount: number;
     protectedPendingCount: number;
     recurringAtRiskCount: number;
@@ -246,3 +251,8 @@ export type AiAdvisorSummary = {
     evidence: string[];
   };
 };
+
+
+
+
+

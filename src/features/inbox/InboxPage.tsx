@@ -70,7 +70,9 @@ function previewText(item: InboxItem): string {
 function sourceLabel(item: InboxItem): string {
   const channel = item.source_channel === "telegram_bot" ? "telegram_bot" : "mini_app";
   const source = item.source_type === "voice" ? "voice" : "text";
-  return `${channel} / ${source}`;
+  const channelLabel = channel === "telegram_bot" ? "Telegram бот" : "Mini App";
+  const sourceText = source === "voice" ? "голос" : "текст";
+  return `${channelLabel} / ${sourceText}`;
 }
 
 function asRecord(value: unknown): Record<string, unknown> | null {
@@ -318,7 +320,7 @@ function mapInboxError(error: unknown, fallback: string): string {
       return "Невалідна дата або час. Перевір формат і спробуй ще раз.";
     }
     if (error.code === "candidate_not_found" || error.code === "candidate_already_processed") {
-      return "Кандидат уже оброблений або недоступний. Оновлюю Inbox.";
+      return "Кандидат уже оброблений або недоступний. Оновлюю Інбокс.";
     }
     if (error.code === "voice_candidates_not_found") {
       return "AI-кандидати не знайдені для цього голосового запису. Оброби елемент вручну.";
@@ -445,7 +447,7 @@ export function InboxPage() {
       if (loadError instanceof ApiError && loadError.code === "unauthorized") {
         invalidateSession();
       }
-      setError(mapInboxError(loadError, "Не вдалося завантажити Inbox"));
+      setError(mapInboxError(loadError, "Не вдалося завантажити Інбокс"));
     } finally {
       setLoadingItems(false);
     }
@@ -813,7 +815,7 @@ export function InboxPage() {
 
   return (
     <section className="panel">
-      <h2>Inbox</h2>
+      <h2>Інбокс</h2>
       <p>Черга вхідних записів з Telegram та Mini App.</p>
       {sessionToken ? (
         <div className="toolbar-row">
@@ -827,7 +829,7 @@ export function InboxPage() {
           <textarea
             value={manualInitData}
             onChange={(event) => setManualInitData(event.target.value)}
-            placeholder="Встав Telegram WebApp initData"
+            placeholder="Встав Telegram WebApp initData вручну"
             rows={4}
           />
           <button
@@ -842,10 +844,10 @@ export function InboxPage() {
       {error ? <p className="error-note">{error}</p> : null}
 
       {authState === "authenticating" ? <p>Авторизація...</p> : null}
-      {loadingItems ? <p>Завантаження Inbox...</p> : null}
+      {loadingItems ? <p>Завантаження Інбоксу...</p> : null}
 
       {!loadingItems && preparedItems.length === 0 ? (
-        <p className="empty-note">Inbox порожній.</p>
+        <p className="empty-note">Інбокс порожній.</p>
       ) : (
         <ul className="inbox-list">
           {preparedItems.map(({ item, suggestion, candidates, parseMode, candidateCountEstimated, projectMatch, statuses, isVoiceItem }) => {
@@ -1185,3 +1187,8 @@ export function InboxPage() {
     </section>
   );
 }
+
+
+
+
+

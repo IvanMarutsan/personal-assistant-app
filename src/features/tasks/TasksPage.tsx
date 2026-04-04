@@ -13,10 +13,10 @@ import {
   updateTaskStatus
 } from "../../lib/api";
 import { moveReasonLabel } from "../../lib/reasons";
+import { formatTaskTimingTone, isBacklogTask, parseTaskDate } from "../../lib/taskTiming";
 import type { GoogleCalendarStatus, MoveReasonCode, ProjectItem, TaskItem, TaskType } from "../../types/api";
 
 const SESSION_KEY = "personal_assistant_app_session_token";
-const USER_TIMEZONE = Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC";
 const TASK_TYPE_FILTERS: Array<{ label: string; value: TaskType }> = [
   { label: "Глибока робота", value: "deep_work" },
   { label: "Швидка комунікація", value: "quick_communication" },
@@ -73,59 +73,6 @@ function statusLabel(status: TaskItem["status"]): string {
   }
 }
 
-function parseDate(value: string | null): Date | null {
-  if (!value) return null;
-  const parsed = new Date(value);
-  return Number.isNaN(parsed.getTime()) ? null : parsed;
-}
-
-function formatLocalDateTime(value: Date): string {
-  return new Intl.DateTimeFormat("uk-UA", {
-    dateStyle: "short",
-    timeStyle: "short",
-    timeZone: USER_TIMEZONE
-  }).format(value);
-}
-
-function isToday(date: Date): boolean {
-  const now = new Date();
-  return (
-    date.getFullYear() === now.getFullYear() &&
-    date.getMonth() === now.getMonth() &&
-    date.getDate() === now.getDate()
-  );
-}
-
-function timingLine(task: TaskItem): { label: string; tone: "neutral" | "warn" | "ok" } {
-  const scheduled = parseDate(task.scheduled_for);
-  const due = parseDate(task.due_at);
-  const now = new Date();
-
-  if (!scheduled && !due) {
-    return { label: "Без часу", tone: "neutral" };
-  }
-
-  const fragments: string[] = [];
-  if (scheduled) {
-    fragments.push(`Заплановано: ${formatLocalDateTime(scheduled)}`);
-  }
-  if (due) {
-    fragments.push(`Дедлайн: ${formatLocalDateTime(due)}`);
-  }
-
-  const reference = scheduled ?? due;
-  if (!reference) {
-    return { label: fragments.join(" · "), tone: "neutral" };
-  }
-
-  if (task.status !== "done" && task.status !== "cancelled" && reference < now) {
-    return { label: `${fragments.join(" · ")} · Прострочено`, tone: "warn" };
-  }
-  if (isToday(reference)) {
-    return { label: `${fragments.join(" · ")} · Сьогодні`, tone: "ok" };
-  }
-  return { label: `${fragments.join(" · ")} · Майбутнє`, tone: "neutral" };
-}
 
 function statusScopeMatch(task: TaskItem, scopes: TaskStatusScope[]): boolean {
   if (scopes.length === 0) return true;
@@ -136,6 +83,20 @@ function statusScopeMatch(task: TaskItem, scopes: TaskStatusScope[]): boolean {
     if (scope === "cancelled") return task.status === "cancelled";
     return false;
   });
+}
+
+function groupByProject(tasks: TaskItem[]): Array<{ project: string; tasks: TaskItem[] }> {
+  const map = tasks.reduce<Map<string, TaskItem[]>>((acc, task) => {
+    const key = projectName(task);
+    const existing = acc.get(key) ?? [];
+    existing.push(task);
+    acc.set(key, existing);
+    return acc;
+  }, new Map());
+
+  return Array.from(map.entries())
+    .sort(([a], [b]) => a.localeCompare(b, "uk-UA"))
+    .map(([project, projectTasks]) => ({ project, tasks: projectTasks }));
 }
 
 export function TasksPage() {
@@ -290,14 +251,21 @@ export function TasksPage() {
     [items, selectedStatuses, selectedTypes]
   );
 
-  const groupedByProject = useMemo(() => {
-    return filteredItems.reduce<Record<string, TaskItem[]>>((acc, task) => {
-      const key = projectName(task);
-      if (!acc[key]) acc[key] = [];
-      acc[key].push(task);
-      return acc;
-    }, {});
+  const scheduledItems = useMemo(() => {
+    return [...filteredItems]
+      .filter((task) => Boolean(task.scheduled_for))
+      .sort((a, b) => {
+        const aTs = parseTaskDate(a.scheduled_for)?.getTime() ?? Number.MAX_SAFE_INTEGER;
+        const bTs = parseTaskDate(b.scheduled_for)?.getTime() ?? Number.MAX_SAFE_INTEGER;
+        if (aTs !== bTs) return aTs - bTs;
+        return a.title.localeCompare(b.title, "uk-UA");
+      });
   }, [filteredItems]);
+
+  const backlogItems = useMemo(() => filteredItems.filter((task) => isBacklogTask(task)), [filteredItems]);
+
+  const scheduledGroups = useMemo(() => groupByProject(scheduledItems), [scheduledItems]);
+  const backlogGroups = useMemo(() => groupByProject(backlogItems), [backlogItems]);
 
   const quickCommunicationOpenCount = useMemo(
     () =>
@@ -422,10 +390,56 @@ export function TasksPage() {
     }
   }
 
+  function renderTaskGroups(groups: Array<{ project: string; tasks: TaskItem[] }>, emptyMessage: string) {
+    if (groups.length === 0) {
+      return <p className="empty-note">{emptyMessage}</p>;
+    }
+
+    return groups.map(({ project, tasks }) => (
+      <section key={project} className="project-group">
+        <h4>{project}</h4>
+        <ul className="inbox-list">
+          {tasks.map((task) => {
+            const timing = formatTaskTimingTone(task);
+            return (
+              <li key={task.id} className="inbox-item">
+                <p className="inbox-main-text">
+                  {task.title}
+                  {task.is_protected_essential ? <span className="essential-badge">Захищене важливе</span> : null}
+                </p>
+                <p className="inbox-meta">
+                  {taskTypeLabel(task.task_type)} · {statusLabel(task.status)}
+                </p>
+                {task.status === "cancelled" ? (
+                  <p className="inbox-meta">
+                    Причина: {moveReasonLabel(task.last_moved_reason) ?? "Не вказано"}
+                    {task.cancel_reason_text ? ` · ${task.cancel_reason_text}` : ""}
+                  </p>
+                ) : null}
+                <p className={timing.tone === "warn" ? "error-note" : "inbox-meta"}>{timing.label}</p>
+                {task.linked_calendar_event ? <p className="inbox-meta">Пов'язано з Google Calendar</p> : null}
+                <div className="inbox-actions">
+                  {task.status !== "done" ? (
+                    <button onClick={() => void runDone(task)} disabled={workingTaskId === task.id}>
+                      Виконано
+                    </button>
+                  ) : null}
+                  <button type="button" className="ghost" onClick={() => setActiveTask(task)}>
+                    Деталі
+                  </button>
+                </div>
+              </li>
+            );
+          })}
+        </ul>
+      </section>
+    ));
+  }
+
   return (
     <section className="panel">
       <h2>Задачі</h2>
-      <p>Список задач по проєктах з фільтрами та базовими діями виконання.</p>
+      <p>Заплановані задачі відокремлені від беклогу, без автоматичного перепланування.</p>
 
       <div className="filters-wrap">
         <details className="filter-dropdown">
@@ -492,49 +506,23 @@ export function TasksPage() {
       {error ? <p className="error-note">{error}</p> : null}
       {loading ? <p>Завантаження задач...</p> : null}
 
-      {!loading && filteredItems.length === 0 ? (
-        <p className="empty-note">Задач за поточним фільтром немає.</p>
-      ) : null}
+      {!loading && filteredItems.length === 0 ? <p className="empty-note">Задач за поточним фільтром немає.</p> : null}
 
-      {Object.entries(groupedByProject).map(([project, tasks]) => (
-        <section key={project} className="project-group">
-          <h3>{project}</h3>
-          <ul className="inbox-list">
-            {tasks.map((task) => {
-              const timing = timingLine(task);
-              return (
-                <li key={task.id} className="inbox-item">
-                  <p className="inbox-main-text">
-                    {task.title}
-                    {task.is_protected_essential ? <span className="essential-badge">Захищене важливе</span> : null}
-                  </p>
-                  <p className="inbox-meta">
-                    {taskTypeLabel(task.task_type)} · {statusLabel(task.status)}
-                  </p>
-                  {task.status === "cancelled" ? (
-                    <p className="inbox-meta">
-                      Причина: {moveReasonLabel(task.last_moved_reason) ?? "Не вказано"}
-                      {task.cancel_reason_text ? ` · ${task.cancel_reason_text}` : ""}
-                    </p>
-                  ) : null}
-                  <p className={timing.tone === "warn" ? "error-note" : "inbox-meta"}>{timing.label}</p>
-                  {task.linked_calendar_event ? <p className="inbox-meta">Пов'язано з Google Calendar</p> : null}
-                  <div className="inbox-actions">
-                    {task.status !== "done" ? (
-                      <button onClick={() => void runDone(task)} disabled={workingTaskId === task.id}>
-                        Виконано
-                      </button>
-                    ) : null}
-                    <button type="button" className="ghost" onClick={() => setActiveTask(task)}>
-                      Деталі
-                    </button>
-                  </div>
-                </li>
-              );
-            })}
-          </ul>
-        </section>
-      ))}
+      {!loading && filteredItems.length > 0 ? (
+        <>
+          <section className="today-section">
+            <h3>Заплановані</h3>
+            <p className="inbox-meta">Показує задачі з планованим стартом, відсортовані за часом.</p>
+            {renderTaskGroups(scheduledGroups, "Запланованих задач немає.")}
+          </section>
+
+          <section className="today-section">
+            <h3>Беклог</h3>
+            <p className="inbox-meta">Тут задачі без планованого старту. Дедлайн та оцінка лишаються видимими.</p>
+            {renderTaskGroups(backlogGroups, "Беклог порожній.")}
+          </section>
+        </>
+      ) : null}
 
       <TaskActionModal
         open={!!pendingAction}
@@ -568,7 +556,8 @@ export function TasksPage() {
                 projectId: payload.projectId,
                 taskType: payload.taskType,
                 dueAt: payload.dueAt,
-                scheduledFor: payload.scheduledFor
+                scheduledFor: payload.scheduledFor,
+                estimatedMinutes: payload.estimatedMinutes
               });
 
               setActiveTask(null);
@@ -641,3 +630,8 @@ export function TasksPage() {
     </section>
   );
 }
+
+
+
+
+

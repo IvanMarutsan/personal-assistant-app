@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import { useDiagnostics } from "../../lib/diagnostics";
+import { formatTaskDateTime, formatTaskTimingSummary, isBacklogTask, isDueOnDay, isScheduledForDay, sortTasksByTimeField } from "../../lib/taskTiming";
 import {
   ApiError,
   getAiAdvisor,
@@ -18,21 +19,7 @@ import type {
 } from "../../types/api";
 
 const SESSION_KEY = "personal_assistant_app_session_token";
-const USER_TIMEZONE = Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC";
 
-function parseDate(value: string | null): Date | null {
-  if (!value) return null;
-  const parsed = new Date(value);
-  return Number.isNaN(parsed.getTime()) ? null : parsed;
-}
-
-function formatLocalDateTime(value: Date): string {
-  return new Intl.DateTimeFormat("uk-UA", {
-    dateStyle: "short",
-    timeStyle: "short",
-    timeZone: USER_TIMEZONE
-  }).format(value);
-}
 
 function projectName(task: TaskItem): string {
   if (!task.projects) return "Без проєкту";
@@ -73,6 +60,14 @@ function reasonLabel(reason: string): string {
   return map[reason] ?? reason;
 }
 
+function fallbackReasonLabel(reason: string | null): string {
+  if (!reason) return "Резервний режим активовано без додаткової причини.";
+  if (reason === "openai_not_configured") return "OpenAI не налаштовано.";
+  if (reason === "invalid_ai_response") return "AI повернув невалідну відповідь.";
+  if (reason === "ai_request_failed") return "Не вдалося отримати відповідь від AI.";
+  return reason;
+}
+
 function startOfToday(now: Date): Date {
   const d = new Date(now);
   d.setHours(0, 0, 0, 0);
@@ -85,14 +80,6 @@ function endOfToday(now: Date): Date {
   return d;
 }
 
-function timingLine(task: TaskItem): string {
-  const scheduled = parseDate(task.scheduled_for);
-  const due = parseDate(task.due_at);
-  if (!scheduled && !due) return "Без часу";
-  if (scheduled && due) return `Заплановано: ${formatLocalDateTime(scheduled)} · Дедлайн: ${formatLocalDateTime(due)}`;
-  if (scheduled) return `Заплановано: ${formatLocalDateTime(scheduled)}`;
-  return `Дедлайн: ${due ? formatLocalDateTime(due) : ""}`;
-}
 
 export function TodayPage() {
   const [items, setItems] = useState<TaskItem[]>([]);
@@ -210,21 +197,42 @@ export function TodayPage() {
   const todayStart = startOfToday(now);
   const todayEnd = endOfToday(now);
 
-  const plannedToday = useMemo(() => {
-    return items.filter((task) => {
-      if (task.status !== "planned") return false;
-      const candidate = parseDate(task.scheduled_for) ?? parseDate(task.due_at);
-      return !!candidate && candidate >= todayStart && candidate <= todayEnd;
+  const scheduledToday = useMemo(() => {
+    const relevant = items.filter((task) => {
+      if (task.status === "done" || task.status === "cancelled") return false;
+      return isScheduledForDay(task, todayStart, todayEnd);
     });
+    return sortTasksByTimeField(relevant, "scheduled_for");
   }, [items, todayEnd, todayStart]);
 
-  const overduePlanned = useMemo(() => {
-    return items.filter((task) => {
-      if (task.status !== "planned") return false;
-      const candidate = parseDate(task.due_at) ?? parseDate(task.scheduled_for);
-      return !!candidate && candidate < todayStart;
+  const overdueScheduled = useMemo(() => {
+    const relevant = items.filter((task) => {
+      if (task.status === "done" || task.status === "cancelled") return false;
+      if (!task.scheduled_for) return false;
+      return new Date(task.scheduled_for).getTime() < todayStart.getTime();
     });
+    return sortTasksByTimeField(relevant, "scheduled_for");
   }, [items, todayStart]);
+
+  const dueTodayWithoutSchedule = useMemo(() => {
+    const relevant = items.filter((task) => {
+      if (task.status === "done" || task.status === "cancelled") return false;
+      if (!isBacklogTask(task)) return false;
+      return isDueOnDay(task, todayStart, todayEnd);
+    });
+    return sortTasksByTimeField(relevant, "due_at");
+  }, [items, todayEnd, todayStart]);
+
+  const backlogOpenCount = useMemo(
+    () =>
+      items.filter(
+        (task) =>
+          task.status !== "done" &&
+          task.status !== "cancelled" &&
+          isBacklogTask(task)
+      ).length,
+    [items]
+  );
 
   const protectedEssentials = useMemo(() => {
     return items.filter(
@@ -260,10 +268,11 @@ export function TodayPage() {
     });
   }, [calendarUpcoming, todayEnd]);
 
-  function renderSection(title: string, list: TaskItem[]) {
+  function renderSection(title: string, description: string, list: TaskItem[]) {
     return (
       <section className="today-section">
         <h3>{title}</h3>
+        <p className="inbox-meta">{description}</p>
         {list.length === 0 ? (
           <p className="empty-note">Порожньо.</p>
         ) : (
@@ -272,14 +281,12 @@ export function TodayPage() {
               <li className="inbox-item" key={task.id}>
                 <p className="inbox-main-text">
                   {task.title}
-                  {task.is_protected_essential ? (
-                    <span className="essential-badge">Захищене важливе</span>
-                  ) : null}
+                  {task.is_protected_essential ? <span className="essential-badge">Захищене важливе</span> : null}
                 </p>
                 <p className="inbox-meta">
-                  {projectName(task)} · {taskTypeLabel(task.task_type)} · {task.status === "blocked" ? "Заблоковано" : "Заплановано"}
+                  {projectName(task)} · {taskTypeLabel(task.task_type)} · {task.status === "blocked" ? "Заблоковано" : task.status === "in_progress" ? "В роботі" : "Заплановано"}
                 </p>
-                <p className="inbox-meta">{timingLine(task)}</p>
+                <p className="inbox-meta">{formatTaskTimingSummary(task)}</p>
               </li>
             ))}
           </ul>
@@ -291,7 +298,7 @@ export function TodayPage() {
   return (
     <section className="panel">
       <h2>Сьогодні</h2>
-      <p>Зріз дня: рекомендації, перевантаження, ризики й підсумок.</p>
+      <p>День будується навколо задач із планованим стартом на сьогодні, без автоматичного підтягування беклогу.</p>
 
       {!sessionToken ? <p className="empty-note">Відкрий Інбокс для авторизації сесії.</p> : null}
       {error ? (
@@ -328,7 +335,7 @@ export function TodayPage() {
               {planning.whatNow.secondary.map((item, index) => (
                 <li key={`${item.title}-${index}`}>
                   <strong>{item.title}</strong>
-                  <span> — {item.reason}</span>
+                  <span> - {item.reason}</span>
                 </li>
               ))}
             </ul>
@@ -396,12 +403,12 @@ export function TodayPage() {
           <h3>Порада AI</h3>
           {diagnostics.debugEnabled ? (
             <p className="inbox-meta">
-              Джерело: {aiAdvisor.source === "ai" ? `OpenAI (${aiAdvisor.model ?? "невідома модель"})` : "Fallback-правила"} ·
+              Джерело: {aiAdvisor.source === "ai" ? `OpenAI (${aiAdvisor.model ?? "невідома модель"})` : "Резервні правила"} ·
               Згенеровано: {new Date(aiAdvisor.generatedAt).toLocaleTimeString()}
             </p>
           ) : null}
           {aiAdvisor.fallbackReason && diagnostics.debugEnabled ? (
-            <p className="empty-note">AI fallback увімкнений: {aiAdvisor.fallbackReason}</p>
+            <p className="empty-note">Увімкнено резервний режим: {fallbackReasonLabel(aiAdvisor.fallbackReason)}</p>
           ) : null}
 
           <p className="assistant-title">{aiAdvisor.advisor.whatMattersMostNow}</p>
@@ -438,25 +445,36 @@ export function TodayPage() {
                     {calendarToday.slice(0, 4).map((event) => (
                       <li className="inbox-item" key={event.id}>
                         <p className="inbox-main-text">{event.title}</p>
-                        <p className="inbox-meta">{event.startAt ? formatLocalDateTime(new Date(event.startAt)) : "Без часу"}</p>
+                        <p className="inbox-meta">{event.startAt ? formatTaskDateTime(new Date(event.startAt)) : "Без часу"}</p>
                       </li>
                     ))}
                   </ul>
                 )}
                 {nextCalendarEvent ? (
                   <p className="inbox-meta">
-                    Наступна подія після сьогодні: {nextCalendarEvent.title} ·{" "}
-                    {nextCalendarEvent.startAt ? formatLocalDateTime(new Date(nextCalendarEvent.startAt)) : "Без часу"}
+                    Наступна подія після сьогодні: {nextCalendarEvent.title} · {nextCalendarEvent.startAt ? formatTaskDateTime(new Date(nextCalendarEvent.startAt)) : "Без часу"}
                   </p>
                 ) : null}
               </>
             )}
           </section>
-          {renderSection("Заплановано на сьогодні", plannedToday)}
-          {renderSection("Прострочені заплановані", overduePlanned)}
-          {renderSection("Захищені / регулярні essentials", protectedEssentials)}
+          <section className="today-section">
+            <h3>Структура дня</h3>
+            <p className="inbox-meta">Заплановано на сьогодні: {scheduledToday.length} · Дедлайни сьогодні без плану: {dueTodayWithoutSchedule.length} · У беклозі: {backlogOpenCount}</p>
+            <p className="inbox-meta">Сторінка «Сьогодні» зосереджена на задачах із планованим стартом. Беклог не підтягується в день автоматично.</p>
+          </section>
+          {renderSection("Заплановано на сьогодні", "Основний список дня: тільки задачі з планованим стартом на цей день.", scheduledToday)}
+          {renderSection("Прострочені заплановані", "Задачі, у яких планований старт уже лишився в минулому.", overdueScheduled)}
+          {renderSection("Дедлайни сьогодні без плану", "Окремо показані задачі з дедлайном на сьогодні, але без планованого старту.", dueTodayWithoutSchedule)}
+          {renderSection("Захищені / регулярні важливі", "Огляд важливих регулярних і захищених задач без автопланування.", protectedEssentials)}
         </>
       ) : null}
     </section>
   );
 }
+
+
+
+
+
+

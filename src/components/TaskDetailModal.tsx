@@ -19,6 +19,7 @@ type TaskDetailModalProps = {
     taskType: TaskType;
     dueAt: string | null;
     scheduledFor: string | null;
+    estimatedMinutes: number | null;
   }) => void;
   onAction: (action: TaskActionKind) => void;
   onCreateCalendarEvent: () => void;
@@ -60,6 +61,14 @@ function toIso(value: string): string | null {
   return parsed.toISOString();
 }
 
+function parseEstimatedMinutes(value: string): number | null {
+  const trimmed = value.trim();
+  if (!trimmed) return null;
+  const parsed = Number(trimmed);
+  if (!Number.isInteger(parsed) || parsed <= 0) return null;
+  return parsed;
+}
+
 function projectName(task: TaskItem): string {
   if (!task.projects) return "Без проєкту";
   if (Array.isArray(task.projects)) return task.projects[0]?.name ?? "Без проєкту";
@@ -78,13 +87,20 @@ function formatLocalDateTime(value: Date): string {
   }).format(value);
 }
 
+function formatEstimate(value: number | null | undefined): string {
+  if (!value) return "Без оцінки";
+  return `${value} хв`;
+}
+
 function timingLabel(task: TaskItem): string {
   const scheduled = task.scheduled_for ? formatLocalDateTime(new Date(task.scheduled_for)) : null;
   const due = task.due_at ? formatLocalDateTime(new Date(task.due_at)) : null;
-  if (!scheduled && !due) return "Без часу";
-  if (scheduled && due) return `Заплановано: ${scheduled} · Дедлайн: ${due}`;
-  if (scheduled) return `Заплановано: ${scheduled}`;
-  return `Дедлайн: ${due}`;
+  const estimate = formatEstimate(task.estimated_minutes);
+
+  if (!scheduled && !due) return `Беклог · Оцінка: ${estimate}`;
+  if (scheduled && due) return `Плановий старт: ${scheduled} · Дедлайн: ${due} · Оцінка: ${estimate}`;
+  if (scheduled) return `Плановий старт: ${scheduled} · Оцінка: ${estimate}`;
+  return `Беклог · Дедлайн: ${due} · Оцінка: ${estimate}`;
 }
 
 export function TaskDetailModal(props: TaskDetailModalProps) {
@@ -96,6 +112,7 @@ export function TaskDetailModal(props: TaskDetailModalProps) {
   const [taskType, setTaskType] = useState<TaskType>("admin_operational");
   const [scheduledForInput, setScheduledForInput] = useState("");
   const [dueAtInput, setDueAtInput] = useState("");
+  const [estimatedMinutesInput, setEstimatedMinutesInput] = useState("");
 
   useEffect(() => {
     if (!props.open || !props.task) return;
@@ -106,6 +123,7 @@ export function TaskDetailModal(props: TaskDetailModalProps) {
     setTaskType(props.task.task_type);
     setScheduledForInput(toLocalInput(props.task.scheduled_for));
     setDueAtInput(toLocalInput(props.task.due_at));
+    setEstimatedMinutesInput(props.task.estimated_minutes ? String(props.task.estimated_minutes) : "");
   }, [props.open, props.task?.id]);
 
   useEffect(() => {
@@ -124,6 +142,9 @@ export function TaskDetailModal(props: TaskDetailModalProps) {
     });
   }, [props.open, props.task?.id, editMode]);
 
+  const parsedEstimatedMinutes = useMemo(() => parseEstimatedMinutes(estimatedMinutesInput), [estimatedMinutesInput]);
+  const estimatedMinutesInvalid = estimatedMinutesInput.trim().length > 0 && parsedEstimatedMinutes === null;
+
   const isDirty = useMemo(() => {
     if (!props.task) return false;
     const sameTitle = title.trim() === props.task.title;
@@ -132,8 +153,9 @@ export function TaskDetailModal(props: TaskDetailModalProps) {
     const sameType = taskType === props.task.task_type;
     const sameScheduled = toIso(scheduledForInput) === (props.task.scheduled_for ?? null);
     const sameDue = toIso(dueAtInput) === (props.task.due_at ?? null);
-    return !(sameTitle && sameDetails && sameProject && sameType && sameScheduled && sameDue);
-  }, [props.task, title, details, projectId, taskType, scheduledForInput, dueAtInput]);
+    const sameEstimate = parsedEstimatedMinutes === (props.task.estimated_minutes ?? null);
+    return !(sameTitle && sameDetails && sameProject && sameType && sameScheduled && sameDue && sameEstimate);
+  }, [props.task, title, details, projectId, taskType, scheduledForInput, dueAtInput, parsedEstimatedMinutes]);
 
   if (!props.open || !props.task) return null;
 
@@ -158,6 +180,7 @@ export function TaskDetailModal(props: TaskDetailModalProps) {
     setTaskType(props.task.task_type);
     setScheduledForInput(toLocalInput(props.task.scheduled_for));
     setDueAtInput(toLocalInput(props.task.due_at));
+    setEstimatedMinutesInput(props.task.estimated_minutes ? String(props.task.estimated_minutes) : "");
     setEditMode(false);
   }
 
@@ -183,6 +206,7 @@ export function TaskDetailModal(props: TaskDetailModalProps) {
               <p className="inbox-meta">Проєкт: {projectName(task)}</p>
               <p className="inbox-meta">Тип: {taskTypeLabel(task.task_type)}</p>
               <p className="inbox-meta">Статус: {statusLabel(task.status)}</p>
+              <p className="inbox-meta">Планування: {task.scheduled_for ? "Заплановано" : "Беклог"}</p>
               <p className="inbox-meta">Час: {timingLabel(task)}</p>
               {task.linked_calendar_event ? (
                 <div className="project-group">
@@ -210,9 +234,7 @@ export function TaskDetailModal(props: TaskDetailModalProps) {
                   <p className="inbox-meta">
                     Причина скасування: {moveReasonLabel(task.last_moved_reason) ?? "Не вказано"}
                   </p>
-                  {task.cancel_reason_text ? (
-                    <p className="inbox-meta">Коментар: {task.cancel_reason_text}</p>
-                  ) : null}
+                  {task.cancel_reason_text ? <p className="inbox-meta">Коментар: {task.cancel_reason_text}</p> : null}
                 </>
               ) : null}
               <label>
@@ -271,12 +293,7 @@ export function TaskDetailModal(props: TaskDetailModalProps) {
 
               <label>
                 Опис
-                <textarea
-                  value={details}
-                  onChange={(event) => setDetails(event.target.value)}
-                  rows={6}
-                  disabled={props.busy}
-                />
+                <textarea value={details} onChange={(event) => setDetails(event.target.value)} rows={6} disabled={props.busy} />
               </label>
 
               <label>
@@ -298,11 +315,7 @@ export function TaskDetailModal(props: TaskDetailModalProps) {
 
               <label>
                 Тип
-                <select
-                  value={taskType}
-                  onChange={(event) => setTaskType(event.target.value as TaskType)}
-                  disabled={props.busy}
-                >
+                <select value={taskType} onChange={(event) => setTaskType(event.target.value as TaskType)} disabled={props.busy}>
                   {TASK_TYPE_OPTIONS.map((option) => (
                     <option key={option.value} value={option.value}>
                       {option.label}
@@ -312,7 +325,7 @@ export function TaskDetailModal(props: TaskDetailModalProps) {
               </label>
 
               <label>
-                Заплановано на
+                Планований старт
                 <input
                   type="datetime-local"
                   value={scheduledForInput}
@@ -329,6 +342,20 @@ export function TaskDetailModal(props: TaskDetailModalProps) {
                   onChange={(event) => setDueAtInput(event.target.value)}
                   disabled={props.busy}
                 />
+              </label>
+
+              <label>
+                Оцінка, хвилин
+                <input
+                  type="number"
+                  min={1}
+                  step={1}
+                  value={estimatedMinutesInput}
+                  onChange={(event) => setEstimatedMinutesInput(event.target.value)}
+                  placeholder="Наприклад, 30"
+                  disabled={props.busy}
+                />
+                {estimatedMinutesInvalid ? <p className="error-note">Оцінка має бути додатним цілим числом.</p> : null}
               </label>
             </>
           )}
@@ -351,10 +378,11 @@ export function TaskDetailModal(props: TaskDetailModalProps) {
                       projectId: projectId || null,
                       taskType,
                       dueAt: toIso(dueAtInput),
-                      scheduledFor: toIso(scheduledForInput)
+                      scheduledFor: toIso(scheduledForInput),
+                      estimatedMinutes: parsedEstimatedMinutes
                     })
                   }
-                  disabled={props.busy || !title.trim()}
+                  disabled={props.busy || !title.trim() || estimatedMinutesInvalid}
                 >
                   {props.busy ? "Збереження..." : "Зберегти"}
                 </button>
@@ -370,3 +398,4 @@ export function TaskDetailModal(props: TaskDetailModalProps) {
     </div>
   );
 }
+

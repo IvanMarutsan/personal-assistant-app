@@ -19,7 +19,7 @@ Deno.serve(async (req) => {
   const { data, error } = await supabase
     .from("tasks")
     .select(
-      "id, title, details, task_type, status, last_moved_reason, project_id, due_at, scheduled_for, is_protected_essential, calendar_provider, calendar_event_id, projects(name)"
+      "id, title, details, task_type, status, last_moved_reason, project_id, due_at, scheduled_for, estimated_minutes, is_protected_essential, calendar_provider, calendar_event_id, projects(name)"
     )
     .eq("user_id", sessionUser.userId)
     .order("created_at", { ascending: false })
@@ -92,3 +92,4 @@ Deno.serve(async (req) => {
 
   return jsonResponse({ ok: true, items });
 });
+

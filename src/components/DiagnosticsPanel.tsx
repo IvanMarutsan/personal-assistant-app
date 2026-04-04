@@ -24,31 +24,31 @@ export function DiagnosticsPanel() {
     <details className="diagnostics-panel">
       <summary>Діагностика тестування</summary>
       <div className="diagnostics-grid">
-        <p className="inbox-meta">Route: {diagnostics.currentRoute}</p>
-        <p className="inbox-meta">Environment: {diagnostics.environmentLabel}</p>
-        <p className="inbox-meta">Build: {diagnostics.buildMarker}</p>
-        <p className="inbox-meta">Session: {diagnostics.sessionState}</p>
-        <p className="inbox-meta">Timezone: {diagnostics.timezone}</p>
+        <p className="inbox-meta">Маршрут: {diagnostics.currentRoute}</p>
+        <p className="inbox-meta">Середовище: {diagnostics.environmentLabel}</p>
+        <p className="inbox-meta">Збірка: {diagnostics.buildMarker}</p>
+        <p className="inbox-meta">Сесія: {diagnostics.sessionState}</p>
+        <p className="inbox-meta">Часовий пояс: {diagnostics.timezone}</p>
         <p className="inbox-meta">
-          Last refresh: {diagnostics.lastRefreshAt ? new Date(diagnostics.lastRefreshAt).toLocaleString() : "—"}
+          Останнє оновлення: {diagnostics.lastRefreshAt ? new Date(diagnostics.lastRefreshAt).toLocaleString() : "—"}
         </p>
-        <p className="inbox-meta">Data source: {diagnostics.screenDataSource ?? "—"}</p>
+        <p className="inbox-meta">Джерело даних: {diagnostics.screenDataSource ?? "—"}</p>
         <p className="inbox-meta">
-          Last action: {diagnostics.lastAction ? `${diagnostics.lastAction.name}` : "—"}
+          Остання дія: {diagnostics.lastAction ? `${diagnostics.lastAction.name}` : "—"}
         </p>
         {diagnostics.lastAction?.context ? (
-          <p className="inbox-meta">Action context: {JSON.stringify(diagnostics.lastAction.context)}</p>
+          <p className="inbox-meta">Контекст дії: {JSON.stringify(diagnostics.lastAction.context)}</p>
         ) : null}
         {diagnostics.lastFailure ? (
           <div className="diagnostics-error-box">
             <p className="inbox-meta">
-              Last failed request: {diagnostics.lastFailure.path} · {diagnostics.lastFailure.status}
+              Останній невдалий запит: {diagnostics.lastFailure.path} · {diagnostics.lastFailure.status}
             </p>
-            <p className="inbox-meta">Code: {diagnostics.lastFailure.code ?? "—"}</p>
-            <p className="inbox-meta">Message: {diagnostics.lastFailure.message}</p>
+            <p className="inbox-meta">Код: {diagnostics.lastFailure.code ?? "—"}</p>
+            <p className="inbox-meta">Повідомлення: {diagnostics.lastFailure.message}</p>
           </div>
         ) : (
-          <p className="inbox-meta">Last failed request: none</p>
+          <p className="inbox-meta">Невдалих запитів не було</p>
         )}
       </div>
       <div className="inbox-actions">

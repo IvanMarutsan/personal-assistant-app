@@ -99,7 +99,7 @@ async function request<T>(path: string, init: RequestInit): Promise<T> {
 
   if (!response.ok) {
     const errorBody = body as ErrorResponse & { details?: string };
-    const rawMessage = errorBody.message ?? errorBody.error ?? `Request failed (${response.status})`;
+    const rawMessage = errorBody.message ?? errorBody.error ?? `Запит завершився помилкою (${response.status})`;
     const message = resolveUserSafeMessage(response.status, errorBody.error ?? null, rawMessage);
     console.error("[api] request_failed", {
       path,
@@ -295,6 +295,7 @@ export async function resolveVoiceCandidate(input: {
   importance?: number;
   dueAt?: string | null;
   scheduledFor?: string | null;
+  estimatedMinutes?: number | null;
   timezone?: string;
 }): Promise<{ allProcessed: boolean }> {
   const result = await request<{
@@ -315,6 +316,7 @@ export async function resolveVoiceCandidate(input: {
       importance: input.importance,
       dueAt: input.dueAt,
       scheduledFor: input.scheduledFor,
+      estimatedMinutes: input.estimatedMinutes ?? null,
       timezone: input.timezone ?? "UTC"
     })
   });
@@ -433,19 +435,24 @@ export async function updateTask(input: {
   taskType: TaskType;
   dueAt?: string | null;
   scheduledFor?: string | null;
+  estimatedMinutes?: number | null;
 }): Promise<void> {
+  const payload: Record<string, unknown> = {
+    taskId: input.taskId,
+    title: input.title,
+    details: input.details ?? null,
+    taskType: input.taskType
+  };
+
+  if (input.projectId !== undefined) payload.projectId = input.projectId;
+  if (input.dueAt !== undefined) payload.dueAt = input.dueAt;
+  if (input.scheduledFor !== undefined) payload.scheduledFor = input.scheduledFor;
+  if (input.estimatedMinutes !== undefined) payload.estimatedMinutes = input.estimatedMinutes;
+
   await request<{ ok: true }>("update-task", {
     method: "POST",
     headers: sessionHeaders(input.sessionToken),
-    body: JSON.stringify({
-      taskId: input.taskId,
-      title: input.title,
-      details: input.details ?? null,
-      projectId: input.projectId ?? null,
-      taskType: input.taskType,
-      dueAt: input.dueAt ?? null,
-      scheduledFor: input.scheduledFor ?? null
-    })
+    body: JSON.stringify(payload)
   });
 }
 
@@ -529,3 +536,7 @@ export async function getAiAdvisor(sessionToken: string): Promise<AiAdvisorSumma
     advisor: result.advisor
   };
 }
+
+
+
+

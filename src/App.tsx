@@ -18,7 +18,7 @@ export function App() {
         <p>Єдиний інбокс і простір адаптивного планування.</p>
         {diagnostics.debugEnabled ? (
           <p className="debug-badge">
-            debug · {diagnostics.environmentLabel} · {diagnostics.buildMarker} · {diagnostics.currentRoute}
+            режим відлагодження · {diagnostics.environmentLabel} · {diagnostics.buildMarker} · {diagnostics.currentRoute}
           </p>
         ) : null}
       </header>

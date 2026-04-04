@@ -18,6 +18,7 @@ type UpdateTaskBody = {
   taskType?: TaskType;
   dueAt?: string | null;
   scheduledFor?: string | null;
+  estimatedMinutes?: number | null;
 };
 
 function toIsoOrNull(value: string | null | undefined): string | null {
@@ -60,6 +61,13 @@ Deno.serve(async (req) => {
   if (body.scheduledFor && scheduledFor === null) {
     return jsonResponse({ ok: false, error: "invalid_scheduled_for" }, 400);
   }
+  if (
+    body.estimatedMinutes !== undefined &&
+    body.estimatedMinutes !== null &&
+    (!Number.isInteger(body.estimatedMinutes) || body.estimatedMinutes <= 0)
+  ) {
+    return jsonResponse({ ok: false, error: "invalid_estimated_minutes" }, 400);
+  }
 
   const supabase = createAdminClient();
 
@@ -96,15 +104,21 @@ Deno.serve(async (req) => {
   const updatePayload: Record<string, unknown> = {
     title,
     details: body.details?.trim() || null,
-    task_type: body.taskType,
-    due_at: dueAt,
-    scheduled_for: scheduledFor
+    task_type: body.taskType
   };
 
   if (body.projectId !== undefined) {
     updatePayload.project_id = projectId;
   }
-
+  if (body.dueAt !== undefined) {
+    updatePayload.due_at = dueAt;
+  }
+  if (body.scheduledFor !== undefined) {
+    updatePayload.scheduled_for = scheduledFor;
+  }
+  if (body.estimatedMinutes !== undefined) {
+    updatePayload.estimated_minutes = body.estimatedMinutes;
+  }
   const { error: updateError } = await supabase
     .from("tasks")
     .update(updatePayload)
@@ -117,3 +131,4 @@ Deno.serve(async (req) => {
 
   return jsonResponse({ ok: true, taskId: body.taskId });
 });
+
