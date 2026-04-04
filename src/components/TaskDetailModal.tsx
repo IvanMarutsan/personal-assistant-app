@@ -24,6 +24,8 @@ type TaskDetailModalProps = {
   onAction: (action: TaskActionKind) => void;
   onCreateCalendarEvent: () => void;
   onOpenLinkedCalendarEvent: (url: string) => void;
+  initialMode?: "view" | "edit";
+  showWorkflowActions?: boolean;
 };
 
 const TASK_TYPE_OPTIONS: Array<{ value: TaskType; label: string }> = [
@@ -114,9 +116,12 @@ export function TaskDetailModal(props: TaskDetailModalProps) {
   const [dueAtInput, setDueAtInput] = useState("");
   const [estimatedMinutesInput, setEstimatedMinutesInput] = useState("");
 
+  const initialMode = props.initialMode ?? "view";
+  const showWorkflowActions = props.showWorkflowActions ?? true;
+
   useEffect(() => {
     if (!props.open || !props.task) return;
-    setEditMode(false);
+    setEditMode(initialMode === "edit");
     setTitle(props.task.title);
     setDetails(props.task.details ?? "");
     setProjectId(props.task.project_id ?? "");
@@ -124,7 +129,7 @@ export function TaskDetailModal(props: TaskDetailModalProps) {
     setScheduledForInput(toLocalInput(props.task.scheduled_for));
     setDueAtInput(toLocalInput(props.task.due_at));
     setEstimatedMinutesInput(props.task.estimated_minutes ? String(props.task.estimated_minutes) : "");
-  }, [props.open, props.task?.id]);
+  }, [props.open, props.task?.id, initialMode]);
 
   useEffect(() => {
     if (!props.open) return;
@@ -181,6 +186,10 @@ export function TaskDetailModal(props: TaskDetailModalProps) {
     setScheduledForInput(toLocalInput(props.task.scheduled_for));
     setDueAtInput(toLocalInput(props.task.due_at));
     setEstimatedMinutesInput(props.task.estimated_minutes ? String(props.task.estimated_minutes) : "");
+    if (initialMode === "edit") {
+      props.onClose();
+      return;
+    }
     setEditMode(false);
   }
 
@@ -246,41 +255,45 @@ export function TaskDetailModal(props: TaskDetailModalProps) {
                 <button type="button" onClick={() => setEditMode(true)} disabled={props.busy}>
                   Редагувати
                 </button>
-                <button type="button" onClick={props.onCreateCalendarEvent} disabled={props.busy || task.status === "cancelled"}>
-                  {task.linked_calendar_event ? "Створити ще одну подію" : "У Google Calendar"}
-                </button>
-                {task.status !== "done" ? (
-                  <button type="button" onClick={() => props.onAction("done")} disabled={props.busy}>
-                    Виконано
-                  </button>
-                ) : null}
-                {(task.status === "planned" || task.status === "in_progress") && (
+                {showWorkflowActions ? (
                   <>
-                    <button type="button" onClick={() => props.onAction("reschedule")} disabled={props.busy}>
-                      Перенести
+                    <button type="button" onClick={props.onCreateCalendarEvent} disabled={props.busy || task.status === "cancelled"}>
+                      {task.linked_calendar_event ? "Створити ще одну подію" : "У Google Calendar"}
                     </button>
-                    <button type="button" onClick={() => props.onAction("block")} disabled={props.busy}>
-                      Заблокувати
-                    </button>
+                    {task.status !== "done" ? (
+                      <button type="button" onClick={() => props.onAction("done")} disabled={props.busy}>
+                        Виконано
+                      </button>
+                    ) : null}
+                    {(task.status === "planned" || task.status === "in_progress") && (
+                      <>
+                        <button type="button" onClick={() => props.onAction("reschedule")} disabled={props.busy}>
+                          Перенести
+                        </button>
+                        <button type="button" onClick={() => props.onAction("block")} disabled={props.busy}>
+                          Заблокувати
+                        </button>
+                      </>
+                    )}
+                    {task.status === "blocked" ? (
+                      <button type="button" onClick={() => props.onAction("unblock")} disabled={props.busy}>
+                        Розблокувати
+                      </button>
+                    ) : null}
+                    {task.status !== "cancelled" && task.status !== "done" ? (
+                      <button
+                        type="button"
+                        className="danger"
+                        onClick={() => {
+                          const confirmed = window.confirm("Скасувати задачу?");
+                          if (confirmed) props.onAction("cancel");
+                        }}
+                        disabled={props.busy}
+                      >
+                        Скасувати задачу
+                      </button>
+                    ) : null}
                   </>
-                )}
-                {task.status === "blocked" ? (
-                  <button type="button" onClick={() => props.onAction("unblock")} disabled={props.busy}>
-                    Розблокувати
-                  </button>
-                ) : null}
-                {task.status !== "cancelled" && task.status !== "done" ? (
-                  <button
-                    type="button"
-                    className="danger"
-                    onClick={() => {
-                      const confirmed = window.confirm("Скасувати задачу?");
-                      if (confirmed) props.onAction("cancel");
-                    }}
-                    disabled={props.busy}
-                  >
-                    Скасувати задачу
-                  </button>
                 ) : null}
               </div>
             </>
@@ -398,4 +411,3 @@ export function TaskDetailModal(props: TaskDetailModalProps) {
     </div>
   );
 }
-

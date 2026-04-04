@@ -5,6 +5,7 @@ import type {
   GoogleCalendarEventItem,
   GoogleCalendarStatus,
   InboxItem,
+  PlanningConversationState,
   MoveReasonCode,
   NoteItem,
   PlanningSummary,
@@ -541,3 +542,51 @@ export async function getAiAdvisor(sessionToken: string): Promise<AiAdvisorSumma
 
 
 
+
+
+export async function getPlanningConversation(input: {
+  sessionToken: string;
+  scopeDate: string;
+}): Promise<PlanningConversationState> {
+  return await request<PlanningConversationState & { ok: true }>(
+    `get-planning-conversation?scopeDate=${encodeURIComponent(input.scopeDate)}`,
+    {
+      method: "GET",
+      headers: sessionHeaders(input.sessionToken)
+    }
+  );
+}
+
+export async function sendPlanningConversationTurn(input: {
+  sessionToken: string;
+  scopeDate: string;
+  sessionId: string;
+  message: string;
+}): Promise<PlanningConversationState> {
+  return await request<PlanningConversationState & { ok: true }>("planning-conversation-turn", {
+    method: "POST",
+    headers: sessionHeaders(input.sessionToken),
+    body: JSON.stringify({
+      scopeDate: input.scopeDate,
+      sessionId: input.sessionId,
+      message: input.message
+    })
+  });
+}
+
+export async function updatePlanningProposal(input: {
+  sessionToken: string;
+  proposalId?: string;
+  assistantMessageId?: string;
+  action: "apply" | "dismiss" | "apply_all_latest" | "dismiss_all_latest";
+}): Promise<PlanningConversationState> {
+  return await request<PlanningConversationState & { ok: true }>("update-planning-proposal", {
+    method: "POST",
+    headers: sessionHeaders(input.sessionToken),
+    body: JSON.stringify({
+      proposalId: input.proposalId,
+      assistantMessageId: input.assistantMessageId,
+      action: input.action
+    })
+  });
+}

@@ -264,3 +264,78 @@ export type AiAdvisorSummary = {
 
 
 
+
+export type PlanningConversationProposalStatus = "proposed" | "applied" | "dismissed" | "superseded";
+
+export type PlanningConversationTaskPatch = {
+  scheduled_for?: string | null;
+  due_at?: string | null;
+  estimated_minutes?: number | null;
+};
+
+export type PlanningConversationSession = {
+  id: string;
+  scopeType: "day";
+  scopeDate: string;
+  status: "active" | "closed";
+  createdAt: string;
+  updatedAt: string;
+};
+
+export type PlanningConversationMessage = {
+  id: string;
+  sessionId: string;
+  role: "user" | "assistant";
+  content: string;
+  createdAt: string;
+};
+
+export type PlanningConversationTask = {
+  id: string;
+  title: string;
+  details: string | null;
+  taskType: TaskType;
+  status: TaskStatus;
+  importance: number;
+  isProtectedEssential: boolean;
+  projectId: string | null;
+  projectName: string | null;
+  dueAt: string | null;
+  scheduledFor: string | null;
+  estimatedMinutes: number | null;
+};
+
+export type PlanningConversationProposal = {
+  id: string;
+  sessionId: string;
+  assistantMessageId: string | null;
+  taskId: string;
+  proposalType: "task_patch";
+  payload: PlanningConversationTaskPatch;
+  rationale: string | null;
+  status: PlanningConversationProposalStatus;
+  createdAt: string;
+  updatedAt: string;
+  task: PlanningConversationTask | null;
+};
+
+export type PlanningConversationState = {
+  session: PlanningConversationSession;
+  messages: PlanningConversationMessage[];
+  proposals: PlanningConversationProposal[];
+  latestAssistantMessageId: string | null;
+  latestActionableAssistantMessageId: string | null;
+  latestActionableProposalIds: string[];
+  latestActionableProposalCount: number;
+  dayContext: {
+    timezone: string;
+    scopeDate: string;
+    dayStartIso: string;
+    dayEndIso: string;
+    plannedTodayCount: number;
+    dueTodayWithoutPlannedStartCount: number;
+    backlogCount: number;
+    scheduledKnownEstimateMinutes: number;
+    scheduledMissingEstimateCount: number;
+  };
+};

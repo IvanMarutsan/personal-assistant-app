@@ -433,3 +433,97 @@ button.danger {
     padding-bottom: 14px;
   }
 }
+
+.planning-modal {
+  width: min(680px, 100%);
+}
+
+.planning-body {
+  gap: 12px;
+}
+
+.planning-summary {
+  border: 1px solid #dbe8df;
+  border-radius: 10px;
+  padding: 10px;
+  background: #f8fcf9;
+}
+
+.planning-thread {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.planning-message {
+  border: 1px solid #dde7e0;
+  border-radius: 10px;
+  padding: 10px;
+}
+
+.planning-message--assistant {
+  background: #f7fbf8;
+}
+
+.planning-message--user {
+  background: #fffdf7;
+  border-color: #eadfc2;
+}
+
+.planning-message-role {
+  margin: 0 0 6px;
+  font-size: 0.8rem;
+  color: #5b6d61;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.planning-message-content {
+  margin: 0;
+  white-space: pre-wrap;
+}
+
+.planning-proposals {
+  margin-top: 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.planning-proposal-card {
+  border: 1px solid #d3e0d6;
+  border-radius: 10px;
+  padding: 10px;
+  background: #ffffff;
+}
+
+.planning-proposal-status {
+  margin: 8px 0 0;
+  font-size: 0.85rem;
+  color: #51685b;
+}
+
+.planning-compose {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-bottom: 10px;
+}
+
+.today-toolbar {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  margin-bottom: 8px;
+}
+
+.planning-bulk-actions {
+  margin-bottom: 4px;
+}
+
+.planning-proposal-task {
+  margin: 4px 0;
+  font-weight: 600;
+}
