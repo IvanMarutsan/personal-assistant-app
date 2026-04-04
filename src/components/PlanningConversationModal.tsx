@@ -1,14 +1,16 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+﻿import { useEffect, useMemo, useRef, useState } from "react";
 import type { ChangeEvent } from "react";
 import { formatTaskDateTime, formatTaskEstimate } from "../lib/taskTiming";
 import type {
   PlanningConversationProposal,
+  PlanningConversationScopeType,
   PlanningConversationState,
   PlanningConversationTaskPatch
 } from "../types/api";
 
 type PlanningConversationModalProps = {
   open: boolean;
+  scopeType: PlanningConversationScopeType;
   scopeDate: string;
   state: PlanningConversationState | null;
   busy: boolean;
@@ -26,10 +28,31 @@ type PlanningConversationModalProps = {
 
 type VoiceState = "idle" | "recording" | "transcribing";
 
-function formatScopeDate(scopeDate: string): string {
+function formatDayScopeDate(scopeDate: string): string {
   const parsed = new Date(`${scopeDate}T12:00:00`);
   if (Number.isNaN(parsed.getTime())) return scopeDate;
   return new Intl.DateTimeFormat("uk-UA", { dateStyle: "full" }).format(parsed);
+}
+
+function formatWeekScopeDate(scopeDate: string): string {
+  const start = new Date(`${scopeDate}T12:00:00`);
+  if (Number.isNaN(start.getTime())) return scopeDate;
+  const end = new Date(start);
+  end.setDate(end.getDate() + 6);
+  const formatter = new Intl.DateTimeFormat("uk-UA", { day: "numeric", month: "long" });
+  return `${formatter.format(start)} - ${formatter.format(end)}`;
+}
+
+function formatScopeLabel(scopeType: PlanningConversationScopeType, scopeDate: string): string {
+  return scopeType === "week" ? formatWeekScopeDate(scopeDate) : formatDayScopeDate(scopeDate);
+}
+
+function scopeHeading(scopeType: PlanningConversationScopeType): string {
+  return scopeType === "week" ? "Обговорити тиждень" : "Обговорити план";
+}
+
+function scopeSubtitle(scopeType: PlanningConversationScopeType, scopeDate: string): string {
+  return scopeType === "week" ? `Тиждень ${formatScopeLabel(scopeType, scopeDate)}` : `План на ${formatScopeLabel(scopeType, scopeDate)}`;
 }
 
 function proposalStatusLabel(
@@ -91,6 +114,12 @@ function voiceStatusLabel(state: VoiceState): string | null {
   if (state === "recording") return "Йде запис голосу...";
   if (state === "transcribing") return "Розпізнаємо голос...";
   return null;
+}
+
+function formatWeekDaySummary(scopeDate: string): string {
+  const parsed = new Date(`${scopeDate}T12:00:00`);
+  if (Number.isNaN(parsed.getTime())) return scopeDate;
+  return new Intl.DateTimeFormat("uk-UA", { weekday: "short", day: "numeric", month: "short" }).format(parsed);
 }
 
 export function PlanningConversationModal(props: PlanningConversationModalProps) {
@@ -235,15 +264,18 @@ export function PlanningConversationModal(props: PlanningConversationModalProps)
   const latestActionableAssistantMessageId = state?.latestActionableAssistantMessageId ?? null;
   const isInitialLoading = !state && props.busy && !props.errorMessage;
   const hasInitialLoadError = !state && !!props.errorMessage && !props.busy;
-  const statusScopeDate = formatScopeDate(state?.session.scopeDate ?? props.scopeDate);
+  const effectiveScopeType = state?.session.scopeType ?? props.scopeType;
+  const effectiveScopeDate = state?.session.scopeDate ?? props.scopeDate;
+  const statusScopeDate = formatScopeLabel(effectiveScopeType, effectiveScopeDate);
   const voiceStatus = voiceStatusLabel(voiceState);
+  const scopeContext = state?.scopeContext ?? null;
 
   return (
     <div className="modal-backdrop" role="dialog" aria-modal="true" onClick={props.onClose}>
       <section className="modal-card planning-modal" onClick={(event) => event.stopPropagation()}>
         <header className="modal-header">
-          <h3>Обговорити план</h3>
-          <p className="modal-task-title">План на {statusScopeDate}</p>
+          <h3>{scopeHeading(effectiveScopeType)}</h3>
+          <p className="modal-task-title">{scopeSubtitle(effectiveScopeType, effectiveScopeDate)}</p>
         </header>
 
         <div className="modal-body planning-body">
@@ -260,19 +292,39 @@ export function PlanningConversationModal(props: PlanningConversationModalProps)
             </section>
           ) : null}
 
-          {state ? (
+          {state && scopeContext ? (
             <>
               <section className="planning-summary">
                 <p className="inbox-meta">
-                  У плані: {state.dayContext.plannedTodayCount} · Дедлайни без плану: {state.dayContext.dueTodayWithoutPlannedStartCount} · Беклог: {state.dayContext.backlogCount}
+                  У плані: {scopeContext.plannedCount} · Дедлайни без плану: {scopeContext.dueWithoutPlannedStartCount} · Беклог: {scopeContext.backlogCount}
                 </p>
                 <p className="inbox-meta">
-                  Відоме навантаження: {formatTaskEstimate(state.dayContext.scheduledKnownEstimateMinutes) ?? "немає"} · Без оцінки: {state.dayContext.scheduledMissingEstimateCount}
+                  Відоме навантаження: {formatTaskEstimate(scopeContext.scheduledKnownEstimateMinutes) ?? "немає"} · Без оцінки: {scopeContext.scheduledMissingEstimateCount}
                 </p>
-                {state.dayContext.calendar.available ? (
+                {scopeContext.calendar.available ? (
                   <p className="inbox-meta">
-                    У календарі: {state.dayContext.calendar.eventCount} · Зайнято: {formatTaskEstimate(state.dayContext.calendar.busyMinutes) ?? `${state.dayContext.calendar.busyMinutes ?? 0} хв`}
-                    {state.dayContext.calendar.extraEventCount > 0 ? ` · Ще подій: ${state.dayContext.calendar.extraEventCount}` : ""}
+                    У календарі: {scopeContext.calendar.eventCount} · Зайнято: {formatTaskEstimate(scopeContext.calendar.busyMinutes) ?? `${scopeContext.calendar.busyMinutes ?? 0} хв`}
+                    {scopeContext.calendar.extraEventCount > 0 ? ` · Ще подій: ${scopeContext.calendar.extraEventCount}` : ""}
+                  </p>
+                ) : null}
+                {scopeContext.worklogs.count > 0 ? (
+                  <p className="inbox-meta">Контекстні записи: {scopeContext.worklogs.count} · Без проєкту: {scopeContext.worklogs.withoutProjectCount}</p>
+                ) : null}
+                {effectiveScopeType === "week" && scopeContext.weekDays.length > 0 ? (
+                  <ul className="assistant-secondary">
+                    {scopeContext.weekDays.map((day) => (
+                      <li key={day.scopeDate}>
+                        <strong>{formatWeekDaySummary(day.scopeDate)}</strong>
+                        <span>
+                          {` · План: ${day.plannedCount} · Дедлайни без плану: ${day.dueWithoutPlannedStartCount} · Оцінено: ${formatTaskEstimate(day.scheduledKnownEstimateMinutes) ?? "немає"}`}
+                        </span>
+                      </li>
+                    ))}
+                  </ul>
+                ) : null}
+                {scopeContext.notableDeadlines.length > 0 ? (
+                  <p className="inbox-meta">
+                    Дедлайни в межах {effectiveScopeType === "week" ? "тижня" : "дня"}: {scopeContext.notableDeadlines.slice(0, 4).map((item) => item.title).join(" · ")}
                   </p>
                 ) : null}
                 {state.latestActionableProposalCount > 0 ? (
@@ -286,7 +338,11 @@ export function PlanningConversationModal(props: PlanningConversationModalProps)
 
               <div className="planning-thread">
                 {state.messages.length === 0 ? (
-                  <p className="empty-note">Напиши, що саме хочеш переглянути в плані цього дня.</p>
+                  <p className="empty-note">
+                    {effectiveScopeType === "week"
+                      ? "Напиши, що саме хочеш переглянути в плані цього тижня."
+                      : "Напиши, що саме хочеш переглянути в плані цього дня."}
+                  </p>
                 ) : (
                   state.messages.map((message) => {
                     const linkedProposals = proposalsByMessageId.get(message.id) ?? [];
@@ -389,7 +445,7 @@ export function PlanningConversationModal(props: PlanningConversationModalProps)
                   rows={3}
                   value={draft}
                   onChange={(event) => setDraft(event.target.value)}
-                  placeholder="Наприклад: я не встигну все сьогодні, навчання можна на завтра"
+                  placeholder={effectiveScopeType === "week" ? "Наприклад: середа перевантажена, навчання можна посунути на п’ятницю" : "Наприклад: я не встигну все сьогодні, навчання можна на завтра"}
                   disabled={props.busy || voiceState === "transcribing"}
                 />
               </label>
@@ -464,5 +520,3 @@ export function PlanningConversationModal(props: PlanningConversationModalProps)
     </div>
   );
 }
-
-

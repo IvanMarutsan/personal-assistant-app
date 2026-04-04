@@ -1,4 +1,4 @@
-export type TelegramAuthPayload = {
+﻿export type TelegramAuthPayload = {
   initDataRaw: string;
 };
 
@@ -162,6 +162,12 @@ export type PlanningRecommendation = {
   tier: "overdue" | "hard_today" | "due_today_unscheduled" | "protected_essential" | "high_importance" | "quick_comm_batch";
 };
 
+export type WorklogContextSummary = {
+  count: number;
+  withoutProjectCount: number;
+  topProjects: Array<{ name: string; count: number }>;
+  sourceCounts: Array<{ source: string; count: number }>;
+};
 export type PlanningSummary = {
   generatedAt: string;
   timezone: string;
@@ -212,6 +218,7 @@ export type PlanningSummary = {
     cancelledTodayCount: number;
     protectedEssentialsMissedToday: number;
     topMovedReasons: Array<{ reason: string; count: number }>;
+    worklogs: WorklogContextSummary;
   };
   appliedThresholds: {
     plannedTodayOverload: number;
@@ -249,6 +256,7 @@ export type AiAdvisorSummary = {
       cancelledTodayCount: number;
       protectedEssentialsMissedToday: number;
     };
+    worklogs: WorklogContextSummary;
   };
   advisor: {
     whatMattersMostNow: string;
@@ -288,9 +296,11 @@ export type PlanningConversationTaskPatch = {
   estimated_minutes?: number | null;
 };
 
+export type PlanningConversationScopeType = "day" | "week";
+
 export type PlanningConversationSession = {
   id: string;
-  scopeType: "day";
+  scopeType: PlanningConversationScopeType;
   scopeDate: string;
   status: "active" | "closed";
   createdAt: string;
@@ -338,6 +348,33 @@ export type PlanningConversationCalendarContext = {
   events: PlanningConversationCalendarEvent[];
   extraEventCount: number;
 };
+
+export type PlanningConversationWorklogContext = {
+  count: number;
+  withoutProjectCount: number;
+  topProjects: Array<{ name: string; count: number }>;
+  sourceCounts: Array<{ source: string; count: number }>;
+};
+
+export type PlanningConversationScopeDaySummary = {
+  scopeDate: string;
+  plannedCount: number;
+  dueWithoutPlannedStartCount: number;
+  scheduledKnownEstimateMinutes: number;
+  scheduledMissingEstimateCount: number;
+  calendarEventCount: number;
+  calendarBusyMinutes: number | null;
+  worklogCount: number;
+  essentialScheduledCount: number;
+  flexibleScheduledCount: number;
+};
+
+export type PlanningConversationDeadlineSummary = {
+  taskId: string;
+  title: string;
+  projectName: string | null;
+  dueAt: string;
+};
 export type PlanningConversationProposal = {
   id: string;
   sessionId: string;
@@ -360,19 +397,26 @@ export type PlanningConversationState = {
   latestActionableAssistantMessageId: string | null;
   latestActionableProposalIds: string[];
   latestActionableProposalCount: number;
-  dayContext: {
+  scopeContext: {
+    scopeType: PlanningConversationScopeType;
     timezone: string;
     scopeDate: string;
-    dayStartIso: string;
-    dayEndIso: string;
-    plannedTodayCount: number;
-    dueTodayWithoutPlannedStartCount: number;
+    scopeStartIso: string;
+    scopeEndIso: string;
+    plannedCount: number;
+    dueWithoutPlannedStartCount: number;
     backlogCount: number;
     scheduledKnownEstimateMinutes: number;
     scheduledMissingEstimateCount: number;
     calendar: PlanningConversationCalendarContext;
+    worklogs: PlanningConversationWorklogContext;
+    weekDays: PlanningConversationScopeDaySummary[];
+    notableDeadlines: PlanningConversationDeadlineSummary[];
   };
 };
+
+
+
 
 
 

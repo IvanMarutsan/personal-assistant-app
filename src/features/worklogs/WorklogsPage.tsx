@@ -1,9 +1,11 @@
-﻿import { useEffect, useMemo, useState, type FormEvent } from "react";
+import { useEffect, useMemo, useState, type FormEvent } from "react";
 import { useDiagnostics } from "../../lib/diagnostics";
 import { ApiError, createWorklog, getProjects, getWorklogs } from "../../lib/api";
 import type { ProjectItem, WorklogItem } from "../../types/api";
 
 const SESSION_KEY = "personal_assistant_app_session_token";
+
+type InsightsRange = "today" | "last7days";
 
 function projectName(item: WorklogItem): string {
   if (!item.projects) return "Без проєкту";
@@ -12,7 +14,32 @@ function projectName(item: WorklogItem): string {
 }
 
 function formatOccurredAt(value: string): string {
-  return new Date(value).toLocaleString();
+  return new Intl.DateTimeFormat("uk-UA", {
+    day: "2-digit",
+    month: "2-digit",
+    year: "numeric",
+    hour: "2-digit",
+    minute: "2-digit"
+  }).format(new Date(value));
+}
+
+function sourceLabel(value: string | null): string {
+  if (value === "manual") return "Вручну";
+  if (value === "voice_candidate") return "З голосу";
+  if (value === "inbox") return "З інбоксу";
+  if (value === "inbox_triage") return "З інбоксу";
+  return "Інше";
+}
+
+function dayLabel(value: string): string {
+  return new Intl.DateTimeFormat("uk-UA", {
+    day: "2-digit",
+    month: "short"
+  }).format(new Date(value));
+}
+
+function startOfDay(date: Date): Date {
+  return new Date(date.getFullYear(), date.getMonth(), date.getDate());
 }
 
 export function WorklogsPage() {
@@ -20,6 +47,7 @@ export function WorklogsPage() {
   const [projects, setProjects] = useState<ProjectItem[]>([]);
   const [body, setBody] = useState("");
   const [projectId, setProjectId] = useState("");
+  const [range, setRange] = useState<InsightsRange>("today");
   const [loading, setLoading] = useState(false);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -76,7 +104,56 @@ export function WorklogsPage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
+  const now = useMemo(() => new Date(), []);
+  const rangeStart = useMemo(() => {
+    const todayStart = startOfDay(now);
+    if (range === "today") return todayStart;
+    const value = new Date(todayStart);
+    value.setDate(value.getDate() - 6);
+    return value;
+  }, [now, range]);
+
+  const filteredItems = useMemo(
+    () => items.filter((item) => new Date(item.occurred_at).getTime() >= rangeStart.getTime()),
+    [items, rangeStart]
+  );
+
   const hasItems = useMemo(() => items.length > 0, [items]);
+
+  const insights = useMemo(() => {
+    const byProject = new Map<string, number>();
+    const bySource = new Map<string, number>();
+    const byDay = new Map<string, number>();
+    let withoutProject = 0;
+
+    for (const item of filteredItems) {
+      const project = projectName(item);
+      if (project === "Без проєкту") {
+        withoutProject += 1;
+      } else {
+        byProject.set(project, (byProject.get(project) ?? 0) + 1);
+      }
+
+      const source = sourceLabel(item.source);
+      bySource.set(source, (bySource.get(source) ?? 0) + 1);
+
+      const day = item.occurred_at.slice(0, 10);
+      if (day) byDay.set(day, (byDay.get(day) ?? 0) + 1);
+    }
+
+    return {
+      total: filteredItems.length,
+      withoutProject,
+      byProject: Array.from(byProject.entries())
+        .sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0], "uk"))
+        .slice(0, 5),
+      bySource: Array.from(bySource.entries())
+        .sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0], "uk")),
+      byDay: Array.from(byDay.entries())
+        .sort((a, b) => a[0].localeCompare(b[0]))
+        .slice(-7)
+    };
+  }, [filteredItems]);
 
   async function submitWorklog(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -153,6 +230,57 @@ export function WorklogsPage() {
         </form>
       ) : null}
 
+      {sessionToken ? (
+        <section className="panel" style={{ marginTop: 16 }}>
+          <div className="toolbar-row">
+            <button type="button" className={range === "today" ? "" : "ghost"} onClick={() => setRange("today")}>
+              За сьогодні
+            </button>
+            <button type="button" className={range === "last7days" ? "" : "ghost"} onClick={() => setRange("last7days")}>
+              За 7 днів
+            </button>
+          </div>
+
+          <p className="inbox-meta">
+            {range === "today" ? `За сьогодні: ${insights.total} записів` : `За 7 днів: ${insights.total} записів`}
+          </p>
+          <p className="inbox-meta">Без проєкту: {insights.withoutProject}</p>
+
+          {insights.byProject.length > 0 ? (
+            <div>
+              <p className="inbox-main-text">Найчастіше згадувані проєкти</p>
+              {insights.byProject.map(([name, count]) => (
+                <p key={name} className="inbox-meta">
+                  {name}: {count}
+                </p>
+              ))}
+            </div>
+          ) : null}
+
+          {insights.bySource.length > 0 ? (
+            <div>
+              <p className="inbox-main-text">Джерела записів</p>
+              {insights.bySource.map(([name, count]) => (
+                <p key={name} className="inbox-meta">
+                  {name}: {count}
+                </p>
+              ))}
+            </div>
+          ) : null}
+
+          {range === "last7days" && insights.byDay.length > 0 ? (
+            <div>
+              <p className="inbox-main-text">Розподіл по днях</p>
+              {insights.byDay.map(([day, count]) => (
+                <p key={day} className="inbox-meta">
+                  {dayLabel(day)}: {count}
+                </p>
+              ))}
+            </div>
+          ) : null}
+        </section>
+      ) : null}
+
       {loading ? <p>Завантаження контексту...</p> : null}
       {!loading && !hasItems ? <p className="empty-note">Контекстних записів поки немає.</p> : null}
 
@@ -161,7 +289,7 @@ export function WorklogsPage() {
           {items.map((item) => (
             <li key={item.id} className="inbox-item">
               <p className="inbox-meta">
-                {projectName(item)} · сталося: {formatOccurredAt(item.occurred_at)}
+                {projectName(item)} · сталося: {formatOccurredAt(item.occurred_at)} · {sourceLabel(item.source)}
               </p>
               <p className="worklog-entry-body">{item.body}</p>
             </li>

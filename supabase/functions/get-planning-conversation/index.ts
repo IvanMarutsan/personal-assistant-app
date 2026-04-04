@@ -1,6 +1,11 @@
-import { createAdminClient } from "../_shared/db.ts";
+﻿import { createAdminClient } from "../_shared/db.ts";
 import { handleOptions, jsonResponse } from "../_shared/http.ts";
-import { loadPlanningConversationState, validateScopeDate } from "../_shared/planning-conversation.ts";
+import {
+  loadPlanningConversationState,
+  normalizeScopeDateForType,
+  validateScopeDate,
+  validateScopeType
+} from "../_shared/planning-conversation.ts";
 import { resolveSessionUser } from "../_shared/session.ts";
 
 Deno.serve(async (req) => {
@@ -17,14 +22,21 @@ Deno.serve(async (req) => {
   }
 
   const url = new URL(req.url);
+  const scopeType = validateScopeType(url.searchParams.get("scopeType"));
   const scopeDate = validateScopeDate(url.searchParams.get("scopeDate"));
-  if (!scopeDate) {
-    return jsonResponse({ ok: false, error: "invalid_scope_date" }, 400);
+  if (!scopeType || !scopeDate) {
+    return jsonResponse({ ok: false, error: "invalid_scope" }, 400);
   }
 
   try {
     const supabase = createAdminClient();
-    const state = await loadPlanningConversationState(supabase, sessionUser.userId, scopeDate);
+    const normalizedScopeDate = await normalizeScopeDateForType(supabase, sessionUser.userId, scopeType, scopeDate);
+    const state = await loadPlanningConversationState(
+      supabase,
+      sessionUser.userId,
+      scopeType,
+      normalizedScopeDate
+    );
     return jsonResponse({ ok: true, ...state });
   } catch (error) {
     return jsonResponse(

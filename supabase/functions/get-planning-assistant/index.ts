@@ -67,12 +67,51 @@ type Recommendation = {
     | "quick_comm_batch";
 };
 
+type WorklogRow = {
+  source: string | null;
+  projects?: { name: string } | { name: string }[] | null;
+};
 function taskProjectName(task: TaskRow): string | null {
   if (!task.projects) return null;
   if (Array.isArray(task.projects)) return task.projects[0]?.name ?? null;
   return task.projects.name ?? null;
 }
 
+function worklogProjectName(worklog: WorklogRow): string | null {
+  if (!worklog.projects) return null;
+  if (Array.isArray(worklog.projects)) return worklog.projects[0]?.name ?? null;
+  return worklog.projects.name ?? null;
+}
+
+function summarizeWorklogs(worklogs: WorklogRow[]) {
+  const byProject = new Map<string, number>();
+  const bySource = new Map<string, number>();
+  let withoutProjectCount = 0;
+
+  for (const worklog of worklogs) {
+    const project = worklogProjectName(worklog);
+    if (project) {
+      byProject.set(project, (byProject.get(project) ?? 0) + 1);
+    } else {
+      withoutProjectCount += 1;
+    }
+
+    const source = worklog.source ?? "other";
+    bySource.set(source, (bySource.get(source) ?? 0) + 1);
+  }
+
+  return {
+    count: worklogs.length,
+    withoutProjectCount,
+    topProjects: Array.from(byProject.entries())
+      .sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0], "uk-UA"))
+      .slice(0, 3)
+      .map(([name, count]) => ({ name, count })),
+    sourceCounts: Array.from(bySource.entries())
+      .sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0], "uk-UA"))
+      .map(([source, count]) => ({ source, count }))
+  };
+}
 function taskScheduledTime(task: TaskRow, zone: string): DateTime | null {
   if (!task.scheduled_for) return null;
   const dt = DateTime.fromISO(task.scheduled_for, { zone: "utc" }).setZone(zone);
@@ -241,6 +280,22 @@ Deno.serve(async (req) => {
 
   const events = (eventsData ?? []) as TaskEventRow[];
 
+  const { data: worklogsData, error: worklogsError } = await supabase
+    .from("worklogs")
+    .select("source, projects(name)")
+    .eq("user_id", sessionUser.userId)
+    .gte("occurred_at", dayStart.toUTC().toISO())
+    .lte("occurred_at", dayEnd.toUTC().toISO())
+    .limit(500);
+
+  if (worklogsError) {
+    return jsonResponse({ ok: false, error: "worklogs_fetch_failed" }, 500);
+  }
+
+  const worklogs = (worklogsData ?? []) as WorklogRow[];
+  const worklogSummary = summarizeWorklogs(worklogs);
+
+
   const activeTasks = tasks.filter((task) => task.status !== "done");
   const actionableTasks = activeTasks.filter(
     (task) => task.status === "planned" || task.status === "in_progress"
@@ -309,7 +364,7 @@ Deno.serve(async (req) => {
 
   const overloadFlags: Array<{ code: string; message: string }> = [];
   if (plannedTodayCount > planningThresholds.plannedTodayOverload) {
-    overloadFlags.push({ code: "too_many_planned_today", message: "?? ??? ???? ??????????? ???????? ?????." });
+    overloadFlags.push({ code: "too_many_planned_today", message: "На цей день заплановано забагато задач." });
   }
   if (overduePlanned.length > planningThresholds.overdueOverload) {
     overloadFlags.push({ code: "too_many_overdue", message: "Прострочених запланованих задач уже забагато." });
@@ -317,7 +372,7 @@ Deno.serve(async (req) => {
   if (dueTodayWithoutPlannedStart.length > 0) {
     overloadFlags.push({
       code: "due_today_without_planned_start",
-      message: "? ?????? ? ????????? ?? ??? ???? ??? ??????????? ??????. ???? ?? ??????? ? ???? ???????????."
+      message: "Є задачі з дедлайном на цей день без запланованого старту. Їх треба окремо вирішити."
     });
   }
   if (scheduledToday.length > 0 && scheduledMissingEstimateCount > 0) {
@@ -329,13 +384,19 @@ Deno.serve(async (req) => {
   if (protectedPending.length > 0 && protectedScheduledTodayCount === 0) {
     overloadFlags.push({
       code: "protected_essentials_missing_today",
-      message: "???????? ??????? ?????? ?? ????????, ??? ?? ???????????? ? ????? ????? ???."
+      message: "Захищені важливі задачі відкриті, але не заплановані на цей день."
     });
   }
   if (quickCommunicationOpen.length >= planningThresholds.quickCommunicationOverload) {
     overloadFlags.push({
       code: "excessive_quick_communication",
       message: "Швидких комунікацій забагато. Краще виконати їх одним блоком."
+    });
+  }
+  if (worklogSummary.count >= 3) {
+    overloadFlags.push({
+      code: "reactive_work_logged",
+      message: "У цей день уже є кілька контекстних записів. Частина часу пішла на реактивні дрібні дії або перемикання контексту."
     });
   }
 
@@ -438,10 +499,15 @@ Deno.serve(async (req) => {
       movedTodayCount,
       cancelledTodayCount,
       protectedEssentialsMissedToday,
-      topMovedReasons
+      topMovedReasons,
+      worklogs: worklogSummary
     },
     appliedThresholds: planningThresholds
   });
 });
+
+
+
+
 
 

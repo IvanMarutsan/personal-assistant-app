@@ -1,4 +1,4 @@
-import { createAdminClient } from "../_shared/db.ts";
+﻿import { createAdminClient } from "../_shared/db.ts";
 import { handleOptions, jsonResponse, safeJson } from "../_shared/http.ts";
 import {
   getLatestActionableAssistantMessageId,
@@ -174,7 +174,7 @@ Deno.serve(async (req) => {
 
       const { data: session, error: sessionError } = await supabase
         .from("planning_sessions")
-        .select("id, user_id, scope_date")
+        .select("id, user_id, scope_type, scope_date")
         .eq("id", proposalRow.session_id)
         .eq("user_id", sessionUser.userId)
         .maybeSingle();
@@ -197,14 +197,14 @@ Deno.serve(async (req) => {
           return jsonResponse({ ok: false, error: "proposal_dismiss_failed" }, 500);
         }
 
-        const state = await loadPlanningConversationState(supabase, sessionUser.userId, session.scope_date as string);
+        const state = await loadPlanningConversationState(supabase, sessionUser.userId, (session.scope_type as "day" | "week") ?? "day", session.scope_date as string);
         return jsonResponse({ ok: true, ...state });
       }
 
       const applyResponse = await applyProposalRows(supabase, sessionUser.userId, [proposalRow]);
       if (applyResponse) return applyResponse;
 
-      const state = await loadPlanningConversationState(supabase, sessionUser.userId, session.scope_date as string);
+      const state = await loadPlanningConversationState(supabase, sessionUser.userId, (session.scope_type as "day" | "week") ?? "day", session.scope_date as string);
       return jsonResponse({ ok: true, ...state });
     }
 
@@ -230,7 +230,7 @@ Deno.serve(async (req) => {
 
     const { data: session, error: sessionError } = await supabase
       .from("planning_sessions")
-      .select("id, user_id, scope_date")
+      .select("id, user_id, scope_type, scope_date")
       .eq("id", sessionId)
       .eq("user_id", sessionUser.userId)
       .maybeSingle();
@@ -265,7 +265,7 @@ Deno.serve(async (req) => {
         return jsonResponse({ ok: false, error: "proposal_dismiss_failed" }, 500);
       }
 
-      const state = await loadPlanningConversationState(supabase, sessionUser.userId, session.scope_date as string);
+      const state = await loadPlanningConversationState(supabase, sessionUser.userId, (session.scope_type as "day" | "week") ?? "day", session.scope_date as string);
       return jsonResponse({ ok: true, ...state });
     }
 
@@ -276,7 +276,7 @@ Deno.serve(async (req) => {
     const applyResponse = await applyProposalRows(supabase, sessionUser.userId, activeSet);
     if (applyResponse) return applyResponse;
 
-    const state = await loadPlanningConversationState(supabase, sessionUser.userId, session.scope_date as string);
+    const state = await loadPlanningConversationState(supabase, sessionUser.userId, (session.scope_type as "day" | "week") ?? "day", session.scope_date as string);
     return jsonResponse({ ok: true, ...state });
   } catch (error) {
     return jsonResponse(
@@ -289,3 +289,4 @@ Deno.serve(async (req) => {
     );
   }
 });
+

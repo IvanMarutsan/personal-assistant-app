@@ -1,19 +1,24 @@
-import { DateTime } from "npm:luxon@3.6.1";
+﻿import { DateTime } from "npm:luxon@3.6.1";
 import { createAdminClient } from "../_shared/db.ts";
 import { handleOptions, jsonResponse, safeJson } from "../_shared/http.ts";
 import {
-  buildPlanningDayContext,
+  buildPlanningContext,
   ensurePlanningSession,
   loadPlanningConversationState,
+  normalizeScopeDateForType,
   normalizeTaskPatchPayload,
+  type PlanningConversationContext,
   type PlanningConversationMessage,
   type PlanningConversationTask,
+  type PlanningScopeType,
   type TaskPatchPayload,
-  validateScopeDate
+  validateScopeDate,
+  validateScopeType
 } from "../_shared/planning-conversation.ts";
 import { resolveSessionUser } from "../_shared/session.ts";
 
 type TurnBody = {
+  scopeType?: PlanningScopeType;
   scopeDate?: string;
   sessionId?: string;
   message?: string;
@@ -37,9 +42,10 @@ type ParsedProposal = {
   rationale: string | null;
   payload: TaskPatchPayload;
 };
+
 function hasUkrainianSignal(text: string | null | undefined): boolean {
   if (!text) return false;
-  return /[?-??-?????????]/.test(text);
+  return /[\u0400-\u04FF]/.test(text);
 }
 
 function parseAiPayload(raw: string): AiTurnPayload | null {
@@ -100,20 +106,128 @@ function normalizeAiProposals(raw: RawAiProposal[], allowedTaskIds: Set<string>)
   return result;
 }
 
+function buildPromptInput(
+  scopeType: PlanningScopeType,
+  scopeDate: string,
+  timezone: string,
+  currentTimeIso: string,
+  history: PlanningConversationMessage[],
+  context: PlanningConversationContext
+) {
+  if (context.scopeType === "week") {
+    return {
+      scopeType: "week",
+      scopeDate,
+      timezone,
+      currentLocalTime: currentTimeIso,
+      weekRange: {
+        startDate: context.scopeDate,
+        endDate: DateTime.fromISO(context.scopeEndIso, { zone: "utc" }).setZone(timezone).toISODate()
+      },
+      weekSummary: {
+        plannedCount: context.plannedCount,
+        dueWithoutPlannedStartCount: context.dueWithoutPlannedStartCount,
+        backlogCount: context.backlogCount,
+        scheduledKnownEstimateMinutes: context.scheduledKnownEstimateMinutes,
+        scheduledMissingEstimateCount: context.scheduledMissingEstimateCount,
+        calendarEventCount: context.calendar.eventCount,
+        calendarBusyMinutes: context.calendar.busyMinutes,
+        worklogCount: context.worklogs.count
+      },
+      weekDays: context.weekDays,
+      notableDeadlines: context.notableDeadlines,
+      worklogs: context.worklogs,
+      tasks: {
+        scheduledInWeek: context.scheduledInWeek.map(toPromptTask),
+        dueInWeekWithoutPlannedStart: context.dueInWeekWithoutPlannedStart.map(toPromptTask),
+        relevantBacklog: context.relevantBacklog.map(toPromptTask)
+      },
+      conversationHistory: formatHistory(history),
+      outputRules: {
+        assistant_text: "Стислий людський коментар українською.",
+        proposals: [
+          {
+            proposal_type: "task_patch",
+            task_id: "один із task ids з контексту",
+            rationale: "чому саме ця зміна доречна",
+            payload: {
+              scheduled_for: "ISO-рядок або null",
+              due_at: "ISO-рядок або null",
+              estimated_minutes: "додатне ціле число або null"
+            }
+          }
+        ]
+      }
+    };
+  }
+
+  return {
+    scopeType: "day",
+    scopeDate,
+    timezone,
+    currentLocalTime: currentTimeIso,
+    daySummary: {
+      plannedCount: context.plannedCount,
+      dueWithoutPlannedStartCount: context.dueWithoutPlannedStartCount,
+      backlogCount: context.backlogCount,
+      scheduledKnownEstimateMinutes: context.scheduledKnownEstimateMinutes,
+      scheduledMissingEstimateCount: context.scheduledMissingEstimateCount,
+      worklogCount: context.worklogs.count
+    },
+    calendar: {
+      connected: context.calendar.connected,
+      available: context.calendar.available,
+      eventCount: context.calendar.eventCount,
+      busyMinutes: context.calendar.busyMinutes,
+      events: context.calendar.events,
+      extraEventCount: context.calendar.extraEventCount
+    },
+    worklogs: context.worklogs,
+    tasks: {
+      scheduledToday: context.scheduledToday.map(toPromptTask),
+      dueTodayWithoutPlannedStart: context.dueTodayWithoutPlannedStart.map(toPromptTask),
+      relevantBacklog: context.relevantBacklog.map(toPromptTask)
+    },
+    conversationHistory: formatHistory(history),
+    outputRules: {
+      assistant_text: "Стислий людський коментар українською.",
+      proposals: [
+        {
+          proposal_type: "task_patch",
+          task_id: "один із task ids з контексту",
+          rationale: "чому саме ця зміна доречна",
+          payload: {
+            scheduled_for: "ISO-рядок або null",
+            due_at: "ISO-рядок або null",
+            estimated_minutes: "додатне ціле число або null"
+          }
+        }
+      ]
+    }
+  };
+}
+
 async function generateAiTurn(input: {
   apiKey: string;
   model: string;
+  scopeType: PlanningScopeType;
   scopeDate: string;
   timezone: string;
   currentTimeIso: string;
   history: PlanningConversationMessage[];
-  context: Awaited<ReturnType<typeof buildPlanningDayContext>>;
+  context: PlanningConversationContext;
 }): Promise<{ assistantText: string; proposals: ParsedProposal[] } | null> {
-  const relevantTasks = [
-    ...input.context.scheduledToday,
-    ...input.context.dueTodayWithoutPlannedStart,
-    ...input.context.relevantBacklog
-  ];
+  const relevantTasks = input.context.scopeType === "week"
+    ? [
+        ...input.context.scheduledInWeek,
+        ...input.context.dueInWeekWithoutPlannedStart,
+        ...input.context.relevantBacklog
+      ]
+    : [
+        ...input.context.scheduledToday,
+        ...input.context.dueTodayWithoutPlannedStart,
+        ...input.context.relevantBacklog
+      ];
   const allowedTaskIds = new Set(relevantTasks.map((task) => task.id));
 
   const requestBody = {
@@ -123,56 +237,18 @@ async function generateAiTurn(input: {
       {
         role: "system",
         content:
-          "Ти помічник денного планування в українськомовному mini app. Ти не застосовуєш зміни самостійно, а лише пропонуєш вузькі task_patch зміни. Backlog = scheduled_for IS NULL. due_at без scheduled_for не означає, що задача вже стоїть у денному плані. Враховуй read-only календар дня як контекст фіксованих подій і зайнятих вікон, якщо він доступний. Календарні події не можна змінювати, пересувати чи коментувати як proposal action. Якщо день уже щільно зайнятий календарем, будь консервативним з новими planned start у межах цього дня. Відповідай українською коротко і практично. planningFlexibility = essential означає, що задачу краще не рухати без потреби; flexible означає, що її легше посунути вручну. Пропозиції можуть змінювати тільки scheduled_for, due_at, estimated_minutes і ніколи не повинні змінювати planningFlexibility. Дозволено очищати scheduled_for, щоб повернути задачу в беклог. Якщо користувач просить перенести задачу на інший день без конкретного часу, використай 09:00 локального часу цього дня. Не придумуй задачі, яких немає в контексті. Якщо пропонувати нічого, поверни порожній список proposals."
+          "Ти помічник планування в українськомовному mini app. Ти не застосовуєш зміни самостійно, а лише пропонуєш вузькі task_patch зміни. Backlog = scheduled_for IS NULL. due_at без scheduled_for не означає, що задача вже стоїть у плані. Враховуй read-only календар як контекст зайнятості, якщо він доступний. Календарні події не можна змінювати чи пропонувати як action. Worklogs — це лише м'який read-only сигнал про реактивну роботу та перемикання контексту. planningFlexibility = essential означає, що задачу краще не рухати без потреби; flexible означає, що її легше посунути вручну. Пропозиції можуть змінювати тільки scheduled_for, due_at, estimated_minutes і ніколи не повинні змінювати planningFlexibility. Дозволено очищати scheduled_for, щоб повернути задачу в беклог. Якщо користувач просить перенести задачу на інший день без конкретного часу, використай 09:00 локального часу цього дня. Не придумуй задачі, яких немає в контексті. Якщо пропонувати нічого, поверни порожній список proposals. Для week scope будь консервативним: шукай перевантажені дні, дедлайни без плану та легкі ручні перенесення в межах цього тижня, без глибокої оптимізації."
       },
       {
         role: "user",
-        content: JSON.stringify(
-          {
-            scopeType: "day",
-            scopeDate: input.scopeDate,
-            timezone: input.timezone,
-            currentLocalTime: input.currentTimeIso,
-            daySummary: {
-              plannedTodayCount: input.context.plannedTodayCount,
-              dueTodayWithoutPlannedStartCount: input.context.dueTodayWithoutPlannedStartCount,
-              backlogCount: input.context.backlogCount,
-              scheduledKnownEstimateMinutes: input.context.scheduledKnownEstimateMinutes,
-              scheduledMissingEstimateCount: input.context.scheduledMissingEstimateCount
-            },
-            calendar: {
-              connected: input.context.calendar.connected,
-              available: input.context.calendar.available,
-              eventCount: input.context.calendar.eventCount,
-              busyMinutes: input.context.calendar.busyMinutes,
-              events: input.context.calendar.events,
-              extraEventCount: input.context.calendar.extraEventCount
-            },
-            tasks: {
-              scheduledToday: input.context.scheduledToday.map(toPromptTask),
-              dueTodayWithoutPlannedStart: input.context.dueTodayWithoutPlannedStart.map(toPromptTask),
-              relevantBacklog: input.context.relevantBacklog.map(toPromptTask)
-            },
-            conversationHistory: formatHistory(input.history),
-            outputRules: {
-              assistant_text: "Стислий людський коментар українською.",
-              proposals: [
-                {
-                  proposal_type: "task_patch",
-                  task_id: "один із task ids з контексту",
-                  rationale: "чому саме ця зміна доречна",
-                  payload: {
-                    scheduled_for: "ISO-рядок або null",
-                    due_at: "ISO-рядок або null",
-                    estimated_minutes: "додатне ціле число або null"
-                  }
-                }
-              ]
-            }
-          },
-          null,
-          2
-        )
+        content: JSON.stringify(buildPromptInput(
+          input.scopeType,
+          input.scopeDate,
+          input.timezone,
+          input.currentTimeIso,
+          input.history,
+          input.context
+        ), null, 2)
       }
     ],
     response_format: {
@@ -186,7 +262,7 @@ async function generateAiTurn(input: {
             assistant_text: { type: "string" },
             proposals: {
               type: "array",
-              maxItems: 8,
+              maxItems: 10,
               items: {
                 type: "object",
                 additionalProperties: false,
@@ -235,7 +311,11 @@ async function generateAiTurn(input: {
   if (!parsed) return null;
 
   return {
-    assistantText: parsed.assistant_text?.trim() || "Я не бачу достатньо підстав для конкретних змін у плані на цей день.",
+    assistantText:
+      parsed.assistant_text?.trim() ||
+      (input.scopeType === "week"
+        ? "Я не бачу достатньо підстав для конкретних змін у плані цього тижня."
+        : "Я не бачу достатньо підстав для конкретних змін у плані цього дня."),
     proposals: normalizeAiProposals(parsed.proposals ?? [], allowedTaskIds)
   };
 }
@@ -254,11 +334,12 @@ Deno.serve(async (req) => {
   }
 
   const body = await safeJson<TurnBody>(req);
-  const scopeDate = validateScopeDate(body?.scopeDate);
+  const scopeType = validateScopeType(body?.scopeType ?? "day");
+  const rawScopeDate = validateScopeDate(body?.scopeDate);
   const userMessage = body?.message?.trim();
 
-  if (!scopeDate) {
-    return jsonResponse({ ok: false, error: "invalid_scope_date" }, 400);
+  if (!scopeType || !rawScopeDate) {
+    return jsonResponse({ ok: false, error: "invalid_scope" }, 400);
   }
   if (!userMessage) {
     return jsonResponse({ ok: false, error: "missing_message" }, 400);
@@ -266,7 +347,8 @@ Deno.serve(async (req) => {
 
   try {
     const supabase = createAdminClient();
-    const session = await ensurePlanningSession(supabase, sessionUser.userId, scopeDate);
+    const scopeDate = await normalizeScopeDateForType(supabase, sessionUser.userId, scopeType, rawScopeDate);
+    const session = await ensurePlanningSession(supabase, sessionUser.userId, scopeType, scopeDate);
     if (body?.sessionId && body.sessionId !== session.id) {
       return jsonResponse({ ok: false, error: "invalid_session_id" }, 400);
     }
@@ -285,7 +367,7 @@ Deno.serve(async (req) => {
       return jsonResponse({ ok: false, error: "planning_message_create_failed" }, 500);
     }
 
-    const context = await buildPlanningDayContext(supabase, sessionUser.userId, scopeDate);
+    const context = await buildPlanningContext(supabase, sessionUser.userId, scopeType, scopeDate);
     const { data: historyData, error: historyError } = await supabase
       .from("planning_messages")
       .select("id, session_id, role, content, created_at")
@@ -299,13 +381,17 @@ Deno.serve(async (req) => {
 
     const openAiApiKey = Deno.env.get("OPENAI_API_KEY");
     const model = Deno.env.get("OPENAI_MODEL") ?? "gpt-4.1-mini";
-    let assistantText = "Зараз не вдалося зібрати AI-пропозиції. Можеш уточнити, що саме перенести або що точно лишити на сьогодні.";
+    let assistantText =
+      scopeType === "week"
+        ? "Зараз не вдалося зібрати AI-пропозиції для цього тижня. Можеш уточнити, який день перевантажений або що точно варто залишити без змін."
+        : "Зараз не вдалося зібрати AI-пропозиції. Можеш уточнити, що саме перенести або що точно лишити на цей день.";
     let proposals: ParsedProposal[] = [];
 
     if (openAiApiKey) {
       const aiTurn = await generateAiTurn({
         apiKey: openAiApiKey,
         model,
+        scopeType,
         scopeDate,
         timezone: context.timezone,
         currentTimeIso: DateTime.now().setZone(context.timezone).toISO() ?? new Date().toISOString(),
@@ -360,7 +446,7 @@ Deno.serve(async (req) => {
       }
     }
 
-    const state = await loadPlanningConversationState(supabase, sessionUser.userId, scopeDate);
+    const state = await loadPlanningConversationState(supabase, sessionUser.userId, scopeType, scopeDate);
     return jsonResponse({ ok: true, ...state });
   } catch (error) {
     return jsonResponse(
@@ -373,8 +459,5 @@ Deno.serve(async (req) => {
     );
   }
 });
-
-
-
 
 

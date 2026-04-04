@@ -1,4 +1,4 @@
-import { appEnv } from "./env";
+﻿import { appEnv } from "./env";
 import type {
   AiAdvisorSummary,
   AppSession,
@@ -6,6 +6,7 @@ import type {
   GoogleCalendarStatus,
   InboxItem,
   PlanningConversationState,
+  PlanningConversationScopeType,
   PlanningFlexibility,
   MoveReasonCode,
   NoteItem,
@@ -647,10 +648,12 @@ export async function transcribePlanningVoice(input: {
 }
 export async function getPlanningConversation(input: {
   sessionToken: string;
+  scopeType?: PlanningConversationScopeType;
   scopeDate: string;
 }): Promise<PlanningConversationState> {
+  const scopeType = input.scopeType ?? "day";
   return await request<PlanningConversationState & { ok: true }>(
-    `get-planning-conversation?scopeDate=${encodeURIComponent(input.scopeDate)}`,
+    `get-planning-conversation?scopeType=${encodeURIComponent(scopeType)}&scopeDate=${encodeURIComponent(input.scopeDate)}`,
     {
       method: "GET",
       headers: sessionHeaders(input.sessionToken)
@@ -660,6 +663,7 @@ export async function getPlanningConversation(input: {
 
 export async function sendPlanningConversationTurn(input: {
   sessionToken: string;
+  scopeType?: PlanningConversationScopeType;
   scopeDate: string;
   sessionId: string;
   message: string;
@@ -668,6 +672,7 @@ export async function sendPlanningConversationTurn(input: {
     method: "POST",
     headers: sessionHeaders(input.sessionToken),
     body: JSON.stringify({
+      scopeType: input.scopeType ?? "day",
       scopeDate: input.scopeDate,
       sessionId: input.sessionId,
       message: input.message
@@ -691,6 +696,7 @@ export async function updatePlanningProposal(input: {
     })
   });
 }
+
 
 
 

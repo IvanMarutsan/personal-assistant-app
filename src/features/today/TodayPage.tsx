@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+﻿import { useEffect, useMemo, useState } from "react";
 import { PlanningConversationModal } from "../../components/PlanningConversationModal";
 import { TaskDetailModal } from "../../components/TaskDetailModal";
 import { useDiagnostics } from "../../lib/diagnostics";
@@ -32,6 +32,7 @@ import type {
   AiAdvisorSummary,
   GoogleCalendarEventItem,
   GoogleCalendarStatus,
+  PlanningConversationScopeType,
   PlanningConversationState,
   PlanningSummary,
   ProjectItem,
@@ -133,6 +134,18 @@ function endOfToday(now: Date): Date {
   return d;
 }
 
+function startOfWeekLocal(value: Date): Date {
+  const start = startOfToday(value);
+  const weekday = start.getDay();
+  const delta = weekday === 0 ? -6 : 1 - weekday;
+  start.setDate(start.getDate() + delta);
+  return start;
+}
+
+function toWeekScopeDate(value: Date): string {
+  return toScopeDate(startOfWeekLocal(value));
+}
+
 function toScopeDate(value: Date): string {
   const year = value.getFullYear();
   const month = String(value.getMonth() + 1).padStart(2, "0");
@@ -178,6 +191,28 @@ function loadCoverageLine(input: { knownMinutes: number; missingCount: number; p
   return `Відоме навантаження запланованого дня: ${formatKnownLoad(input.knownMinutes)}.`;
 }
 
+function worklogSourceLabel(value: string): string {
+  if (value === "manual") return "вручну";
+  if (value === "voice_candidate") return "з голосу";
+  if (value === "inbox" || value === "inbox_triage") return "з інбоксу";
+  return "інше";
+}
+
+function formatWorklogSummary(input: { count: number; withoutProjectCount: number; topProjects: Array<{ name: string; count: number }> }): string {
+  if (input.count === 0) return "Контекстних записів за цей день немає.";
+  const topProjects = input.topProjects.slice(0, 2).map((item) => `${item.name}: ${item.count}`).join(" · ");
+  const parts = [`Контекстні записи: ${input.count}`, `без проєкту: ${input.withoutProjectCount}`];
+  if (topProjects) parts.push(`найчастіше: ${topProjects}`);
+  return parts.join(" · ");
+}
+
+function formatWorklogSources(items: Array<{ source: string; count: number }>): string | null {
+  if (items.length === 0) return null;
+  return items
+    .slice(0, 3)
+    .map((item) => `${worklogSourceLabel(item.source)}: ${item.count}`)
+    .join(" · ");
+}
 function needsPlanningTouch(task: TaskItem): boolean {
   return !task.due_at || !task.estimated_minutes;
 }
@@ -194,6 +229,7 @@ export function TodayPage() {
   const [planningConversation, setPlanningConversation] = useState<PlanningConversationState | null>(null);
   const [planningConversationBusy, setPlanningConversationBusy] = useState(false);
   const [planningConversationError, setPlanningConversationError] = useState<string | null>(null);
+  const [planningConversationScopeType, setPlanningConversationScopeType] = useState<PlanningConversationScopeType>("day");
   const [actingProposalId, setActingProposalId] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
@@ -314,6 +350,7 @@ export function TodayPage() {
   const selectedDayStart = useMemo(() => parseScopeDateLocal(selectedScopeDate), [selectedScopeDate]);
   const selectedDayEnd = useMemo(() => endOfToday(selectedDayStart), [selectedDayStart]);
   const selectedDayLabel = useMemo(() => formatScopeDateLabel(selectedScopeDate), [selectedScopeDate]);
+  const selectedWeekScopeDate = useMemo(() => toWeekScopeDate(selectedDayStart), [selectedDayStart]);
   const isSelectedToday = selectedScopeDate === todayScopeDate;
   const scopeDate = selectedScopeDate;
 
@@ -449,20 +486,23 @@ export function TodayPage() {
     }
   }
 
-  async function openPlanningConversation() {
+  async function openPlanningConversation(scopeType: PlanningConversationScopeType = "day") {
     if (!sessionToken) {
       setError("Спочатку авторизуйся в Інбоксі.");
       return;
     }
 
+    const targetScopeDate = scopeType === "week" ? selectedWeekScopeDate : scopeDate;
+
+    setPlanningConversationScopeType(scopeType);
     setPlanningConversationOpen(true);
     setPlanningConversation(null);
     setPlanningConversationBusy(true);
     setPlanningConversationError(null);
-    diagnostics.trackAction("open_planning_conversation", { scopeDate });
+    diagnostics.trackAction("open_planning_conversation", { scopeType, scopeDate: targetScopeDate });
 
     try {
-      const state = await getPlanningConversation({ sessionToken, scopeDate });
+      const state = await getPlanningConversation({ sessionToken, scopeType, scopeDate: targetScopeDate });
       setPlanningConversation(state);
     } catch (conversationError) {
       if (conversationError instanceof ApiError) {
@@ -487,12 +527,16 @@ export function TodayPage() {
 
     setPlanningConversationBusy(true);
     setPlanningConversationError(null);
-    diagnostics.trackAction("planning_conversation_turn", { scopeDate });
+    diagnostics.trackAction("planning_conversation_turn", {
+      scopeType: planningConversation.session.scopeType,
+      scopeDate: planningConversation.session.scopeDate
+    });
 
     try {
       const state = await sendPlanningConversationTurn({
         sessionToken,
-        scopeDate,
+        scopeType: planningConversation.session.scopeType,
+        scopeDate: planningConversation.session.scopeDate,
         sessionId: planningConversation.session.id,
         message
       });
@@ -709,8 +753,11 @@ export function TodayPage() {
           <button type="button" className="ghost" onClick={() => setSelectedScopeDate((current) => shiftScopeDate(current, 1))}>
             {"\u041d\u0430\u0441\u0442\u0443\u043f\u043d\u0438\u0439 \u0434\u0435\u043d\u044c"}
           </button>
-          <button type="button" onClick={() => void openPlanningConversation()} disabled={!sessionToken || planningConversationBusy}>
-            {"\u041e\u0431\u0433\u043e\u0432\u043e\u0440\u0438\u0442\u0438 \u043f\u043b\u0430\u043d"}
+          <button type="button" onClick={() => void openPlanningConversation("day")} disabled={!sessionToken || planningConversationBusy}>
+            {"\u041e\u0431\u0433\u043e\u0432\u043e\u0440\u0438\u0442\u0438 \u0434\u0435\u043d\u044c"}
+          </button>
+          <button type="button" className="ghost" onClick={() => void openPlanningConversation("week")} disabled={!sessionToken || planningConversationBusy}>
+            {"\u041e\u0431\u0433\u043e\u0432\u043e\u0440\u0438\u0442\u0438 \u0442\u0438\u0436\u0434\u0435\u043d\u044c"}
           </button>
         </div>
       </div>
@@ -789,6 +836,10 @@ export function TodayPage() {
             Скасовано: {planning.dailyReview.cancelledTodayCount} · Пропущено захищених:{" "}
             {planning.dailyReview.protectedEssentialsMissedToday}
           </p>
+          <p className="inbox-meta">{formatWorklogSummary(planning.dailyReview.worklogs)}</p>
+          {formatWorklogSources(planning.dailyReview.worklogs.sourceCounts) ? (
+            <p className="inbox-meta">{formatWorklogSources(planning.dailyReview.worklogs.sourceCounts)}</p>
+          ) : null}
           {planning.dailyReview.topMovedReasons.length > 0 ? (
             <ul className="assistant-secondary">
               {planning.dailyReview.topMovedReasons.map((reason) => (
@@ -864,6 +915,10 @@ export function TodayPage() {
             {normalizePlanningCopy(aiAdvisor.advisor.protectedEssentialsWarning.message)}
           </p>
           <p className="inbox-meta">{normalizePlanningCopy(aiAdvisor.advisor.explanation)}</p>
+          <p className="inbox-meta">{formatWorklogSummary(aiAdvisor.contextSnapshot.worklogs)}</p>
+          {formatWorklogSources(aiAdvisor.contextSnapshot.worklogs.sourceCounts) ? (
+            <p className="inbox-meta">{formatWorklogSources(aiAdvisor.contextSnapshot.worklogs.sourceCounts)}</p>
+          ) : null}
         </section>
       ) : null}
 
@@ -950,7 +1005,8 @@ export function TodayPage() {
 
       <PlanningConversationModal
         open={planningConversationOpen}
-        scopeDate={selectedScopeDate}
+        scopeType={planningConversation?.session.scopeType ?? planningConversationScopeType}
+        scopeDate={planningConversation?.session.scopeDate ?? (planningConversationScopeType === "week" ? selectedWeekScopeDate : selectedScopeDate)}
         state={planningConversation}
         busy={planningConversationBusy}
         actingProposalId={actingProposalId}
@@ -960,7 +1016,7 @@ export function TodayPage() {
           setPlanningConversationError(null);
         }}
         onRetryLoad={() => {
-          void openPlanningConversation();
+          void openPlanningConversation(planningConversation?.session.scopeType ?? planningConversationScopeType);
         }}
         onSend={(message) => {
           void sendPlanningMessage(message);
@@ -984,6 +1040,8 @@ export function TodayPage() {
     </section>
   );
 }
+
+
 
 
 
