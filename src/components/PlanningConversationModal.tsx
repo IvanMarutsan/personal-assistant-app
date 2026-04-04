@@ -1,4 +1,5 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
+import type { ChangeEvent } from "react";
 import { formatTaskDateTime, formatTaskEstimate } from "../lib/taskTiming";
 import type {
   PlanningConversationProposal,
@@ -16,11 +17,14 @@ type PlanningConversationModalProps = {
   onClose: () => void;
   onRetryLoad: () => void;
   onSend: (message: string) => void;
+  onTranscribeVoice: (file: File) => Promise<string>;
   onApplyProposal: (proposalId: string) => void;
   onDismissProposal: (proposalId: string) => void;
   onApplyAllLatest: (assistantMessageId: string) => void;
   onDismissAllLatest: (assistantMessageId: string) => void;
 };
+
+type VoiceState = "idle" | "recording" | "transcribing";
 
 function formatScopeDate(scopeDate: string): string {
   const parsed = new Date(`${scopeDate}T12:00:00`);
@@ -83,8 +87,20 @@ function proposalLead(patch: PlanningConversationTaskPatch): string {
   return "Запропонована зміна";
 }
 
+function voiceStatusLabel(state: VoiceState): string | null {
+  if (state === "recording") return "Йде запис голосу...";
+  if (state === "transcribing") return "Розпізнаємо голос...";
+  return null;
+}
+
 export function PlanningConversationModal(props: PlanningConversationModalProps) {
   const [draft, setDraft] = useState("");
+  const [voiceState, setVoiceState] = useState<VoiceState>("idle");
+  const [voiceError, setVoiceError] = useState<string | null>(null);
+  const fileInputRef = useRef<HTMLInputElement | null>(null);
+  const recorderRef = useRef<MediaRecorder | null>(null);
+  const streamRef = useRef<MediaStream | null>(null);
+  const chunksRef = useRef<Blob[]>([]);
 
   const proposalsByMessageId = useMemo(() => {
     const map = new Map<string, PlanningConversationProposal[]>();
@@ -97,14 +113,130 @@ export function PlanningConversationModal(props: PlanningConversationModalProps)
     return map;
   }, [props.state?.proposals]);
 
+  function stopRecordingTracks() {
+    recorderRef.current = null;
+    chunksRef.current = [];
+    if (streamRef.current) {
+      for (const track of streamRef.current.getTracks()) {
+        track.stop();
+      }
+      streamRef.current = null;
+    }
+  }
+
+  useEffect(() => {
+    if (!props.open) {
+      stopRecordingTracks();
+      setVoiceState("idle");
+      setVoiceError(null);
+    }
+  }, [props.open]);
+
+  useEffect(() => {
+    return () => {
+      stopRecordingTracks();
+    };
+  }, []);
+
+  function insertTranscript(transcript: string) {
+    const cleaned = transcript.trim();
+    if (!cleaned) return;
+    setDraft((current) => {
+      if (!current.trim()) return cleaned;
+      return current.endsWith("\n") ? `${current}${cleaned}` : `${current}\n${cleaned}`;
+    });
+  }
+
+  async function transcribeVoiceFile(file: File) {
+    setVoiceError(null);
+    setVoiceState("transcribing");
+    try {
+      const transcript = await props.onTranscribeVoice(file);
+      insertTranscript(transcript);
+    } catch (error) {
+      setVoiceError(error instanceof Error ? error.message : "Не вдалося розпізнати голос. Спробуй ще раз.");
+    } finally {
+      setVoiceState("idle");
+    }
+  }
+
+  async function startVoiceRecording() {
+    if (props.busy || voiceState === "transcribing") return;
+
+    if (!navigator.mediaDevices?.getUserMedia || typeof MediaRecorder === "undefined") {
+      fileInputRef.current?.click();
+      return;
+    }
+
+    try {
+      setVoiceError(null);
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      streamRef.current = stream;
+      chunksRef.current = [];
+
+      const preferredMimeType = MediaRecorder.isTypeSupported("audio/webm;codecs=opus")
+        ? "audio/webm;codecs=opus"
+        : MediaRecorder.isTypeSupported("audio/webm")
+        ? "audio/webm"
+        : "";
+
+      const recorder = preferredMimeType ? new MediaRecorder(stream, { mimeType: preferredMimeType }) : new MediaRecorder(stream);
+      recorderRef.current = recorder;
+
+      recorder.ondataavailable = (event) => {
+        if (event.data.size > 0) {
+          chunksRef.current.push(event.data);
+        }
+      };
+
+      recorder.onerror = () => {
+        stopRecordingTracks();
+        setVoiceState("idle");
+        setVoiceError("Не вдалося записати голос. Спробуй ще раз.");
+      };
+
+      recorder.onstop = async () => {
+        const blob = new Blob(chunksRef.current, { type: recorder.mimeType || "audio/webm" });
+        stopRecordingTracks();
+        if (blob.size === 0) {
+          setVoiceState("idle");
+          setVoiceError("Не вдалося отримати запис. Спробуй ще раз.");
+          return;
+        }
+        const file = new File([blob], "planning-voice.webm", { type: blob.type || "audio/webm" });
+        await transcribeVoiceFile(file);
+      };
+
+      recorder.start();
+      setVoiceState("recording");
+    } catch {
+      stopRecordingTracks();
+      fileInputRef.current?.click();
+    }
+  }
+
+  function stopVoiceRecording() {
+    if (recorderRef.current && recorderRef.current.state !== "inactive") {
+      setVoiceState("transcribing");
+      recorderRef.current.stop();
+    }
+  }
+
+  async function handleAudioFileSelected(event: ChangeEvent<HTMLInputElement>) {
+    const file = event.target.files?.[0] ?? null;
+    event.target.value = "";
+    if (!file) return;
+    await transcribeVoiceFile(file);
+  }
+
   if (!props.open) return null;
 
   const state = props.state;
   const latestActionableAssistantMessageId = state?.latestActionableAssistantMessageId ?? null;
   const isInitialLoading = !state && props.busy && !props.errorMessage;
   const hasInitialLoadError = !state && !!props.errorMessage && !props.busy;
-  const isReady = !!state;
   const statusScopeDate = formatScopeDate(state?.session.scopeDate ?? props.scopeDate);
+  const voiceStatus = voiceStatusLabel(voiceState);
 
   return (
     <div className="modal-backdrop" role="dialog" aria-modal="true" onClick={props.onClose}>
@@ -115,9 +247,7 @@ export function PlanningConversationModal(props: PlanningConversationModalProps)
         </header>
 
         <div className="modal-body planning-body">
-          {isInitialLoading ? (
-            <p className="empty-note">Завантажуємо розмову про план...</p>
-          ) : null}
+          {isInitialLoading ? <p className="empty-note">Завантажуємо розмову про план...</p> : null}
 
           {hasInitialLoadError ? (
             <section className="planning-summary">
@@ -139,6 +269,12 @@ export function PlanningConversationModal(props: PlanningConversationModalProps)
                 <p className="inbox-meta">
                   Відоме навантаження: {formatTaskEstimate(state.dayContext.scheduledKnownEstimateMinutes) ?? "немає"} · Без оцінки: {state.dayContext.scheduledMissingEstimateCount}
                 </p>
+                {state.dayContext.calendar.available ? (
+                  <p className="inbox-meta">
+                    У календарі: {state.dayContext.calendar.eventCount} · Зайнято: {formatTaskEstimate(state.dayContext.calendar.busyMinutes) ?? `${state.dayContext.calendar.busyMinutes ?? 0} хв`}
+                    {state.dayContext.calendar.extraEventCount > 0 ? ` · Ще подій: ${state.dayContext.calendar.extraEventCount}` : ""}
+                  </p>
+                ) : null}
                 {state.latestActionableProposalCount > 0 ? (
                   <p className="inbox-meta">Активний лише найновіший набір пропозицій.</p>
                 ) : (
@@ -254,9 +390,49 @@ export function PlanningConversationModal(props: PlanningConversationModalProps)
                   value={draft}
                   onChange={(event) => setDraft(event.target.value)}
                   placeholder="Наприклад: я не встигну все сьогодні, навчання можна на завтра"
-                  disabled={props.busy}
+                  disabled={props.busy || voiceState === "transcribing"}
                 />
               </label>
+              <input
+                ref={fileInputRef}
+                type="file"
+                accept="audio/*"
+                capture="user"
+                className="planning-voice-input"
+                onChange={(event) => {
+                  void handleAudioFileSelected(event);
+                }}
+              />
+              <div className="planning-compose-tools">
+                <div className="inbox-actions">
+                  {voiceState === "recording" ? (
+                    <button type="button" className="ghost" onClick={stopVoiceRecording} disabled={props.busy}>
+                      Зупинити запис
+                    </button>
+                  ) : (
+                    <button
+                      type="button"
+                      className="ghost"
+                      onClick={() => {
+                        void startVoiceRecording();
+                      }}
+                      disabled={props.busy || voiceState === "transcribing"}
+                    >
+                      {voiceState === "transcribing" ? "Розпізнавання..." : "Голос"}
+                    </button>
+                  )}
+                  <button
+                    type="button"
+                    className="ghost"
+                    onClick={() => fileInputRef.current?.click()}
+                    disabled={props.busy || voiceState === "recording" || voiceState === "transcribing"}
+                  >
+                    Аудіофайл
+                  </button>
+                </div>
+                {voiceStatus ? <p className="inbox-meta planning-voice-status">{voiceStatus}</p> : null}
+                {voiceError ? <p className="error-note">{voiceError}</p> : null}
+              </div>
               <div className="modal-actions">
                 <button type="button" className="ghost" onClick={props.onClose} disabled={props.busy}>
                   Закрити
@@ -265,11 +441,12 @@ export function PlanningConversationModal(props: PlanningConversationModalProps)
                   type="button"
                   onClick={() => {
                     const value = draft.trim();
-                    if (!value || props.busy) return;
+                    if (!value || props.busy || voiceState === "transcribing") return;
                     props.onSend(value);
                     setDraft("");
+                    setVoiceError(null);
                   }}
-                  disabled={props.busy || !draft.trim()}
+                  disabled={props.busy || voiceState === "transcribing" || !draft.trim()}
                 >
                   {props.busy ? "Надсилання..." : "Надіслати"}
                 </button>
@@ -287,3 +464,5 @@ export function PlanningConversationModal(props: PlanningConversationModalProps)
     </div>
   );
 }
+
+

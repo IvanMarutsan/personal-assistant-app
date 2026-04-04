@@ -11,7 +11,7 @@ type IngestVoiceBody = {
   voiceFileSize?: number;
 };
 
-type VoiceIntent = "task" | "note" | "meeting_candidate" | "reminder_candidate";
+type VoiceIntent = "task" | "note" | "worklog_candidate" | "meeting_candidate" | "reminder_candidate";
 type VoiceTaskTypeGuess =
   | "deep_work"
   | "quick_communication"
@@ -159,6 +159,7 @@ function localizeReasoningSummary(
   const intentText: Record<VoiceIntent, string> = {
     task: "Схоже на окрему задачу з голосового повідомлення.",
     note: "Схоже на нотатку без обов'язкової дії.",
+    worklog_candidate: "Схоже на фактичний контекстний запис про те, що вже сталося.",
     meeting_candidate: "Схоже на запит або намір щодо зустрічі.",
     reminder_candidate: "Схоже на намір поставити нагадування."
   };
@@ -376,7 +377,7 @@ function normalizeCandidate(raw: unknown): VoiceParseSuggestion | null {
     return null;
   }
 
-  const allowedIntents: VoiceIntent[] = ["task", "note", "meeting_candidate", "reminder_candidate"];
+  const allowedIntents: VoiceIntent[] = ["task", "note", "worklog_candidate", "meeting_candidate", "reminder_candidate"];
   if (!allowedIntents.includes(parsed.detectedIntent)) return null;
 
   return {
@@ -514,7 +515,7 @@ async function parseTranscriptWithAi(
           {
             role: "system",
             content:
-              "You classify voice notes for a personal execution assistant. Return strict JSON only. Suggestions only, no autonomous actions. Handle Ukrainian, English, and transliterated Ukrainian. Extract up to 5 clearly distinct actionable candidates; prefer fewer high-quality candidates when uncertain. Do not split one idea into many tiny items. Resolve date words and weekdays strictly in the provided user timezone. If timing is explicit, fill dueAtIso/scheduledForIso as full ISO-8601 with timezone (Z or +/-HH:MM); otherwise null. Never default an uncertain date/time to 'now'. reasoningSummary must be in Ukrainian, short, and user-friendly."
+              "You classify voice notes for a personal execution assistant. Return strict JSON only. Suggestions only, no autonomous actions. Handle Ukrainian, English, and transliterated Ukrainian. Extract up to 5 clearly distinct candidates; prefer fewer high-quality candidates when uncertain. Use detectedIntent=worklog_candidate when the message is primarily a factual update about what already happened, an interruption, a context switch, reactive communication, or a few quick completed follow-ups rather than a future task. Do not turn such updates into tasks by default. Do not split one idea into many tiny items. Resolve date words and weekdays strictly in the provided user timezone. If timing is explicit, fill dueAtIso/scheduledForIso as full ISO-8601 with timezone (Z or +/-HH:MM); otherwise null. Never default an uncertain date/time to 'now'. reasoningSummary must be in Ukrainian, short, and user-friendly."
           },
           {
             role: "user",
@@ -547,7 +548,7 @@ async function parseTranscriptWithAi(
                     properties: {
                       detectedIntent: {
                         type: "string",
-                        enum: ["task", "note", "meeting_candidate", "reminder_candidate"]
+                        enum: ["task", "note", "worklog_candidate", "meeting_candidate", "reminder_candidate"]
                       },
                       title: { type: "string" },
                       details: { type: "string" },
@@ -691,7 +692,7 @@ async function matchProjectGuess(
 
   const { data, error } = await supabase
     .from("projects")
-    .select("id, name, status")
+    .select("id, name, status, aliases")
     .eq("user_id", userId)
     .neq("status", "archived");
 
@@ -706,34 +707,21 @@ async function matchProjectGuess(
     };
   }
 
-  const exact = data.find((project) => normalizeComparableText(project.name) === normalizedGuess);
-  if (exact) {
+  for (const project of data) {
+    const aliases = Array.isArray(project.aliases)
+      ? project.aliases.filter((value): value is string => typeof value === "string")
+      : [];
+    const candidateNames = [project.name, ...aliases];
+    const matchedName = candidateNames.find((value) => normalizeComparableText(value) === normalizedGuess);
+    if (!matchedName) continue;
+
     return {
       status: "matched",
       guessedName: projectGuess,
-      matchedProjectId: exact.id,
-      matchedProjectName: exact.name,
+      matchedProjectId: project.id,
+      matchedProjectName: project.name,
       score: 1,
       strategy: "exact_normalized"
-    };
-  }
-
-  let best: { id: string; name: string; score: number } | null = null;
-  for (const project of data) {
-    const score = similarityScore(normalizedGuess, normalizeComparableText(project.name));
-    if (!best || score > best.score) {
-      best = { id: project.id, name: project.name, score };
-    }
-  }
-
-  if (best && best.score >= 0.7) {
-    return {
-      status: "matched",
-      guessedName: projectGuess,
-      matchedProjectId: best.id,
-      matchedProjectName: best.name,
-      score: Number(best.score.toFixed(3)),
-      strategy: "similarity"
     };
   }
 
@@ -742,10 +730,11 @@ async function matchProjectGuess(
     guessedName: projectGuess,
     matchedProjectId: null,
     matchedProjectName: null,
-    score: best ? Number(best.score.toFixed(3)) : null,
+    score: null,
     strategy: null
   };
 }
+
 
 Deno.serve(async (req) => {
   const preflight = handleOptions(req);
@@ -914,3 +903,6 @@ Deno.serve(async (req) => {
     candidateCountShown
   });
 });
+
+
+

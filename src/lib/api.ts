@@ -6,8 +6,10 @@ import type {
   GoogleCalendarStatus,
   InboxItem,
   PlanningConversationState,
+  PlanningFlexibility,
   MoveReasonCode,
   NoteItem,
+  WorklogItem,
   PlanningSummary,
   ProjectItem,
   TaskItem,
@@ -264,6 +266,7 @@ export async function triageInboxItem(input: {
   importance?: number;
   dueAt?: string;
   scheduledFor?: string;
+  estimatedMinutes?: number | null;
 }): Promise<void> {
   await request<{ ok: true }>("triage-inbox-item", {
     method: "POST",
@@ -278,7 +281,8 @@ export async function triageInboxItem(input: {
       taskType: input.taskType,
       importance: input.importance,
       dueAt: input.dueAt,
-      scheduledFor: input.scheduledFor
+      scheduledFor: input.scheduledFor,
+      estimatedMinutes: input.estimatedMinutes ?? null
     })
   });
 }
@@ -287,7 +291,7 @@ export async function resolveVoiceCandidate(input: {
   sessionToken: string;
   inboxItemId: string;
   candidateId: string;
-  action: "task" | "note" | "calendar_event" | "discard";
+  action: "task" | "note" | "worklog" | "calendar_event" | "discard";
   title?: string;
   details?: string;
   noteBody?: string;
@@ -361,6 +365,7 @@ export async function updateProject(input: {
   projectId: string;
   name?: string;
   status?: "active" | "on_hold" | "archived";
+  aliases?: string[];
 }): Promise<ProjectItem> {
   const result = await request<{
     ok: true;
@@ -371,7 +376,8 @@ export async function updateProject(input: {
     body: JSON.stringify({
       projectId: input.projectId,
       name: input.name,
-      status: input.status
+      status: input.status,
+      aliases: input.aliases
     })
   });
 
@@ -437,6 +443,7 @@ export async function updateTask(input: {
   dueAt?: string | null;
   scheduledFor?: string | null;
   estimatedMinutes?: number | null;
+  planningFlexibility?: PlanningFlexibility | null;
 }): Promise<void> {
   const payload: Record<string, unknown> = {
     taskId: input.taskId,
@@ -449,12 +456,49 @@ export async function updateTask(input: {
   if (input.dueAt !== undefined) payload.dueAt = input.dueAt;
   if (input.scheduledFor !== undefined) payload.scheduledFor = input.scheduledFor;
   if (input.estimatedMinutes !== undefined) payload.estimatedMinutes = input.estimatedMinutes;
+  if (input.planningFlexibility !== undefined) payload.planningFlexibility = input.planningFlexibility;
 
   await request<{ ok: true }>("update-task", {
     method: "POST",
     headers: sessionHeaders(input.sessionToken),
     body: JSON.stringify(payload)
   });
+}
+
+export async function getWorklogs(sessionToken: string): Promise<WorklogItem[]> {
+  const result = await request<{
+    ok: true;
+    items: WorklogItem[];
+  }>("get-worklogs", {
+    method: "GET",
+    headers: sessionHeaders(sessionToken)
+  });
+
+  return result.items;
+}
+
+export async function createWorklog(input: {
+  sessionToken: string;
+  body: string;
+  projectId?: string | null;
+  occurredAt?: string | null;
+  source?: string | null;
+}): Promise<WorklogItem> {
+  const result = await request<{
+    ok: true;
+    item: WorklogItem;
+  }>("create-worklog", {
+    method: "POST",
+    headers: sessionHeaders(input.sessionToken),
+    body: JSON.stringify({
+      body: input.body,
+      projectId: input.projectId ?? null,
+      occurredAt: input.occurredAt ?? null,
+      source: input.source ?? "manual"
+    })
+  });
+
+  return result.item;
 }
 
 export async function updateNote(input: {
@@ -484,7 +528,11 @@ export async function updateNote(input: {
   return { createdTaskId: result.createdTaskId };
 }
 
-export async function getPlanningAssistant(sessionToken: string): Promise<PlanningSummary> {
+export async function getPlanningAssistant(sessionToken: string, scopeDate?: string): Promise<PlanningSummary> {
+  const path = scopeDate
+    ? `get-planning-assistant?scopeDate=${encodeURIComponent(scopeDate)}`
+    : "get-planning-assistant";
+
   const result = await request<{
     ok: true;
     generatedAt: string;
@@ -495,7 +543,7 @@ export async function getPlanningAssistant(sessionToken: string): Promise<Planni
     essentialRisk: PlanningSummary["essentialRisk"];
     dailyReview: PlanningSummary["dailyReview"];
     appliedThresholds: PlanningSummary["appliedThresholds"];
-  }>("get-planning-assistant", {
+  }>(path, {
     method: "GET",
     headers: sessionHeaders(sessionToken)
   });
@@ -512,7 +560,11 @@ export async function getPlanningAssistant(sessionToken: string): Promise<Planni
   };
 }
 
-export async function getAiAdvisor(sessionToken: string): Promise<AiAdvisorSummary> {
+export async function getAiAdvisor(sessionToken: string, scopeDate?: string): Promise<AiAdvisorSummary> {
+  const path = scopeDate
+    ? `get-ai-advisor?scopeDate=${encodeURIComponent(scopeDate)}`
+    : "get-ai-advisor";
+
   const result = await request<{
     ok: true;
     generatedAt: string;
@@ -522,7 +574,7 @@ export async function getAiAdvisor(sessionToken: string): Promise<AiAdvisorSumma
     fallbackReason: string | null;
     contextSnapshot: AiAdvisorSummary["contextSnapshot"];
     advisor: AiAdvisorSummary["advisor"];
-  }>("get-ai-advisor", {
+  }>(path, {
     method: "GET",
     headers: sessionHeaders(sessionToken)
   });
@@ -544,6 +596,55 @@ export async function getAiAdvisor(sessionToken: string): Promise<AiAdvisorSumma
 
 
 
+
+export async function transcribePlanningVoice(input: {
+  sessionToken: string;
+  file: File;
+}): Promise<string> {
+  const formData = new FormData();
+  formData.append("file", input.file);
+
+  let response: Response;
+  try {
+    response = await fetch(edgeUrl("transcribe-planning-voice"), {
+      method: "POST",
+      headers: {
+        apikey: appEnv.supabaseAnonKey,
+        ...sessionHeaders(input.sessionToken)
+      },
+      body: formData
+    });
+  } catch (error) {
+    console.error("[api] network_failure", { path: "transcribe-planning-voice", error });
+    throw new ApiError({
+      message: "Помилка мережі. Перевір з'єднання і спробуй ще раз.",
+      status: 0,
+      path: "transcribe-planning-voice",
+      details: error instanceof Error ? error.message : "network_error"
+    });
+  }
+
+  const body = (await parseBody(response)) as
+    | { ok: true; transcript: string }
+    | (ErrorResponse & { details?: string })
+    | { message?: string };
+
+  if (!response.ok) {
+    const errorBody = body as ErrorResponse & { details?: string };
+    const rawMessage =
+      errorBody.message ?? errorBody.error ?? `Запит завершився помилкою (${response.status})`;
+    const message = resolveUserSafeMessage(response.status, errorBody.error ?? null, rawMessage);
+    throw new ApiError({
+      message,
+      status: response.status,
+      code: errorBody.error ?? null,
+      path: "transcribe-planning-voice",
+      details: errorBody.details ?? null
+    });
+  }
+
+  return (body as { ok: true; transcript: string }).transcript;
+}
 export async function getPlanningConversation(input: {
   sessionToken: string;
   scopeDate: string;
@@ -590,3 +691,11 @@ export async function updatePlanningProposal(input: {
     })
   });
 }
+
+
+
+
+
+
+
+

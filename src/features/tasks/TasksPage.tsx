@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+﻿import { useEffect, useMemo, useState } from "react";
 import { CalendarEventModal } from "../../components/CalendarEventModal";
 import { TaskActionModal } from "../../components/TaskActionModal";
 import { TaskDetailModal } from "../../components/TaskDetailModal";
@@ -13,7 +13,7 @@ import {
   updateTaskStatus
 } from "../../lib/api";
 import { moveReasonLabel } from "../../lib/reasons";
-import { formatTaskTimingTone, isBacklogTask, parseTaskDate } from "../../lib/taskTiming";
+import { formatTaskTimingTone, isBacklogTask, parseTaskDate, planningFlexibilityLabel } from "../../lib/taskTiming";
 import type { GoogleCalendarStatus, MoveReasonCode, ProjectItem, TaskItem, TaskType } from "../../types/api";
 
 const SESSION_KEY = "personal_assistant_app_session_token";
@@ -406,6 +406,7 @@ export function TasksPage() {
                 <p className="inbox-main-text">
                   {task.title}
                   {task.is_protected_essential ? <span className="essential-badge">Захищене важливе</span> : null}
+                  {task.planning_flexibility ? <span className={`planning-badge planning-badge--${task.planning_flexibility}`}>{planningFlexibilityLabel(task.planning_flexibility)}</span> : null}
                 </p>
                 <p className="inbox-meta">
                   {taskTypeLabel(task.task_type)} · {statusLabel(task.status)}
@@ -557,7 +558,8 @@ export function TasksPage() {
                 taskType: payload.taskType,
                 dueAt: payload.dueAt,
                 scheduledFor: payload.scheduledFor,
-                estimatedMinutes: payload.estimatedMinutes
+                estimatedMinutes: payload.estimatedMinutes,
+                planningFlexibility: payload.planningFlexibility
               });
 
               setActiveTask(null);
@@ -630,6 +632,9 @@ export function TasksPage() {
     </section>
   );
 }
+
+
+
 
 
 

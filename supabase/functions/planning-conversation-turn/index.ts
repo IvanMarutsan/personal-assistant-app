@@ -1,4 +1,4 @@
-﻿import { DateTime } from "npm:luxon@3.6.1";
+import { DateTime } from "npm:luxon@3.6.1";
 import { createAdminClient } from "../_shared/db.ts";
 import { handleOptions, jsonResponse, safeJson } from "../_shared/http.ts";
 import {
@@ -65,7 +65,8 @@ function toPromptTask(task: PlanningConversationTask) {
     isProtectedEssential: task.isProtectedEssential,
     scheduledFor: task.scheduledFor,
     dueAt: task.dueAt,
-    estimatedMinutes: task.estimatedMinutes
+    estimatedMinutes: task.estimatedMinutes,
+    planningFlexibility: task.planningFlexibility
   };
 }
 
@@ -122,7 +123,7 @@ async function generateAiTurn(input: {
       {
         role: "system",
         content:
-          "Ти помічник денного планування в українськомовному mini app. Ти не застосовуєш зміни самостійно, а лише пропонуєш вузькі task_patch зміни. Backlog = scheduled_for IS NULL. due_at без scheduled_for не означає, що задача вже стоїть у денному плані. Відповідай українською коротко і практично. Пропозиції можуть змінювати тільки scheduled_for, due_at, estimated_minutes. Дозволено очищати scheduled_for, щоб повернути задачу в беклог. Якщо користувач просить перенести задачу на інший день без конкретного часу, використай 09:00 локального часу цього дня. Не придумуй задачі, яких немає в контексті. Якщо пропонувати нічого, поверни порожній список proposals."
+          "Ти помічник денного планування в українськомовному mini app. Ти не застосовуєш зміни самостійно, а лише пропонуєш вузькі task_patch зміни. Backlog = scheduled_for IS NULL. due_at без scheduled_for не означає, що задача вже стоїть у денному плані. Враховуй read-only календар дня як контекст фіксованих подій і зайнятих вікон, якщо він доступний. Календарні події не можна змінювати, пересувати чи коментувати як proposal action. Якщо день уже щільно зайнятий календарем, будь консервативним з новими planned start у межах цього дня. Відповідай українською коротко і практично. planningFlexibility = essential означає, що задачу краще не рухати без потреби; flexible означає, що її легше посунути вручну. Пропозиції можуть змінювати тільки scheduled_for, due_at, estimated_minutes і ніколи не повинні змінювати planningFlexibility. Дозволено очищати scheduled_for, щоб повернути задачу в беклог. Якщо користувач просить перенести задачу на інший день без конкретного часу, використай 09:00 локального часу цього дня. Не придумуй задачі, яких немає в контексті. Якщо пропонувати нічого, поверни порожній список proposals."
       },
       {
         role: "user",
@@ -138,6 +139,14 @@ async function generateAiTurn(input: {
               backlogCount: input.context.backlogCount,
               scheduledKnownEstimateMinutes: input.context.scheduledKnownEstimateMinutes,
               scheduledMissingEstimateCount: input.context.scheduledMissingEstimateCount
+            },
+            calendar: {
+              connected: input.context.calendar.connected,
+              available: input.context.calendar.available,
+              eventCount: input.context.calendar.eventCount,
+              busyMinutes: input.context.calendar.busyMinutes,
+              events: input.context.calendar.events,
+              extraEventCount: input.context.calendar.extraEventCount
             },
             tasks: {
               scheduledToday: input.context.scheduledToday.map(toPromptTask),
@@ -364,4 +373,8 @@ Deno.serve(async (req) => {
     );
   }
 });
+
+
+
+
 

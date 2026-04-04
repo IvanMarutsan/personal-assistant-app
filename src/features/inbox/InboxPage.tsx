@@ -105,7 +105,7 @@ function toTaskType(value: unknown): TaskType | null {
 }
 
 function toDetectedIntent(value: unknown): VoiceDetectedIntent | null {
-  const allowed: VoiceDetectedIntent[] = ["task", "note", "meeting_candidate", "reminder_candidate"];
+  const allowed: VoiceDetectedIntent[] = ["task", "note", "worklog_candidate", "meeting_candidate", "reminder_candidate"];
   if (typeof value !== "string") return null;
   return allowed.includes(value as VoiceDetectedIntent) ? (value as VoiceDetectedIntent) : null;
 }
@@ -122,6 +122,7 @@ function localizedReasoningSummary(
   const intentText: Record<VoiceDetectedIntent, string> = {
     task: "Схоже на окрему задачу.",
     note: "Схоже на нотатку.",
+    worklog_candidate: "Схоже на контекстний запис про те, що вже сталося.",
     meeting_candidate: "Схоже на кандидат зустрічі.",
     reminder_candidate: "Схоже на кандидат нагадування."
   };
@@ -222,6 +223,7 @@ function extractVoiceCandidates(item: InboxItem): VoiceAiCandidate[] {
         resolutionAction:
           parsed.resolutionAction === "task" ||
           parsed.resolutionAction === "note" ||
+          parsed.resolutionAction === "worklog" ||
           parsed.resolutionAction === "calendar_event" ||
           parsed.resolutionAction === "discard"
             ? parsed.resolutionAction
@@ -344,6 +346,8 @@ function intentLabel(intent: VoiceDetectedIntent): string {
       return "Задача";
     case "note":
       return "Нотатка";
+    case "worklog_candidate":
+      return "Контекстний запис";
     case "meeting_candidate":
       return "Кандидат зустрічі";
     case "reminder_candidate":
@@ -383,7 +387,7 @@ export function InboxPage() {
   const [sessionToken, setSessionToken] = useState<string>(localStorage.getItem(SESSION_KEY) ?? "");
   const [triageLoading, setTriageLoading] = useState(false);
   const [workingItemId, setWorkingItemId] = useState<string | null>(null);
-  const [pendingTriage, setPendingTriage] = useState<{ item: InboxItem; mode: "task" | "note" } | null>(null);
+  const [pendingTriage, setPendingTriage] = useState<{ item: InboxItem; mode: "task" | "note" | "worklog" } | null>(null);
   const [pendingVoiceConfirm, setPendingVoiceConfirm] = useState<VoiceConfirmState>(null);
   const [projects, setProjects] = useState<ProjectItem[]>([]);
   const [calendarStatus, setCalendarStatus] = useState<GoogleCalendarStatus | null>(null);
@@ -545,7 +549,7 @@ export function InboxPage() {
     setWorkingItemId((current) => (current === itemId ? null : current));
   }
 
-  async function handleTriage(item: InboxItem, action: "task" | "note" | "discard") {
+  async function handleTriage(item: InboxItem, action: "task" | "note" | "worklog" | "discard") {
     if (!sessionToken) return;
     if (!beginTriage(item.id)) return;
     diagnostics.trackAction(action === "discard" ? "discard_inbox_item" : "open_inbox_confirm", {
@@ -593,16 +597,20 @@ export function InboxPage() {
   async function confirmModalTriage(payload: {
     title?: string;
     noteBody?: string;
+    projectId?: string | null;
     dueAt?: string | null;
     scheduledFor?: string | null;
     estimatedMinutes?: number | null;
   }) {
     if (!sessionToken || !pendingTriage) return;
     if (!beginTriage(pendingTriage.item.id)) return;
-    diagnostics.trackAction(pendingTriage.mode === "task" ? "confirm_as_task" : "confirm_as_note", {
-      itemId: pendingTriage.item.id,
-      mode: pendingTriage.mode
-    });
+    diagnostics.trackAction(
+      pendingTriage.mode === "task" ? "confirm_as_task" : pendingTriage.mode === "worklog" ? "confirm_as_worklog" : "confirm_as_note",
+      {
+        itemId: pendingTriage.item.id,
+        mode: pendingTriage.mode
+      }
+    );
 
     setTriageLoading(true);
     setError(null);
@@ -613,7 +621,11 @@ export function InboxPage() {
         inboxItemId: pendingTriage.item.id,
         action: pendingTriage.mode,
         title: payload.title,
-        noteBody: payload.noteBody
+        noteBody: payload.noteBody,
+        projectId: payload.projectId ?? undefined,
+        dueAt: payload.dueAt ?? undefined,
+        scheduledFor: payload.scheduledFor ?? undefined,
+        estimatedMinutes: payload.estimatedMinutes ?? null
       });
 
       setPendingTriage(null);
@@ -663,6 +675,8 @@ export function InboxPage() {
         ? "confirm_voice_as_task"
         : payload.targetKind === "note"
         ? "confirm_voice_as_note"
+        : payload.targetKind === "worklog"
+        ? "confirm_voice_as_worklog"
         : "confirm_voice_as_calendar_event",
       { itemId: pendingVoiceConfirm.item.id, targetKind: payload.targetKind }
     );
@@ -676,6 +690,8 @@ export function InboxPage() {
             ? "task"
             : payload.targetKind === "note"
             ? "note"
+            : payload.targetKind === "worklog"
+            ? "worklog"
             : "calendar_event";
         const result = await resolveVoiceCandidate({
           sessionToken,
@@ -709,13 +725,22 @@ export function InboxPage() {
             taskType: payload.taskType ?? undefined,
             importance: payload.importance ?? undefined,
             dueAt: payload.dueAt ?? undefined,
-            scheduledFor: payload.scheduledFor ?? undefined
+            scheduledFor: payload.scheduledFor ?? undefined,
+            estimatedMinutes: null
           });
         } else if (payload.targetKind === "note") {
           await triageInboxItem({
             sessionToken,
             inboxItemId: pendingVoiceConfirm.item.id,
             action: "note",
+            noteBody: payload.noteBody,
+            projectId: payload.projectId ?? undefined
+          });
+        } else if (payload.targetKind === "worklog") {
+          await triageInboxItem({
+            sessionToken,
+            inboxItemId: pendingVoiceConfirm.item.id,
+            action: "worklog",
             noteBody: payload.noteBody,
             projectId: payload.projectId ?? undefined
           });
@@ -925,22 +950,23 @@ export function InboxPage() {
                                   <div className="inbox-actions">
                                     <button
                                       onClick={() => {
+                                        const defaultKind = candidate.detectedIntent === "worklog_candidate" ? "worklog" : "task";
                                         diagnostics.trackAction("open_voice_confirm", {
                                           itemId: item.id,
                                           candidateId: candidate.candidateId,
-                                          defaultKind: "task"
+                                          defaultKind
                                         });
                                         setPendingVoiceConfirm({
                                           item,
                                           candidateId: candidate.candidateId,
-                                          defaultKind: "task",
+                                          defaultKind,
                                           suggestion: candidate,
                                           projectMatch
                                         });
                                       }}
                                       disabled={isBusyItem}
                                     >
-                                      Підтвердити / редагувати
+                                      {candidate.detectedIntent === "worklog_candidate" ? "У контекст" : "Підтвердити / редагувати"}
                                     </button>
                                     <button
                                       onClick={() => {
@@ -1044,21 +1070,22 @@ export function InboxPage() {
                         <div className="inbox-actions">
                           <button
                             onClick={() => {
+                              const defaultKind = suggestion.detectedIntent === "worklog_candidate" ? "worklog" : "task";
                               diagnostics.trackAction("open_voice_confirm", {
                                 itemId: item.id,
-                                defaultKind: "task"
+                                defaultKind
                               });
                               setPendingVoiceConfirm({
                                 item,
                                 candidateId: null,
-                                defaultKind: "task",
+                                defaultKind,
                                 suggestion,
                                 projectMatch
                               });
                             }}
                             disabled={isBusyItem}
                           >
-                            Підтвердити / редагувати
+                            {suggestion.detectedIntent === "worklog_candidate" ? "У контекст" : "Підтвердити / редагувати"}
                           </button>
                           <button
                             onClick={() => {
@@ -1121,6 +1148,9 @@ export function InboxPage() {
                           <button onClick={() => void handleTriage(item, "note")} disabled={isBusyItem}>
                             У нотатку
                           </button>
+                          <button onClick={() => void handleTriage(item, "worklog")} disabled={isBusyItem}>
+                            У контекст
+                          </button>
                           <button className="danger" onClick={() => void handleTriage(item, "discard")} disabled={isBusyItem}>
                             Відхилити
                           </button>
@@ -1144,6 +1174,9 @@ export function InboxPage() {
                     <button onClick={() => void handleTriage(item, "note")} disabled={isBusyItem}>
                       У нотатку
                     </button>
+                    <button onClick={() => void handleTriage(item, "worklog")} disabled={isBusyItem}>
+                      У контекст
+                    </button>
                     <button className="danger" onClick={() => void handleTriage(item, "discard")} disabled={isBusyItem}>
                       Відхилити
                     </button>
@@ -1159,6 +1192,7 @@ export function InboxPage() {
         open={Boolean(pendingTriage)}
         mode={pendingTriage?.mode ?? null}
         sourceText={pendingTriage ? previewText(pendingTriage.item) : ""}
+        projects={projects}
         busy={triageLoading}
         onCancel={() => setPendingTriage(null)}
         onConfirm={(payload) => {
@@ -1193,6 +1227,11 @@ export function InboxPage() {
     </section>
   );
 }
+
+
+
+
+
 
 
 

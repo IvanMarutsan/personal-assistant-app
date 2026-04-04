@@ -1,4 +1,4 @@
-:root {
+﻿:root {
   font-family: "IBM Plex Sans", "Segoe UI", sans-serif;
   color: #1d2a1f;
   background: radial-gradient(circle at 0% 0%, #e7f5ee 0%, #f7fbf8 55%, #ffffff 100%);
@@ -289,6 +289,27 @@ button.danger {
   font-weight: 500;
 }
 
+.planning-badge {
+  margin-left: 8px;
+  padding: 2px 7px;
+  border-radius: 999px;
+  border: 1px solid transparent;
+  font-size: 0.75rem;
+  font-weight: 500;
+}
+
+.planning-badge--essential {
+  background: #fde7df;
+  border-color: #f5c8b8;
+  color: #7c2d12;
+}
+
+.planning-badge--flexible {
+  background: #e7f6ea;
+  border-color: #bfdac8;
+  color: #24593e;
+}
+
 .assistant-block {
   border: 1px solid #d7e5db;
   border-radius: 10px;
@@ -526,4 +547,58 @@ button.danger {
 .planning-proposal-task {
   margin: 4px 0;
   font-weight: 600;
+}
+
+
+
+.planning-compose-tools {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-bottom: 10px;
+}
+
+.planning-voice-input {
+  display: none;
+}
+
+.planning-voice-status {
+  margin: 0;
+}
+
+.worklog-form {
+  border: 1px solid #dce9df;
+  border-radius: 10px;
+  background: #f8fbf9;
+  padding: 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.worklog-form label {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  color: #355445;
+}
+
+.worklog-form textarea,
+.worklog-form select {
+  border: 1px solid #d5e2d8;
+  border-radius: 8px;
+  padding: 8px;
+  font: inherit;
+  color: #1f2f25;
+  background: #ffffff;
+}
+
+.worklog-form-actions {
+  display: flex;
+  justify-content: flex-end;
+}
+
+.worklog-entry-body {
+  margin: 6px 0 0;
+  white-space: pre-wrap;
 }

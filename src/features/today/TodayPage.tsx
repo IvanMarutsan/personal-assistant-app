@@ -11,6 +11,7 @@ import {
   isDueOnDay,
   isScheduledForDay,
   sortTasksByTimeField,
+  planningFlexibilityLabel,
   sumKnownEstimateMinutes
 } from "../../lib/taskTiming";
 import {
@@ -23,6 +24,7 @@ import {
   getProjects,
   getTasks,
   sendPlanningConversationTurn,
+  transcribePlanningVoice,
   updatePlanningProposal,
   updateTask
 } from "../../lib/api";
@@ -138,6 +140,27 @@ function toScopeDate(value: Date): string {
   return `${year}-${month}-${day}`;
 }
 
+function parseScopeDateLocal(value: string): Date {
+  const [year, month, day] = value.split("-").map(Number);
+  const parsed = new Date(year || new Date().getFullYear(), (month || 1) - 1, day || 1, 0, 0, 0, 0);
+  if (Number.isNaN(parsed.getTime())) {
+    return startOfToday(new Date());
+  }
+  return parsed;
+}
+
+function shiftScopeDate(value: string, days: number): string {
+  const parsed = parseScopeDateLocal(value);
+  parsed.setDate(parsed.getDate() + days);
+  return toScopeDate(parsed);
+}
+
+function formatScopeDateLabel(value: string): string {
+  const parsed = new Date(`${value}T12:00:00`);
+  if (Number.isNaN(parsed.getTime())) return value;
+  return new Intl.DateTimeFormat("uk-UA", { weekday: "long", day: "numeric", month: "long" }).format(parsed);
+}
+
 function formatKnownLoad(minutes: number): string {
   if (minutes <= 0) return "Немає відомого навантаження";
   const formatted = formatTaskEstimate(minutes);
@@ -145,7 +168,7 @@ function formatKnownLoad(minutes: number): string {
 }
 
 function loadCoverageLine(input: { knownMinutes: number; missingCount: number; plannedCount: number }): string {
-  if (input.plannedCount === 0) return "На сьогодні ще немає задач у денному плані.";
+  if (input.plannedCount === 0) return "\u041d\u0430 \u0446\u0435\u0439 \u0434\u0435\u043d\u044c \u0449\u0435 \u043d\u0435\u043c\u0430\u0454 \u0437\u0430\u0434\u0430\u0447 \u0443 \u0434\u0435\u043d\u043d\u043e\u043c\u0443 \u043f\u043b\u0430\u043d\u0456.";
   if (input.knownMinutes <= 0 && input.missingCount > 0) {
     return `Оцінок для запланованого дня ще немає. Без оцінки лишаються ${input.missingCount} задач.`;
   }
@@ -198,8 +221,8 @@ export function TodayPage() {
     const [tasksResult, projectsResult, planningResult, aiResult, calendarStatusResult, calendarUpcomingResult] = await Promise.allSettled([
       getTasks(sessionToken),
       getProjects(sessionToken),
-      getPlanningAssistant(sessionToken),
-      getAiAdvisor(sessionToken),
+      getPlanningAssistant(sessionToken, selectedScopeDate),
+      getAiAdvisor(sessionToken, selectedScopeDate),
       getGoogleCalendarStatus(sessionToken),
       getGoogleCalendarUpcoming(sessionToken)
     ]);
@@ -286,41 +309,44 @@ export function TodayPage() {
     setLoading(false);
   }
 
+  const todayScopeDate = useMemo(() => toScopeDate(startOfToday(new Date())), []);
+  const [selectedScopeDate, setSelectedScopeDate] = useState(todayScopeDate);
+  const selectedDayStart = useMemo(() => parseScopeDateLocal(selectedScopeDate), [selectedScopeDate]);
+  const selectedDayEnd = useMemo(() => endOfToday(selectedDayStart), [selectedDayStart]);
+  const selectedDayLabel = useMemo(() => formatScopeDateLabel(selectedScopeDate), [selectedScopeDate]);
+  const isSelectedToday = selectedScopeDate === todayScopeDate;
+  const scopeDate = selectedScopeDate;
+
   useEffect(() => {
     void loadToday();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [sessionToken]);
-
-  const now = new Date();
-  const todayStart = startOfToday(now);
-  const todayEnd = endOfToday(now);
-  const scopeDate = toScopeDate(todayStart);
+  }, [sessionToken, selectedScopeDate]);
 
   const scheduledToday = useMemo(() => {
     const relevant = items.filter((task) => {
       if (task.status === "done" || task.status === "cancelled") return false;
-      return isScheduledForDay(task, todayStart, todayEnd);
+      return isScheduledForDay(task, selectedDayStart, selectedDayEnd);
     });
     return sortTasksByTimeField(relevant, "scheduled_for");
-  }, [items, todayEnd, todayStart]);
+  }, [items, selectedDayEnd, selectedDayStart]);
 
   const overdueScheduled = useMemo(() => {
     const relevant = items.filter((task) => {
       if (task.status === "done" || task.status === "cancelled") return false;
       if (!task.scheduled_for) return false;
-      return new Date(task.scheduled_for).getTime() < todayStart.getTime();
+      return new Date(task.scheduled_for).getTime() < selectedDayStart.getTime();
     });
     return sortTasksByTimeField(relevant, "scheduled_for");
-  }, [items, todayStart]);
+  }, [items, selectedDayStart]);
 
   const dueTodayWithoutSchedule = useMemo(() => {
     const relevant = items.filter((task) => {
       if (task.status === "done" || task.status === "cancelled") return false;
       if (!isBacklogTask(task)) return false;
-      return isDueOnDay(task, todayStart, todayEnd);
+      return isDueOnDay(task, selectedDayStart, selectedDayEnd);
     });
     return sortTasksByTimeField(relevant, "due_at");
-  }, [items, todayEnd, todayStart]);
+  }, [items, selectedDayEnd, selectedDayStart]);
 
   const backlogItems = useMemo(
     () =>
@@ -331,8 +357,8 @@ export function TodayPage() {
   );
 
   const pureBacklogItems = useMemo(() => {
-    return backlogItems.filter((task) => !isDueOnDay(task, todayStart, todayEnd));
-  }, [backlogItems, todayEnd, todayStart]);
+    return backlogItems.filter((task) => !isDueOnDay(task, selectedDayStart, selectedDayEnd));
+  }, [backlogItems, selectedDayEnd, selectedDayStart]);
 
   const todayKnownEstimateMinutes = useMemo(() => sumKnownEstimateMinutes(scheduledToday), [scheduledToday]);
   const todayMissingEstimateCount = useMemo(() => countMissingEstimates(scheduledToday), [scheduledToday]);
@@ -353,9 +379,9 @@ export function TodayPage() {
       if (!raw) return false;
       const parsed = new Date(raw);
       if (Number.isNaN(parsed.getTime())) return false;
-      return parsed >= todayStart && parsed <= todayEnd;
+      return parsed >= selectedDayStart && parsed <= selectedDayEnd;
     });
-  }, [calendarUpcoming, todayEnd, todayStart]);
+  }, [calendarUpcoming, selectedDayEnd, selectedDayStart]);
 
   const nextCalendarEvent = useMemo(() => {
     const sorted = [...calendarUpcoming]
@@ -367,14 +393,15 @@ export function TodayPage() {
       });
     return sorted.find((event) => {
       const ts = new Date(event.startAt ?? 0).getTime();
-      return Number.isFinite(ts) && ts > todayEnd.getTime();
+      return Number.isFinite(ts) && ts > selectedDayEnd.getTime();
     });
-  }, [calendarUpcoming, todayEnd]);
+  }, [calendarUpcoming, selectedDayEnd]);
 
   async function saveTaskUpdate(task: TaskItem, patch: {
     scheduledFor?: string | null;
     dueAt?: string | null;
     estimatedMinutes?: number | null;
+    planningFlexibility?: TaskItem["planning_flexibility"];
     title?: string;
     details?: string | null;
     projectId?: string | null;
@@ -399,7 +426,9 @@ export function TodayPage() {
         taskType: patch.taskType ?? task.task_type,
         dueAt: patch.dueAt !== undefined ? patch.dueAt : task.due_at ?? null,
         scheduledFor: patch.scheduledFor !== undefined ? patch.scheduledFor : task.scheduled_for ?? null,
-        estimatedMinutes: patch.estimatedMinutes !== undefined ? patch.estimatedMinutes : task.estimated_minutes ?? null
+        estimatedMinutes: patch.estimatedMinutes !== undefined ? patch.estimatedMinutes : task.estimated_minutes ?? null,
+        planningFlexibility:
+          patch.planningFlexibility !== undefined ? patch.planningFlexibility : task.planning_flexibility ?? null
       });
       await loadToday();
       return true;
@@ -486,6 +515,35 @@ export function TodayPage() {
     }
   }
 
+  async function transcribePlanningConversationVoice(file: File): Promise<string> {
+    if (!sessionToken) {
+      throw new Error("Спочатку авторизуйся в Інбоксі.");
+    }
+
+    diagnostics.trackAction("planning_conversation_voice_transcribe", {
+      scopeDate,
+      size: file.size,
+      type: file.type || "unknown"
+    });
+
+    try {
+      return await transcribePlanningVoice({ sessionToken, file });
+    } catch (voiceError) {
+      if (voiceError instanceof ApiError) {
+        diagnostics.trackFailure({
+          path: voiceError.path,
+          status: voiceError.status,
+          code: voiceError.code,
+          message: voiceError.message,
+          details: voiceError.details
+        });
+      }
+      throw voiceError instanceof Error
+        ? voiceError
+        : new Error("Не вдалося розпізнати голос. Спробуй ще раз.");
+    }
+  }
+
   async function actOnLatestProposalSet(action: "apply_all_latest" | "dismiss_all_latest") {
     if (!sessionToken || !planningConversation?.latestActionableAssistantMessageId) return;
 
@@ -561,8 +619,11 @@ export function TodayPage() {
     }
   }
 
-  function scheduleForToday(task: TaskItem) {
-    void saveTaskUpdate(task, { scheduledFor: new Date().toISOString() });
+  function scheduleForSelectedDay(task: TaskItem) {
+    const scheduledAt = isSelectedToday
+      ? new Date().toISOString()
+      : new Date(scopeDate + "T09:00:00").toISOString();
+    void saveTaskUpdate(task, { scheduledFor: scheduledAt });
   }
 
   function returnToBacklog(task: TaskItem) {
@@ -574,8 +635,8 @@ export function TodayPage() {
     return (
       <div className="inbox-actions">
         {mode === "unscheduled" ? (
-          <button type="button" className="ghost" onClick={() => scheduleForToday(task)} disabled={isBusy}>
-            {isBusy ? "Збереження..." : "Запланувати на сьогодні"}
+          <button type="button" className="ghost" onClick={() => scheduleForSelectedDay(task)} disabled={isBusy}>
+            {isBusy ? "\u0417\u0431\u0435\u0440\u0435\u0436\u0435\u043d\u043d\u044f..." : isSelectedToday ? "\u0417\u0430\u043f\u043b\u0430\u043d\u0443\u0432\u0430\u0442\u0438 \u043d\u0430 \u0441\u044c\u043e\u0433\u043e\u0434\u043d\u0456" : "\u0417\u0430\u043f\u043b\u0430\u043d\u0443\u0432\u0430\u0442\u0438 \u043d\u0430 \u0434\u0435\u043d\u044c"}
           </button>
         ) : null}
         {mode === "scheduled" ? (
@@ -608,6 +669,11 @@ export function TodayPage() {
               <li className="inbox-item" key={task.id}>
                 <p className="inbox-main-text">
                   {task.title}
+                  {task.planning_flexibility ? (
+                    <span className={`planning-badge planning-badge--${task.planning_flexibility}`}>
+                      {planningFlexibilityLabel(task.planning_flexibility)}
+                    </span>
+                  ) : null}
                   {task.is_protected_essential ? <span className="essential-badge">Захищене важливе</span> : null}
                 </p>
                 <p className="inbox-meta">
@@ -626,12 +692,29 @@ export function TodayPage() {
   return (
     <section className="panel">
       <div className="today-toolbar">
-        <h2>Сьогодні</h2>
-        <button type="button" onClick={() => void openPlanningConversation()} disabled={!sessionToken || planningConversationBusy}>
-          Обговорити план
-        </button>
+        <div>
+          <h2>{isSelectedToday ? "\u0421\u044c\u043e\u0433\u043e\u0434\u043d\u0456" : "\u041f\u043b\u0430\u043d \u0434\u043d\u044f"}</h2>
+          <p className="inbox-meta">{selectedDayLabel}</p>
+        </div>
+        <div className="today-toolbar__actions">
+          <button type="button" className="ghost" onClick={() => setSelectedScopeDate((current) => shiftScopeDate(current, -1))}>
+            {"\u041f\u043e\u043f\u0435\u0440\u0435\u0434\u043d\u0456\u0439 \u0434\u0435\u043d\u044c"}
+          </button>
+          <input type="date" value={selectedScopeDate} onChange={(event) => setSelectedScopeDate(event.target.value || todayScopeDate)} />
+          {!isSelectedToday ? (
+            <button type="button" className="ghost" onClick={() => setSelectedScopeDate(todayScopeDate)}>
+              {"\u0421\u044c\u043e\u0433\u043e\u0434\u043d\u0456"}
+            </button>
+          ) : null}
+          <button type="button" className="ghost" onClick={() => setSelectedScopeDate((current) => shiftScopeDate(current, 1))}>
+            {"\u041d\u0430\u0441\u0442\u0443\u043f\u043d\u0438\u0439 \u0434\u0435\u043d\u044c"}
+          </button>
+          <button type="button" onClick={() => void openPlanningConversation()} disabled={!sessionToken || planningConversationBusy}>
+            {"\u041e\u0431\u0433\u043e\u0432\u043e\u0440\u0438\u0442\u0438 \u043f\u043b\u0430\u043d"}
+          </button>
+        </div>
       </div>
-      <p>День будується навколо задач із планованим стартом на сьогодні, без автоматичного підтягування беклогу.</p>
+      <p>{isSelectedToday ? "\u0414\u0435\u043d\u044c \u0431\u0443\u0434\u0443\u0454\u0442\u044c\u0441\u044f \u043d\u0430\u0432\u043a\u043e\u043b\u043e \u0437\u0430\u0434\u0430\u0447 \u0456\u0437 \u043f\u043b\u0430\u043d\u043e\u0432\u0430\u043d\u0438\u043c \u0441\u0442\u0430\u0440\u0442\u043e\u043c \u043d\u0430 \u0441\u044c\u043e\u0433\u043e\u0434\u043d\u0456, \u0431\u0435\u0437 \u0430\u0432\u0442\u043e\u043c\u0430\u0442\u0438\u0447\u043d\u043e\u0433\u043e \u043f\u0456\u0434\u0442\u044f\u0433\u0443\u0432\u0430\u043d\u043d\u044f \u0431\u0435\u043a\u043b\u043e\u0433\u0443." : "\u041e\u0431\u0440\u0430\u043d\u0438\u0439 \u0434\u0435\u043d\u044c \u0431\u0443\u0434\u0443\u0454\u0442\u044c\u0441\u044f \u043d\u0430\u0432\u043a\u043e\u043b\u043e \u0437\u0430\u0434\u0430\u0447 \u0456\u0437 \u043f\u043b\u0430\u043d\u043e\u0432\u0430\u043d\u0438\u043c \u0441\u0442\u0430\u0440\u0442\u043e\u043c \u043d\u0430 \u0446\u044e \u0434\u0430\u0442\u0443, \u0431\u0435\u0437 \u0430\u0432\u0442\u043e\u043c\u0430\u0442\u0438\u0447\u043d\u043e\u0433\u043e \u043f\u0456\u0434\u0442\u044f\u0433\u0443\u0432\u0430\u043d\u043d\u044f \u0431\u0435\u043a\u043b\u043e\u0433\u0443."}</p>
 
       {!sessionToken ? <p className="empty-note">Відкрий Інбокс для авторизації сесії.</p> : null}
       {error ? (
@@ -786,14 +869,22 @@ export function TodayPage() {
 
       {!loading ? (
         <>
+          {!isSelectedToday ? (
+            <section className="today-section">
+              <h3>{"\u041f\u0456\u0434\u043a\u0430\u0437\u043a\u0430 \u0434\u043b\u044f \u0432\u0438\u0431\u0440\u0430\u043d\u043e\u0433\u043e \u0434\u043d\u044f"}</h3>
+              <p className="inbox-meta">
+                {"\u0414\u0435\u0442\u0435\u0440\u043c\u0456\u043d\u043e\u0432\u0430\u043d\u0438\u0439 \u043f\u043b\u0430\u043d \u0434\u043d\u044f \u0456 \u043f\u043e\u0440\u0430\u0434\u0430 AI \u043b\u0438\u0448\u0430\u044e\u0442\u044c\u0441\u044f \u043f\u0440\u0438\u0432\u2019\u044f\u0437\u0430\u043d\u0438\u043c\u0438 \u0434\u043e \u043f\u043e\u0442\u043e\u0447\u043d\u043e\u0433\u043e \u0441\u044c\u043e\u0433\u043e\u0434\u043d\u0456. \u0414\u043b\u044f \u0432\u0438\u0431\u0440\u0430\u043d\u043e\u0457 \u0434\u0430\u0442\u0438 \u043d\u0438\u0436\u0447\u0435 \u043f\u043e\u043a\u0430\u0437\u0430\u043d\u043e \u043f\u0440\u0430\u0432\u0438\u043b\u044c\u043d\u0443 \u0441\u0442\u0440\u0443\u043a\u0442\u0443\u0440\u0443 \u0434\u043d\u044f, \u043a\u0430\u043b\u0435\u043d\u0434\u0430\u0440\u043d\u0438\u0439 \u043a\u043e\u043d\u0442\u0435\u043a\u0441\u0442 \u0456 planning conversation \u0441\u0430\u043c\u0435 \u0434\u043b\u044f "}{selectedDayLabel}.
+              </p>
+            </section>
+          ) : null}
           <section className="today-section">
-            <h3>Календарний контекст</h3>
+            <h3>{"\u041a\u0430\u043b\u0435\u043d\u0434\u0430\u0440\u043d\u0438\u0439 \u043a\u043e\u043d\u0442\u0435\u043a\u0441\u0442 \u0434\u043d\u044f"}</h3>
             {!calendarStatus?.connected ? (
               <p className="empty-note">Google Calendar не підключено. Підключи його на вкладці «Календар».</p>
             ) : (
               <>
                 {calendarToday.length === 0 ? (
-                  <p className="empty-note">На сьогодні подій не знайдено.</p>
+                  <p className="empty-note">{"\u041d\u0430 \u0432\u0438\u0431\u0440\u0430\u043d\u0438\u0439 \u0434\u0435\u043d\u044c \u043f\u043e\u0434\u0456\u0439 \u043d\u0435 \u0437\u043d\u0430\u0439\u0434\u0435\u043d\u043e."}</p>
                 ) : (
                   <ul className="inbox-list">
                     {calendarToday.slice(0, 4).map((event) => (
@@ -806,24 +897,24 @@ export function TodayPage() {
                 )}
                 {nextCalendarEvent ? (
                   <p className="inbox-meta">
-                    Наступна подія після сьогодні: {nextCalendarEvent.title} · {nextCalendarEvent.startAt ? formatTaskDateTime(new Date(nextCalendarEvent.startAt)) : "Без часу"}
+                    {"\u041d\u0430\u0441\u0442\u0443\u043f\u043d\u0430 \u043f\u043e\u0434\u0456\u044f \u043f\u0456\u0441\u043b\u044f \u0446\u044c\u043e\u0433\u043e \u0434\u043d\u044f:"} {nextCalendarEvent.title} {" \u00b7 "} {nextCalendarEvent.startAt ? formatTaskDateTime(new Date(nextCalendarEvent.startAt)) : "\u0411\u0435\u0437 \u0447\u0430\u0441\u0443"}
                   </p>
                 ) : null}
               </>
             )}
           </section>
           <section className="today-section">
-            <h3>Структура дня</h3>
+            <h3>{"\u0421\u0442\u0440\u0443\u043a\u0442\u0443\u0440\u0430 \u0432\u0438\u0431\u0440\u0430\u043d\u043e\u0433\u043e \u0434\u043d\u044f"}</h3>
             <p className="inbox-meta">
-              Заплановано на сьогодні: {scheduledToday.length} · Дедлайни сьогодні без плану: {dueTodayWithoutSchedule.length} · У беклозі: {pureBacklogItems.length}
+              {"\u0417\u0430\u043f\u043b\u0430\u043d\u043e\u0432\u0430\u043d\u043e \u043d\u0430 \u0432\u0438\u0431\u0440\u0430\u043d\u0438\u0439 \u0434\u0435\u043d\u044c:"} {scheduledToday.length} {" \u00b7 "} {"\u0414\u0435\u0434\u043b\u0430\u0439\u043d\u0438 \u0446\u044c\u043e\u0433\u043e \u0434\u043d\u044f \u0431\u0435\u0437 \u043f\u043b\u0430\u043d\u0443:"} {dueTodayWithoutSchedule.length} {" \u00b7 "} {"\u0423 \u0431\u0435\u043a\u043b\u043e\u0437\u0456:"} {pureBacklogItems.length}
             </p>
             <p className="inbox-meta">{loadCoverageLine({ knownMinutes: todayKnownEstimateMinutes, missingCount: todayMissingEstimateCount, plannedCount: scheduledToday.length })}</p>
-            <p className="inbox-meta">Сторінка «Сьогодні» зосереджена на задачах із планованим стартом. Беклог не підтягується в день автоматично.</p>
+            <p className="inbox-meta">{"\u041f\u043b\u0430\u043d\u0443\u0432\u0430\u043d\u043d\u044f \u0434\u043b\u044f \u0432\u0438\u0431\u0440\u0430\u043d\u043e\u0433\u043e \u0434\u043d\u044f \u0437\u043e\u0441\u0435\u0440\u0435\u0434\u0436\u0435\u043d\u0435 \u043d\u0430 \u0437\u0430\u0434\u0430\u0447\u0430\u0445 \u0456\u0437 \u043f\u043b\u0430\u043d\u043e\u0432\u0430\u043d\u0438\u043c \u0441\u0442\u0430\u0440\u0442\u043e\u043c. \u0411\u0435\u043a\u043b\u043e\u0433 \u043d\u0435 \u043f\u0456\u0434\u0442\u044f\u0433\u0443\u0454\u0442\u044c\u0441\u044f \u0432 \u0434\u0435\u043d\u044c \u0430\u0432\u0442\u043e\u043c\u0430\u0442\u0438\u0447\u043d\u043e."}</p>
           </section>
-          {renderSection("Заплановано на сьогодні", "Основний список дня: тільки задачі з планованим стартом на цей день.", scheduledToday, "scheduled")}
-          {renderSection("Прострочені заплановані", "Задачі, у яких планований старт уже лишився в минулому.", overdueScheduled, "neutral")}
-          {renderSection("Дедлайни сьогодні без плану", "Окремо показані задачі з дедлайном на сьогодні, але без планованого старту.", dueTodayWithoutSchedule, "unscheduled")}
-          {renderSection("Беклог", "Тут задачі без планованого старту. Звідси їх можна швидко поставити в план дня.", pureBacklogItems, "unscheduled")}
+          {renderSection(isSelectedToday ? "\u0417\u0430\u043f\u043b\u0430\u043d\u043e\u0432\u0430\u043d\u043e \u043d\u0430 \u0441\u044c\u043e\u0433\u043e\u0434\u043d\u0456" : "\u0417\u0430\u043f\u043b\u0430\u043d\u043e\u0432\u0430\u043d\u043e \u043d\u0430 \u0432\u0438\u0431\u0440\u0430\u043d\u0438\u0439 \u0434\u0435\u043d\u044c", "\u041e\u0441\u043d\u043e\u0432\u043d\u0438\u0439 \u0441\u043f\u0438\u0441\u043e\u043a \u0434\u043d\u044f: \u0442\u0456\u043b\u044c\u043a\u0438 \u0437\u0430\u0434\u0430\u0447\u0456 \u0437 \u043f\u043b\u0430\u043d\u043e\u0432\u0430\u043d\u0438\u043c \u0441\u0442\u0430\u0440\u0442\u043e\u043c \u043d\u0430 \u0446\u044e \u0434\u0430\u0442\u0443.", scheduledToday, "scheduled")}
+          {renderSection(isSelectedToday ? "??????????? ???????????" : "??????????? ?????? ????????? ???", isSelectedToday ? "??????, ? ???? ?????????? ????? ??? ??????? ? ????????." : "??????, ??? ?????????? ????? ??????? ?????? ???????? ???? ? ???? ?? ????????.", overdueScheduled, "neutral")}
+          {renderSection(isSelectedToday ? "\u0414\u0435\u0434\u043b\u0430\u0439\u043d\u0438 \u0441\u044c\u043e\u0433\u043e\u0434\u043d\u0456 \u0431\u0435\u0437 \u043f\u043b\u0430\u043d\u0443" : "\u0414\u0435\u0434\u043b\u0430\u0439\u043d\u0438 \u0446\u044c\u043e\u0433\u043e \u0434\u043d\u044f \u0431\u0435\u0437 \u043f\u043b\u0430\u043d\u0443", "\u041e\u043a\u0440\u0435\u043c\u043e \u043f\u043e\u043a\u0430\u0437\u0430\u043d\u0456 \u0437\u0430\u0434\u0430\u0447\u0456 \u0437 \u0434\u0435\u0434\u043b\u0430\u0439\u043d\u043e\u043c \u043d\u0430 \u0432\u0438\u0431\u0440\u0430\u043d\u0438\u0439 \u0434\u0435\u043d\u044c, \u0430\u043b\u0435 \u0431\u0435\u0437 \u043f\u043b\u0430\u043d\u043e\u0432\u0430\u043d\u043e\u0433\u043e \u0441\u0442\u0430\u0440\u0442\u0443.", dueTodayWithoutSchedule, "unscheduled")}
+          {renderSection("\u0411\u0435\u043a\u043b\u043e\u0433", isSelectedToday ? "\u0422\u0443\u0442 \u0437\u0430\u0434\u0430\u0447\u0456 \u0431\u0435\u0437 \u043f\u043b\u0430\u043d\u043e\u0432\u0430\u043d\u043e\u0433\u043e \u0441\u0442\u0430\u0440\u0442\u0443. \u0417\u0432\u0456\u0434\u0441\u0438 \u0457\u0445 \u043c\u043e\u0436\u043d\u0430 \u0448\u0432\u0438\u0434\u043a\u043e \u043f\u043e\u0441\u0442\u0430\u0432\u0438\u0442\u0438 \u0432 \u043f\u043b\u0430\u043d \u0434\u043d\u044f." : "\u0422\u0443\u0442 \u0437\u0430\u0434\u0430\u0447\u0456 \u0431\u0435\u0437 \u043f\u043b\u0430\u043d\u043e\u0432\u0430\u043d\u043e\u0433\u043e \u0441\u0442\u0430\u0440\u0442\u0443. \u0417\u0432\u0456\u0434\u0441\u0438 \u0457\u0445 \u043c\u043e\u0436\u043d\u0430 \u0448\u0432\u0438\u0434\u043a\u043e \u043f\u043e\u0441\u0442\u0430\u0432\u0438\u0442\u0438 \u0432 \u043f\u043b\u0430\u043d \u043d\u0430 \u0432\u0438\u0431\u0440\u0430\u043d\u0438\u0439 \u0434\u0435\u043d\u044c.", pureBacklogItems, "unscheduled")}
           {renderSection("Захищені / регулярні важливі", "Огляд важливих регулярних і захищених задач без автопланування.", protectedEssentials, "neutral")}
         </>
       ) : null}
@@ -846,7 +937,8 @@ export function TodayPage() {
               taskType: payload.taskType,
               dueAt: payload.dueAt,
               scheduledFor: payload.scheduledFor,
-              estimatedMinutes: payload.estimatedMinutes
+              estimatedMinutes: payload.estimatedMinutes,
+              planningFlexibility: payload.planningFlexibility
             });
             if (saved) setActiveTask(null);
           })();
@@ -858,7 +950,7 @@ export function TodayPage() {
 
       <PlanningConversationModal
         open={planningConversationOpen}
-        scopeDate={scopeDate}
+        scopeDate={selectedScopeDate}
         state={planningConversation}
         busy={planningConversationBusy}
         actingProposalId={actingProposalId}
@@ -873,6 +965,7 @@ export function TodayPage() {
         onSend={(message) => {
           void sendPlanningMessage(message);
         }}
+        onTranscribeVoice={(file) => transcribePlanningConversationVoice(file)}
         onApplyProposal={(proposalId) => {
           void actOnProposal(proposalId, "apply");
         }}
@@ -891,5 +984,6 @@ export function TodayPage() {
     </section>
   );
 }
+
 
 

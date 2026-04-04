@@ -1,4 +1,4 @@
-import { createAdminClient } from "../_shared/db.ts";
+﻿import { createAdminClient } from "../_shared/db.ts";
 import { handleOptions, jsonResponse, safeJson } from "../_shared/http.ts";
 import { resolveSessionUser } from "../_shared/session.ts";
 
@@ -10,6 +10,7 @@ type TaskType =
   | "personal_essential"
   | "someday";
 
+type PlanningFlexibility = "essential" | "flexible";
 type UpdateTaskBody = {
   taskId?: string;
   title?: string;
@@ -19,6 +20,7 @@ type UpdateTaskBody = {
   dueAt?: string | null;
   scheduledFor?: string | null;
   estimatedMinutes?: number | null;
+  planningFlexibility?: PlanningFlexibility | null;
 };
 
 function toIsoOrNull(value: string | null | undefined): string | null {
@@ -67,6 +69,14 @@ Deno.serve(async (req) => {
     (!Number.isInteger(body.estimatedMinutes) || body.estimatedMinutes <= 0)
   ) {
     return jsonResponse({ ok: false, error: "invalid_estimated_minutes" }, 400);
+  }
+  if (
+    body.planningFlexibility !== undefined &&
+    body.planningFlexibility !== null &&
+    body.planningFlexibility !== "essential" &&
+    body.planningFlexibility !== "flexible"
+  ) {
+    return jsonResponse({ ok: false, error: "invalid_planning_flexibility" }, 400);
   }
 
   const supabase = createAdminClient();
@@ -119,6 +129,9 @@ Deno.serve(async (req) => {
   if (body.estimatedMinutes !== undefined) {
     updatePayload.estimated_minutes = body.estimatedMinutes;
   }
+  if (body.planningFlexibility !== undefined) {
+    updatePayload.planning_flexibility = body.planningFlexibility;
+  }
   const { error: updateError } = await supabase
     .from("tasks")
     .update(updatePayload)
@@ -131,4 +144,8 @@ Deno.serve(async (req) => {
 
   return jsonResponse({ ok: true, taskId: body.taskId });
 });
+
+
+
+
 

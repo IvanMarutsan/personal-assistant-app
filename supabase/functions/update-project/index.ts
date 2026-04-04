@@ -6,7 +6,36 @@ type UpdateProjectBody = {
   projectId?: string;
   name?: string;
   status?: "active" | "on_hold" | "archived";
+  aliases?: string[];
 };
+
+function normalizeComparableText(value: string): string {
+  return value
+    .toLowerCase()
+    .normalize("NFKD")
+    .replace(/[^\p{L}\p{N}\s]+/gu, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function normalizeAliases(input: unknown): string[] {
+  if (!Array.isArray(input)) return [];
+  const seen = new Set<string>();
+  const result: string[] = [];
+
+  for (const value of input) {
+    if (typeof value !== "string") continue;
+    const trimmed = value.trim().replace(/\s+/g, " ").slice(0, 100);
+    if (!trimmed) continue;
+    const normalized = normalizeComparableText(trimmed);
+    if (!normalized || seen.has(normalized)) continue;
+    seen.add(normalized);
+    result.push(trimmed);
+    if (result.length >= 12) break;
+  }
+
+  return result;
+}
 
 Deno.serve(async (req) => {
   const preflight = handleOptions(req);
@@ -39,6 +68,10 @@ Deno.serve(async (req) => {
     updates.status = body.status;
   }
 
+  if (body.aliases !== undefined) {
+    updates.aliases = normalizeAliases(body.aliases);
+  }
+
   if (Object.keys(updates).length === 0) {
     return jsonResponse({ ok: false, error: "nothing_to_update" }, 400);
   }
@@ -49,7 +82,7 @@ Deno.serve(async (req) => {
     .update(updates)
     .eq("id", body.projectId)
     .eq("user_id", sessionUser.userId)
-    .select("id, name, status, rank")
+    .select("id, name, status, rank, aliases")
     .maybeSingle();
 
   if (error) {

@@ -1,8 +1,11 @@
-import type { TaskItem } from "../types/api";
+﻿import type { PlanningFlexibility, TaskItem } from "../types/api";
 
 const USER_TIMEZONE = Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC";
 
-type TimingTask = Pick<TaskItem, "title" | "status" | "scheduled_for" | "due_at" | "estimated_minutes">;
+type TimingTask = Pick<
+  TaskItem,
+  "title" | "status" | "scheduled_for" | "due_at" | "estimated_minutes" | "planning_flexibility"
+>;
 
 export function parseTaskDate(value: string | null | undefined): Date | null {
   if (!value) return null;
@@ -21,6 +24,12 @@ export function formatTaskDateTime(value: Date, timezone = USER_TIMEZONE): strin
 export function formatTaskEstimate(value: number | null | undefined): string | null {
   if (!value) return null;
   return `${value} хв`;
+}
+
+export function planningFlexibilityLabel(value: PlanningFlexibility | null | undefined): string {
+  if (value === "essential") return "Обов'язково";
+  if (value === "flexible") return "Гнучко";
+  return "Не вказано";
 }
 
 export function isBacklogTask(task: Pick<TaskItem, "scheduled_for">): boolean {

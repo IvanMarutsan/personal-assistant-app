@@ -1,14 +1,17 @@
-import { useEffect, useMemo, useState } from "react";
+﻿import { useEffect, useMemo, useState } from "react";
+import type { ProjectItem } from "../types/api";
 
 type InboxTriageModalProps = {
   open: boolean;
-  mode: "task" | "note" | null;
+  mode: "task" | "note" | "worklog" | null;
   sourceText: string;
+  projects: ProjectItem[];
   busy: boolean;
   onCancel: () => void;
   onConfirm: (payload: {
     title?: string;
     noteBody?: string;
+    projectId?: string | null;
     dueAt?: string | null;
     scheduledFor?: string | null;
     estimatedMinutes?: number | null;
@@ -34,6 +37,7 @@ function parseEstimatedMinutes(value: string): number | null {
 export function InboxTriageModal(props: InboxTriageModalProps) {
   const [title, setTitle] = useState("");
   const [noteBody, setNoteBody] = useState("");
+  const [projectId, setProjectId] = useState("");
   const [scheduledForInput, setScheduledForInput] = useState("");
   const [dueAtInput, setDueAtInput] = useState("");
   const [estimatedMinutesInput, setEstimatedMinutesInput] = useState("");
@@ -42,6 +46,7 @@ export function InboxTriageModal(props: InboxTriageModalProps) {
     if (!props.open) return;
     setTitle(props.sourceText.slice(0, 120));
     setNoteBody(props.sourceText);
+    setProjectId("");
     setScheduledForInput("");
     setDueAtInput("");
     setEstimatedMinutesInput("");
@@ -55,7 +60,13 @@ export function InboxTriageModal(props: InboxTriageModalProps) {
   return (
     <div className="modal-backdrop" role="dialog" aria-modal="true">
       <div className="modal-card">
-        <h3>{props.mode === "task" ? "Перетворення в задачу" : "Перетворення в нотатку"}</h3>
+        <h3>
+          {props.mode === "task"
+            ? "Перетворення в задачу"
+            : props.mode === "note"
+            ? "Перетворення в нотатку"
+            : "Збереження контекстного запису"}
+        </h3>
 
         {props.mode === "task" ? (
           <>
@@ -97,6 +108,27 @@ export function InboxTriageModal(props: InboxTriageModalProps) {
           </label>
         ) : null}
 
+        {props.mode === "worklog" ? (
+          <>
+            <label>
+              Текст запису
+              <textarea value={noteBody} onChange={(event) => setNoteBody(event.target.value)} rows={5} />
+            </label>
+
+            <label>
+              Проєкт
+              <select value={projectId} onChange={(event) => setProjectId(event.target.value)}>
+                <option value="">Без проєкту</option>
+                {props.projects.map((project) => (
+                  <option key={project.id} value={project.id}>
+                    {project.name}
+                  </option>
+                ))}
+              </select>
+            </label>
+          </>
+        ) : null}
+
         <div className="modal-actions">
           <button type="button" onClick={props.onCancel} disabled={props.busy}>
             Скасувати
@@ -107,6 +139,7 @@ export function InboxTriageModal(props: InboxTriageModalProps) {
               props.onConfirm({
                 title: title.trim() || undefined,
                 noteBody: noteBody.trim() || undefined,
+                projectId: projectId || null,
                 scheduledFor: localInputToIso(scheduledForInput),
                 dueAt: localInputToIso(dueAtInput),
                 estimatedMinutes: parsedEstimatedMinutes

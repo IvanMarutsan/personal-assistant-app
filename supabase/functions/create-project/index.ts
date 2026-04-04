@@ -42,9 +42,10 @@ Deno.serve(async (req) => {
       user_id: sessionUser.userId,
       name: name.slice(0, 100),
       status: "active",
-      rank: nextRank
+      rank: nextRank,
+      aliases: []
     })
-    .select("id, name, status, rank")
+    .select("id, name, status, rank, aliases")
     .single();
 
   if (error || !data) {

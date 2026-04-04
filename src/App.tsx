@@ -1,7 +1,8 @@
-import { Link, Route, Routes } from "react-router-dom";
+﻿import { Link, Route, Routes } from "react-router-dom";
 import { DiagnosticsPanel } from "./components/DiagnosticsPanel";
 import { InboxPage } from "./features/inbox/InboxPage";
 import { NotesPage } from "./features/notes/NotesPage";
+import { WorklogsPage } from "./features/worklogs/WorklogsPage";
 import { TasksPage } from "./features/tasks/TasksPage";
 import { TodayPage } from "./features/today/TodayPage";
 import { CalendarPage } from "./features/calendar/CalendarPage";
@@ -29,6 +30,7 @@ export function App() {
         <Link to="/tasks">Задачі</Link>
         <Link to="/projects">Проєкти</Link>
         <Link to="/notes">Нотатки</Link>
+        <Link to="/worklogs">Контекст</Link>
         <Link to="/calendar">Календар</Link>
       </nav>
 
@@ -40,6 +42,7 @@ export function App() {
           <Route path="/tasks" element={<TasksPage />} />
           <Route path="/projects" element={<ProjectsPage />} />
           <Route path="/notes" element={<NotesPage />} />
+          <Route path="/worklogs" element={<WorklogsPage />} />
           <Route path="/calendar" element={<CalendarPage />} />
         </Routes>
       </main>

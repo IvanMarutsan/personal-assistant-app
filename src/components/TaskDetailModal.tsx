@@ -1,6 +1,6 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+﻿import { useEffect, useMemo, useRef, useState } from "react";
 import type { MouseEvent } from "react";
-import type { ProjectItem, TaskItem, TaskStatus, TaskType } from "../types/api";
+import type { PlanningFlexibility, ProjectItem, TaskItem, TaskStatus, TaskType } from "../types/api";
 import { moveReasonLabel } from "../lib/reasons";
 
 type TaskActionKind = "done" | "reschedule" | "block" | "unblock" | "cancel";
@@ -20,6 +20,7 @@ type TaskDetailModalProps = {
     dueAt: string | null;
     scheduledFor: string | null;
     estimatedMinutes: number | null;
+    planningFlexibility: PlanningFlexibility | null;
   }) => void;
   onAction: (action: TaskActionKind) => void;
   onCreateCalendarEvent: () => void;
@@ -36,6 +37,13 @@ const TASK_TYPE_OPTIONS: Array<{ value: TaskType; label: string }> = [
   { value: "personal_essential", label: "Особисто важливе" },
   { value: "someday", label: "Колись" }
 ];
+
+const FLEXIBILITY_OPTIONS: Array<{ value: PlanningFlexibility | ""; label: string }> = [
+  { value: "", label: "Не вказано" },
+  { value: "essential", label: "Обов'язково" },
+  { value: "flexible", label: "Гнучко" }
+];
+
 const USER_TIMEZONE = Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC";
 
 function statusLabel(status: TaskStatus): string {
@@ -81,6 +89,12 @@ function taskTypeLabel(taskType: TaskType): string {
   return TASK_TYPE_OPTIONS.find((option) => option.value === taskType)?.label ?? taskType;
 }
 
+function planningFlexibilityLabel(value: PlanningFlexibility | null | undefined): string {
+  if (value === "essential") return "Обов'язково";
+  if (value === "flexible") return "Гнучко";
+  return "Не вказано";
+}
+
 function formatLocalDateTime(value: Date): string {
   return new Intl.DateTimeFormat("uk-UA", {
     dateStyle: "short",
@@ -115,6 +129,7 @@ export function TaskDetailModal(props: TaskDetailModalProps) {
   const [scheduledForInput, setScheduledForInput] = useState("");
   const [dueAtInput, setDueAtInput] = useState("");
   const [estimatedMinutesInput, setEstimatedMinutesInput] = useState("");
+  const [planningFlexibility, setPlanningFlexibility] = useState<PlanningFlexibility | null>(null);
 
   const initialMode = props.initialMode ?? "view";
   const showWorkflowActions = props.showWorkflowActions ?? true;
@@ -129,6 +144,7 @@ export function TaskDetailModal(props: TaskDetailModalProps) {
     setScheduledForInput(toLocalInput(props.task.scheduled_for));
     setDueAtInput(toLocalInput(props.task.due_at));
     setEstimatedMinutesInput(props.task.estimated_minutes ? String(props.task.estimated_minutes) : "");
+    setPlanningFlexibility(props.task.planning_flexibility ?? null);
   }, [props.open, props.task?.id, initialMode]);
 
   useEffect(() => {
@@ -159,8 +175,9 @@ export function TaskDetailModal(props: TaskDetailModalProps) {
     const sameScheduled = toIso(scheduledForInput) === (props.task.scheduled_for ?? null);
     const sameDue = toIso(dueAtInput) === (props.task.due_at ?? null);
     const sameEstimate = parsedEstimatedMinutes === (props.task.estimated_minutes ?? null);
-    return !(sameTitle && sameDetails && sameProject && sameType && sameScheduled && sameDue && sameEstimate);
-  }, [props.task, title, details, projectId, taskType, scheduledForInput, dueAtInput, parsedEstimatedMinutes]);
+    const sameFlexibility = planningFlexibility === (props.task.planning_flexibility ?? null);
+    return !(sameTitle && sameDetails && sameProject && sameType && sameScheduled && sameDue && sameEstimate && sameFlexibility);
+  }, [props.task, title, details, projectId, taskType, scheduledForInput, dueAtInput, parsedEstimatedMinutes, planningFlexibility]);
 
   if (!props.open || !props.task) return null;
 
@@ -186,6 +203,7 @@ export function TaskDetailModal(props: TaskDetailModalProps) {
     setScheduledForInput(toLocalInput(props.task.scheduled_for));
     setDueAtInput(toLocalInput(props.task.due_at));
     setEstimatedMinutesInput(props.task.estimated_minutes ? String(props.task.estimated_minutes) : "");
+    setPlanningFlexibility(props.task.planning_flexibility ?? null);
     if (initialMode === "edit") {
       props.onClose();
       return;
@@ -216,6 +234,7 @@ export function TaskDetailModal(props: TaskDetailModalProps) {
               <p className="inbox-meta">Тип: {taskTypeLabel(task.task_type)}</p>
               <p className="inbox-meta">Статус: {statusLabel(task.status)}</p>
               <p className="inbox-meta">Планування: {task.scheduled_for ? "Заплановано" : "Беклог"}</p>
+              <p className="inbox-meta">Гнучкість у плані: {planningFlexibilityLabel(task.planning_flexibility)}</p>
               <p className="inbox-meta">Час: {timingLabel(task)}</p>
               {task.linked_calendar_event ? (
                 <div className="project-group">
@@ -370,6 +389,21 @@ export function TaskDetailModal(props: TaskDetailModalProps) {
                 />
                 {estimatedMinutesInvalid ? <p className="error-note">Оцінка має бути додатним цілим числом.</p> : null}
               </label>
+
+              <label>
+                Гнучкість у плані
+                <select
+                  value={planningFlexibility ?? ""}
+                  onChange={(event) => setPlanningFlexibility((event.target.value || null) as PlanningFlexibility | null)}
+                  disabled={props.busy}
+                >
+                  {FLEXIBILITY_OPTIONS.map((option) => (
+                    <option key={option.value || "empty"} value={option.value}>
+                      {option.label}
+                    </option>
+                  ))}
+                </select>
+              </label>
             </>
           )}
         </div>
@@ -392,7 +426,8 @@ export function TaskDetailModal(props: TaskDetailModalProps) {
                       taskType,
                       dueAt: toIso(dueAtInput),
                       scheduledFor: toIso(scheduledForInput),
-                      estimatedMinutes: parsedEstimatedMinutes
+                      estimatedMinutes: parsedEstimatedMinutes,
+                      planningFlexibility
                     })
                   }
                   disabled={props.busy || !title.trim() || estimatedMinutesInvalid}

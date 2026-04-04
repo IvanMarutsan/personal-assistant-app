@@ -13,6 +13,33 @@ function statusLabel(status: ProjectStatus): string {
   return "Архів";
 }
 
+function formatAliases(aliases: string[]): string {
+  return aliases.join(", ");
+}
+
+function parseAliases(raw: string): string[] {
+  const parts = raw
+    .split(/[\n,]+/)
+    .map((item) => item.trim().replace(/\s+/g, " "))
+    .filter(Boolean);
+
+  const seen = new Set<string>();
+  const result: string[] = [];
+  for (const alias of parts) {
+    const normalized = alias
+      .toLowerCase()
+      .normalize("NFKD")
+      .replace(/[^\p{L}\p{N}\s]+/gu, " ")
+      .replace(/\s+/g, " ")
+      .trim();
+    if (!normalized || seen.has(normalized)) continue;
+    seen.add(normalized);
+    result.push(alias.slice(0, 100));
+    if (result.length >= 12) break;
+  }
+  return result;
+}
+
 export function ProjectsPage() {
   const [items, setItems] = useState<ProjectItem[]>([]);
   const [loading, setLoading] = useState(false);
@@ -21,6 +48,7 @@ export function ProjectsPage() {
   const [workingProjectId, setWorkingProjectId] = useState<string | null>(null);
   const [editingProjectId, setEditingProjectId] = useState<string | null>(null);
   const [editingName, setEditingName] = useState("");
+  const [editingAliases, setEditingAliases] = useState("");
   const diagnostics = useDiagnostics();
   const sessionToken = localStorage.getItem(SESSION_KEY) ?? "";
 
@@ -91,43 +119,56 @@ export function ProjectsPage() {
     }
   }
 
-  function beginRename(project: ProjectItem) {
+  function beginEdit(project: ProjectItem) {
     setEditingProjectId(project.id);
     setEditingName(project.name);
+    setEditingAliases(formatAliases(project.aliases));
   }
 
-  async function handleRename(project: ProjectItem, nextNameRaw: string) {
+  async function handleSaveProject(project: ProjectItem) {
     if (!sessionToken) return;
-    const nextName = nextNameRaw.trim();
-    if (!nextName || nextName === project.name) {
+    const nextName = editingName.trim();
+    const nextAliases = parseAliases(editingAliases);
+    const sameName = nextName === project.name;
+    const sameAliases = JSON.stringify(nextAliases) === JSON.stringify(project.aliases);
+
+    if (!nextName) {
+      setError("Назва проєкту не може бути порожньою.");
+      return;
+    }
+
+    if (sameName && sameAliases) {
       setEditingProjectId(null);
       setEditingName("");
+      setEditingAliases("");
       return;
     }
 
     setWorkingProjectId(project.id);
     setError(null);
-    diagnostics.trackAction("rename_project", { route: "/projects", projectId: project.id });
+    diagnostics.trackAction("update_project_details", { route: "/projects", projectId: project.id });
     try {
       await updateProject({
         sessionToken,
         projectId: project.id,
-        name: nextName
+        name: nextName,
+        aliases: nextAliases
       });
       setEditingProjectId(null);
       setEditingName("");
+      setEditingAliases("");
       await loadProjects();
-    } catch (renameError) {
-      if (renameError instanceof ApiError) {
+    } catch (saveError) {
+      if (saveError instanceof ApiError) {
         diagnostics.trackFailure({
-          path: renameError.path,
-          status: renameError.status,
-          code: renameError.code,
-          message: renameError.message,
-          details: renameError.details
+          path: saveError.path,
+          status: saveError.status,
+          code: saveError.code,
+          message: saveError.message,
+          details: saveError.details
         });
       }
-      setError(renameError instanceof Error ? renameError.message : "Не вдалося перейменувати проєкт.");
+      setError(saveError instanceof Error ? saveError.message : "Не вдалося оновити проєкт.");
     } finally {
       setWorkingProjectId(null);
     }
@@ -179,27 +220,40 @@ export function ProjectsPage() {
             return (
               <li key={project.id} className="inbox-item">
                 {isEditing ? (
-                  <label>
-                    Нова назва
-                    <input
-                      value={editingName}
-                      onChange={(event) => setEditingName(event.target.value)}
-                      disabled={busy}
-                    />
-                  </label>
+                  <>
+                    <label>
+                      Назва
+                      <input
+                        value={editingName}
+                        onChange={(event) => setEditingName(event.target.value)}
+                        disabled={busy}
+                      />
+                    </label>
+                    <label>
+                      Відомі назви
+                      <input
+                        value={editingAliases}
+                        onChange={(event) => setEditingAliases(event.target.value)}
+                        placeholder="WOD, What's on DK, Whats on DK"
+                        disabled={busy}
+                      />
+                    </label>
+                    <p className="inbox-meta">Через кому. Потрібно для голосу й capture.</p>
+                  </>
                 ) : (
-                  <p className="inbox-main-text">{project.name}</p>
+                  <>
+                    <p className="inbox-main-text">{project.name}</p>
+                    <p className="inbox-meta">Статус: {statusLabel(project.status)} · Ранг: {project.rank}</p>
+                    <p className="inbox-meta">
+                      Відомі назви: {project.aliases.length > 0 ? formatAliases(project.aliases) : "Не вказано"}
+                    </p>
+                  </>
                 )}
-                <p className="inbox-meta">Статус: {statusLabel(project.status)} · Ранг: {project.rank}</p>
                 <div className="inbox-actions">
                   {isEditing ? (
                     <>
-                      <button
-                        type="button"
-                        onClick={() => void handleRename(project, editingName)}
-                        disabled={busy || !editingName.trim()}
-                      >
-                        Зберегти назву
+                      <button type="button" onClick={() => void handleSaveProject(project)} disabled={busy || !editingName.trim()}>
+                        Зберегти
                       </button>
                       <button
                         type="button"
@@ -207,6 +261,7 @@ export function ProjectsPage() {
                         onClick={() => {
                           setEditingProjectId(null);
                           setEditingName("");
+                          setEditingAliases("");
                         }}
                         disabled={busy}
                       >
@@ -214,8 +269,8 @@ export function ProjectsPage() {
                       </button>
                     </>
                   ) : (
-                    <button type="button" className="ghost" onClick={() => beginRename(project)} disabled={busy}>
-                      Перейменувати
+                    <button type="button" className="ghost" onClick={() => beginEdit(project)} disabled={busy}>
+                      Редагувати
                     </button>
                   )}
                   {project.status !== "active" ? (
@@ -249,7 +304,7 @@ export function ProjectsPage() {
   return (
     <section className="panel">
       <h2>Проєкти</h2>
-      <p>Керуйте робочими проєктами та призначайте їх задачам/нотаткам.</p>
+      <p>Керуйте робочими проєктами та призначайте їх задачам, нотаткам і контекстним записам.</p>
 
       {!sessionToken ? <p className="empty-note">Відкрий Інбокс для авторизації сесії.</p> : null}
       {error ? <p className="error-note">{error}</p> : null}
@@ -273,7 +328,7 @@ export function ProjectsPage() {
       {loading ? <p>Завантаження проєктів...</p> : null}
 
       {!loading && items.length === 0 ? (
-        <p className="empty-note">Поки що немає жодного проєкту. Створи перший, щоб організовувати задачі й нотатки.</p>
+        <p className="empty-note">Поки що немає жодного проєкту. Створи перший, щоб організовувати задачі, нотатки й контекстні записи.</p>
       ) : (
         <>
           {renderList("Активні", active)}

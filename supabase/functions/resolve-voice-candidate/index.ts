@@ -4,11 +4,11 @@ import { handleOptions, jsonResponse, safeJson } from "../_shared/http.ts";
 import { resolveSessionUser } from "../_shared/session.ts";
 
 type CandidateStatus = "pending" | "confirmed" | "discarded";
-type ResolveAction = "task" | "note" | "calendar_event" | "discard";
+type ResolveAction = "task" | "note" | "worklog" | "calendar_event" | "discard";
 
 type VoiceCandidate = {
   candidateId: string;
-  detectedIntent: "task" | "note" | "meeting_candidate" | "reminder_candidate";
+  detectedIntent: "task" | "note" | "worklog_candidate" | "meeting_candidate" | "reminder_candidate";
   title: string;
   details: string;
   projectGuess: string | null;
@@ -103,6 +103,7 @@ function normalizeCandidate(raw: unknown): VoiceCandidate | null {
     resolutionAction:
       raw.resolutionAction === "task" ||
       raw.resolutionAction === "note" ||
+      raw.resolutionAction === "worklog" ||
       raw.resolutionAction === "calendar_event" ||
       raw.resolutionAction === "discard"
         ? raw.resolutionAction
@@ -120,6 +121,18 @@ function buildNoteBody(input: { title?: string; details?: string; noteBody?: str
   if (title && details) return `${title}\n\n${details}`;
   if (title) return title;
   if (details) return details;
+  return input.fallback;
+}
+
+function buildWorklogBody(input: { title?: string; details?: string; noteBody?: string; fallback: string }): string {
+  const explicit = input.noteBody?.trim();
+  if (explicit) return explicit;
+
+  const title = input.title?.trim() || "";
+  const details = input.details?.trim() || "";
+  if (title && details && details !== title && !details.startsWith(title)) return `${title}\n\n${details}`;
+  if (details) return details;
+  if (title) return title;
   return input.fallback;
 }
 
@@ -281,6 +294,41 @@ Deno.serve(async (req) => {
     }
 
     resolution = { noteId: createdNote.id };
+  } else if (body.action === "worklog") {
+    const worklogBody = buildWorklogBody({
+      title: body.title ?? candidate.title,
+      details: body.details ?? candidate.details,
+      noteBody: body.noteBody,
+      fallback: inbox.transcript_text ?? candidate.details ?? candidate.title ?? "Контекстний запис"
+    });
+
+    if (body.projectId) {
+      const { data: project } = await supabase
+        .from("projects")
+        .select("id")
+        .eq("id", body.projectId)
+        .eq("user_id", sessionUser.userId)
+        .maybeSingle();
+      if (!project) return jsonResponse({ ok: false, error: "project_not_found" }, 400);
+    }
+
+    const { data: createdWorklog, error: worklogError } = await supabase
+      .from("worklogs")
+      .insert({
+        user_id: sessionUser.userId,
+        project_id: body.projectId ?? inbox.project_id ?? null,
+        body: worklogBody,
+        occurred_at: nowIso,
+        source: "voice_candidate"
+      })
+      .select("id")
+      .single();
+
+    if (worklogError || !createdWorklog) {
+      return jsonResponse({ ok: false, error: "worklog_create_failed" }, 500);
+    }
+
+    resolution = { worklogId: createdWorklog.id };
   } else if (body.action === "calendar_event") {
     const title = (body.title?.trim() || candidate.title || "Подія з голосового")?.slice(0, 180);
     const startAt = scheduledFor ?? candidate.scheduledForIso;
@@ -394,6 +442,9 @@ Deno.serve(async (req) => {
     candidate: updatedCandidates[candidateIndex]
   });
 });
+
+
+
 
 
 

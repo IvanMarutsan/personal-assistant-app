@@ -1,5 +1,6 @@
 import { DateTime } from "npm:luxon@3.6.1";
 import type { SupabaseClient } from "npm:@supabase/supabase-js@2";
+import { getGoogleAccessTokenForUser } from "./google-calendar.ts";
 
 type TaskRow = {
   id: string;
@@ -18,6 +19,7 @@ type TaskRow = {
   due_at: string | null;
   scheduled_for: string | null;
   estimated_minutes: number | null;
+  planning_flexibility: "essential" | "flexible" | null;
   project_id: string | null;
   projects?: { name: string } | { name: string }[] | null;
 };
@@ -53,6 +55,14 @@ type ProposalRow = {
   updated_at: string;
 };
 
+type GoogleEvent = {
+  id: string;
+  summary?: string;
+  status?: string;
+  start?: { dateTime?: string; date?: string; timeZone?: string };
+  end?: { dateTime?: string; date?: string; timeZone?: string };
+};
+
 export type PlanningScopeType = "day";
 export type PlanningMessageRole = "user" | "assistant";
 export type PlanningProposalStatus = "proposed" | "applied" | "dismissed" | "superseded";
@@ -62,6 +72,23 @@ export type TaskPatchPayload = {
   scheduled_for?: string | null;
   due_at?: string | null;
   estimated_minutes?: number | null;
+};
+
+export type PlanningCalendarEvent = {
+  id: string;
+  title: string;
+  startAt: string | null;
+  endAt: string | null;
+  isAllDay: boolean;
+};
+
+export type PlanningCalendarContext = {
+  connected: boolean;
+  available: boolean;
+  eventCount: number;
+  busyMinutes: number | null;
+  events: PlanningCalendarEvent[];
+  extraEventCount: number;
 };
 
 export type PlanningConversationTask = {
@@ -77,6 +104,7 @@ export type PlanningConversationTask = {
   dueAt: string | null;
   scheduledFor: string | null;
   estimatedMinutes: number | null;
+  planningFlexibility: TaskRow["planning_flexibility"];
 };
 
 export type PlanningConversationSession = {
@@ -120,6 +148,7 @@ export type PlanningDayContext = {
   backlogCount: number;
   scheduledKnownEstimateMinutes: number;
   scheduledMissingEstimateCount: number;
+  calendar: PlanningCalendarContext;
   scheduledToday: PlanningConversationTask[];
   dueTodayWithoutPlannedStart: PlanningConversationTask[];
   relevantBacklog: PlanningConversationTask[];
@@ -174,7 +203,8 @@ function toConversationTask(task: TaskRow): PlanningConversationTask {
     projectName: projectName(task),
     dueAt: task.due_at,
     scheduledFor: task.scheduled_for,
-    estimatedMinutes: task.estimated_minutes
+    estimatedMinutes: task.estimated_minutes,
+    planningFlexibility: task.planning_flexibility
   };
 }
 
@@ -199,13 +229,136 @@ function toMessage(row: MessageRow): PlanningConversationMessage {
   };
 }
 
+function flexibilityPriority(value: PlanningConversationTask["planningFlexibility"]): number {
+  if (value === "essential") return 0;
+  if (value === "flexible") return 2;
+  return 1;
+}
+
 function sortBacklog(a: PlanningConversationTask, b: PlanningConversationTask): number {
   if (a.isProtectedEssential !== b.isProtectedEssential) return a.isProtectedEssential ? -1 : 1;
+  const flexibilityDelta = flexibilityPriority(a.planningFlexibility) - flexibilityPriority(b.planningFlexibility);
+  if (flexibilityDelta !== 0) return flexibilityDelta;
   if (a.importance !== b.importance) return b.importance - a.importance;
   const aDue = a.dueAt ? new Date(a.dueAt).getTime() : Number.MAX_SAFE_INTEGER;
   const bDue = b.dueAt ? new Date(b.dueAt).getTime() : Number.MAX_SAFE_INTEGER;
   if (aDue !== bDue) return aDue - bDue;
   return a.title.localeCompare(b.title, "uk-UA");
+}
+
+function toCalendarEvent(event: GoogleEvent, timezone: string): PlanningCalendarEvent | null {
+  const startRaw = event.start?.dateTime ?? event.start?.date ?? null;
+  const endRaw = event.end?.dateTime ?? event.end?.date ?? null;
+  const isAllDay = Boolean(event.start?.date && !event.start?.dateTime);
+
+  const startAt = startRaw
+    ? (isAllDay
+        ? DateTime.fromISO(startRaw, { zone: timezone }).startOf("day")
+        : DateTime.fromISO(startRaw, { zone: "utc" }).setZone(timezone))
+    : null;
+  const endAt = endRaw
+    ? (isAllDay
+        ? DateTime.fromISO(endRaw, { zone: timezone }).startOf("day")
+        : DateTime.fromISO(endRaw, { zone: "utc" }).setZone(timezone))
+    : null;
+
+  if (startAt && !startAt.isValid) return null;
+  if (endAt && !endAt.isValid) return null;
+
+  return {
+    id: event.id,
+    title: event.summary?.trim() || "(Без назви)",
+    startAt: startAt?.toUTC().toISO() ?? null,
+    endAt: endAt?.toUTC().toISO() ?? null,
+    isAllDay
+  };
+}
+
+export async function buildCalendarDayContext(
+  userId: string,
+  timezone: string,
+  dayStart: DateTime,
+  dayEnd: DateTime
+): Promise<PlanningCalendarContext> {
+  try {
+    const auth = await getGoogleAccessTokenForUser(userId);
+    const apiUrl = new URL(
+      `https://www.googleapis.com/calendar/v3/calendars/${encodeURIComponent(auth.calendarId)}/events`
+    );
+    apiUrl.searchParams.set("timeMin", dayStart.toUTC().toISO() ?? new Date().toISOString());
+    apiUrl.searchParams.set("timeMax", dayEnd.toUTC().toISO() ?? new Date().toISOString());
+    apiUrl.searchParams.set("singleEvents", "true");
+    apiUrl.searchParams.set("orderBy", "startTime");
+    apiUrl.searchParams.set("maxResults", "20");
+
+    const response = await fetch(apiUrl.toString(), {
+      headers: { authorization: `Bearer ${auth.accessToken}` }
+    });
+
+    if (!response.ok) {
+      const text = await response.text().catch(() => "");
+      console.error("[planning-conversation] calendar_fetch_failed", {
+        userId,
+        status: response.status,
+        text: text.slice(0, 240)
+      });
+      return {
+        connected: true,
+        available: false,
+        eventCount: 0,
+        busyMinutes: null,
+        events: [],
+        extraEventCount: 0
+      };
+    }
+
+    const payload = (await response.json().catch(() => null)) as { items?: GoogleEvent[] } | null;
+    const events = (payload?.items ?? [])
+      .map((event) => toCalendarEvent(event, timezone))
+      .filter((event): event is PlanningCalendarEvent => Boolean(event));
+
+    const totalBusyMinutes = events.reduce((sum, event) => {
+      if (!event.startAt || !event.endAt || event.isAllDay) return sum;
+      const start = DateTime.fromISO(event.startAt, { zone: "utc" }).setZone(timezone);
+      const end = DateTime.fromISO(event.endAt, { zone: "utc" }).setZone(timezone);
+      if (!start.isValid || !end.isValid || end <= start) return sum;
+      return sum + Math.round(end.diff(start, "minutes").minutes);
+    }, 0);
+
+    return {
+      connected: true,
+      available: true,
+      eventCount: events.length,
+      busyMinutes: totalBusyMinutes > 0 ? totalBusyMinutes : 0,
+      events: events.slice(0, 8),
+      extraEventCount: Math.max(0, events.length - 8)
+    };
+  } catch (error) {
+    if (error instanceof Error && error.message === "calendar_not_connected") {
+      return {
+        connected: false,
+        available: false,
+        eventCount: 0,
+        busyMinutes: null,
+        events: [],
+        extraEventCount: 0
+      };
+    }
+
+    console.error("[planning-conversation] calendar_context_unavailable", {
+      userId,
+      error: error instanceof Error ? error.message : "unknown_error"
+    });
+
+    return {
+      connected: true,
+      available: false,
+      eventCount: 0,
+      busyMinutes: null,
+      events: [],
+      extraEventCount: 0
+    };
+  }
 }
 
 export function validateScopeDate(value: string | null | undefined): string | null {
@@ -304,7 +457,7 @@ export async function buildPlanningDayContext(
 
   const { data, error } = await supabase
     .from("tasks")
-    .select("id, title, details, task_type, status, importance, is_protected_essential, due_at, scheduled_for, estimated_minutes, project_id, projects(name)")
+    .select("id, title, details, task_type, status, importance, is_protected_essential, due_at, scheduled_for, estimated_minutes, planning_flexibility, project_id, projects(name)")
     .eq("user_id", userId)
     .neq("status", "done")
     .neq("status", "cancelled")
@@ -330,6 +483,7 @@ export async function buildPlanningDayContext(
       return a.title.localeCompare(b.title, "uk-UA");
     });
   const backlog = tasks.filter((task) => !task.scheduledFor).sort(sortBacklog);
+  const calendar = await buildCalendarDayContext(userId, timezone, dayStart, dayEnd);
 
   return {
     timezone,
@@ -341,6 +495,7 @@ export async function buildPlanningDayContext(
     backlogCount: backlog.length,
     scheduledKnownEstimateMinutes: sumKnownEstimateMinutes(scheduledToday),
     scheduledMissingEstimateCount: countMissingEstimates(scheduledToday),
+    calendar,
     scheduledToday: scheduledToday.slice(0, 14),
     dueTodayWithoutPlannedStart: dueTodayWithoutPlannedStart.slice(0, 12),
     relevantBacklog: backlog.slice(0, 16)
@@ -398,7 +553,7 @@ export async function loadPlanningConversationState(
   if (taskIds.length > 0) {
     const { data: tasksData, error: tasksError } = await supabase
       .from("tasks")
-      .select("id, title, details, task_type, status, importance, is_protected_essential, due_at, scheduled_for, estimated_minutes, project_id, projects(name)")
+      .select("id, title, details, task_type, status, importance, is_protected_essential, due_at, scheduled_for, estimated_minutes, planning_flexibility, project_id, projects(name)")
       .eq("user_id", userId)
       .in("id", taskIds);
 
@@ -440,7 +595,8 @@ export async function loadPlanningConversationState(
       dueTodayWithoutPlannedStartCount: dayContext.dueTodayWithoutPlannedStartCount,
       backlogCount: dayContext.backlogCount,
       scheduledKnownEstimateMinutes: dayContext.scheduledKnownEstimateMinutes,
-      scheduledMissingEstimateCount: dayContext.scheduledMissingEstimateCount
+      scheduledMissingEstimateCount: dayContext.scheduledMissingEstimateCount,
+      calendar: dayContext.calendar
     }
   };
 }

@@ -20,8 +20,8 @@ export type InboxItem = {
   meta: Record<string, unknown>;
 };
 
-export type VoiceDetectedIntent = "task" | "note" | "meeting_candidate" | "reminder_candidate";
-export type VoiceConfirmTargetKind = "task" | "note" | "calendar_event";
+export type VoiceDetectedIntent = "task" | "note" | "worklog_candidate" | "meeting_candidate" | "reminder_candidate";
+export type VoiceConfirmTargetKind = "task" | "note" | "worklog" | "calendar_event";
 export type VoiceCandidateStatus = "pending" | "confirmed" | "discarded";
 
 export type VoiceAiSuggestion = {
@@ -50,7 +50,7 @@ export type VoiceAiCandidate = VoiceAiSuggestion & {
   candidateId: string;
   status: VoiceCandidateStatus;
   resolvedAt: string | null;
-  resolutionAction: "task" | "note" | "calendar_event" | "discard" | null;
+  resolutionAction: "task" | "note" | "worklog" | "calendar_event" | "discard" | null;
 };
 
 export type ProjectItem = {
@@ -58,6 +58,7 @@ export type ProjectItem = {
   name: string;
   status: "active" | "on_hold" | "archived";
   rank: number;
+  aliases: string[];
 };
 
 export type NoteItem = {
@@ -67,6 +68,17 @@ export type NoteItem = {
   created_at: string;
   updated_at: string;
   project_id: string | null;
+  projects?: { name: string } | { name: string }[] | null;
+};
+
+export type WorklogItem = {
+  id: string;
+  body: string;
+  occurred_at: string;
+  created_at: string;
+  updated_at: string;
+  project_id: string | null;
+  source: string | null;
   projects?: { name: string } | { name: string }[] | null;
 };
 
@@ -89,7 +101,7 @@ export type GoogleCalendarEventItem = {
   timezone: string | null;
 };
 
-export type TriageAction = "task" | "note" | "discard";
+export type TriageAction = "task" | "note" | "worklog" | "discard";
 
 export type TaskStatus = "planned" | "in_progress" | "blocked" | "done" | "cancelled";
 
@@ -100,6 +112,8 @@ export type TaskType =
   | "recurring_essential"
   | "personal_essential"
   | "someday";
+
+export type PlanningFlexibility = "essential" | "flexible";
 
 export type TaskItem = {
   id: string;
@@ -124,6 +138,7 @@ export type TaskItem = {
   due_at: string | null;
   scheduled_for: string | null;
   estimated_minutes: number | null;
+  planning_flexibility: PlanningFlexibility | null;
   is_protected_essential: boolean;
   projects?: { name: string } | { name: string }[] | null;
 };
@@ -303,8 +318,26 @@ export type PlanningConversationTask = {
   dueAt: string | null;
   scheduledFor: string | null;
   estimatedMinutes: number | null;
+  planningFlexibility: PlanningFlexibility | null;
 };
 
+
+export type PlanningConversationCalendarEvent = {
+  id: string;
+  title: string;
+  startAt: string | null;
+  endAt: string | null;
+  isAllDay: boolean;
+};
+
+export type PlanningConversationCalendarContext = {
+  connected: boolean;
+  available: boolean;
+  eventCount: number;
+  busyMinutes: number | null;
+  events: PlanningConversationCalendarEvent[];
+  extraEventCount: number;
+};
 export type PlanningConversationProposal = {
   id: string;
   sessionId: string;
@@ -337,5 +370,14 @@ export type PlanningConversationState = {
     backlogCount: number;
     scheduledKnownEstimateMinutes: number;
     scheduledMissingEstimateCount: number;
+    calendar: PlanningConversationCalendarContext;
   };
 };
+
+
+
+
+
+
+
+

@@ -1,4 +1,4 @@
-import { createAdminClient } from "../_shared/db.ts";
+﻿import { createAdminClient } from "../_shared/db.ts";
 import { handleOptions, jsonResponse } from "../_shared/http.ts";
 import { resolveSessionUser } from "../_shared/session.ts";
 
@@ -15,25 +15,17 @@ Deno.serve(async (req) => {
     return jsonResponse({ ok: false, error: "unauthorized" }, 401);
   }
 
-  const url = new URL(req.url);
-  const includeArchived = url.searchParams.get("includeArchived") === "true";
-
   const supabase = createAdminClient();
-  let query = supabase
-    .from("projects")
-    .select("id, name, status, rank, aliases")
+  const { data, error } = await supabase
+    .from("worklogs")
+    .select("id, body, occurred_at, created_at, updated_at, project_id, source, projects(name)")
     .eq("user_id", sessionUser.userId)
-    .order("rank", { ascending: true })
-    .order("name", { ascending: true });
-
-  if (!includeArchived) {
-    query = query.neq("status", "archived");
-  }
-
-  const { data, error } = await query;
+    .order("occurred_at", { ascending: false })
+    .order("created_at", { ascending: false })
+    .limit(200);
 
   if (error) {
-    return jsonResponse({ ok: false, error: "projects_fetch_failed" }, 500);
+    return jsonResponse({ ok: false, error: "worklogs_fetch_failed" }, 500);
   }
 
   return jsonResponse({ ok: true, items: data ?? [] });

@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+﻿import { useEffect, useMemo, useRef, useState } from "react";
 import type { ProjectItem, TaskType, VoiceAiSuggestion, VoiceConfirmTargetKind } from "../types/api";
 
 type VoiceConfirmModalProps = {
@@ -51,7 +51,6 @@ function parseIsoDateStrict(value: string | null | undefined): Date | null {
   if (!value) return null;
   const trimmed = value.trim();
   if (!trimmed) return null;
-  // Accept only ISO values with timezone to avoid silent locale-dependent shifts.
   if (!/^\d{4}-\d{2}-\d{2}T.+(Z|[+-]\d{2}:\d{2})$/.test(trimmed)) return null;
   const date = new Date(trimmed);
   if (Number.isNaN(date.getTime())) return null;
@@ -161,6 +160,16 @@ function buildNoteBody(title: string, details: string, dueAt: string, scheduledF
   return lines.join("\n").trim();
 }
 
+function buildWorklogBody(title: string, details: string, transcript: string): string {
+  const cleanTitle = title.trim();
+  const cleanDetails = details.trim();
+  const cleanTranscript = transcript.trim();
+  if (cleanDetails && cleanTitle && cleanDetails !== cleanTitle && !cleanDetails.startsWith(cleanTitle)) {
+    return `${cleanTitle}\n\n${cleanDetails}`.trim();
+  }
+  return cleanDetails || cleanTranscript || cleanTitle;
+}
+
 type DateResolveSource = "explicit_iso" | "hint_derived" | "none";
 
 function resolveSuggestionDate(params: { iso: string | null | undefined; hint: string | null | undefined }) {
@@ -186,6 +195,7 @@ export function VoiceConfirmModal(props: VoiceConfirmModalProps) {
   const [targetKind, setTargetKind] = useState<VoiceConfirmTargetKind>("task");
   const [title, setTitle] = useState("");
   const [details, setDetails] = useState("");
+  const [worklogBody, setWorklogBody] = useState("");
   const [projectId, setProjectId] = useState<string>("");
   const [taskType, setTaskType] = useState<TaskType | "">("");
   const [importance, setImportance] = useState<number | "">("");
@@ -211,6 +221,7 @@ export function VoiceConfirmModal(props: VoiceConfirmModalProps) {
     setTargetKind(normalizedDefaultKind);
     setTitle(props.suggestion.title ?? "");
     setDetails(props.suggestion.details || props.transcript || "");
+    setWorklogBody(buildWorklogBody(props.suggestion.title ?? "", props.suggestion.details || "", props.transcript || ""));
     setProjectId(props.projectMatch?.matchedProjectId ?? "");
     setTaskType(props.suggestion.taskTypeGuess ?? "");
     setImportance(props.suggestion.importanceGuess ?? "");
@@ -219,17 +230,6 @@ export function VoiceConfirmModal(props: VoiceConfirmModalProps) {
     setDueSource(dueResolution.source);
     setScheduledSource(scheduledResolution.source);
     setTimezone(Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC");
-    console.debug("[voice-confirm] datetime_mapping", {
-      title: props.suggestion.title,
-      dueHint: props.suggestion.dueHint,
-      datetimeHint: props.suggestion.datetimeHint,
-      dueAtIso: props.suggestion.dueAtIso,
-      scheduledForIso: props.suggestion.scheduledForIso,
-      mappedDueAt: dueResolution.date ? dueResolution.date.toISOString() : null,
-      mappedScheduledFor: scheduledResolution.date ? scheduledResolution.date.toISOString() : null,
-      dueSource: dueResolution.source,
-      scheduledSource: scheduledResolution.source
-    });
   }, [props.open, props.contextId, props.suggestion, props.transcript, props.defaultKind, props.projectMatch, props.allowCalendarEvent]);
 
   useEffect(() => {
@@ -261,6 +261,8 @@ export function VoiceConfirmModal(props: VoiceConfirmModalProps) {
       ? !title.trim()
       : targetKind === "note"
       ? !noteBody.trim()
+      : targetKind === "worklog"
+      ? !worklogBody.trim()
       : !title.trim() || !scheduledForInput.trim());
 
   return (
@@ -292,30 +294,61 @@ export function VoiceConfirmModal(props: VoiceConfirmModalProps) {
             >
               <option value="task">Задача</option>
               <option value="note">Нотатка</option>
+              <option value="worklog">Контекстний запис</option>
               {props.allowCalendarEvent ? <option value="calendar_event">Подія Google Calendar</option> : null}
             </select>
           </label>
 
-          <label>
-            Назва
-            <input
-              value={title}
-              onChange={(event) => setTitle(event.target.value)}
-              placeholder="Коротка назва"
-              disabled={props.busy}
-            />
-          </label>
+          {targetKind !== "worklog" ? (
+            <label>
+              Назва
+              <input
+                value={title}
+                onChange={(event) => setTitle(event.target.value)}
+                placeholder="Коротка назва"
+                disabled={props.busy}
+              />
+            </label>
+          ) : null}
 
-          <label>
-            Деталі
-            <textarea
-              rows={4}
-              value={details}
-              onChange={(event) => setDetails(event.target.value)}
-              placeholder="Що саме потрібно зробити або зберегти"
-              disabled={props.busy}
-            />
-          </label>
+          {targetKind === "worklog" ? (
+            <>
+              <label>
+                Текст запису
+                <textarea
+                  rows={5}
+                  value={worklogBody}
+                  onChange={(event) => setWorklogBody(event.target.value)}
+                  placeholder="Що сталося"
+                  disabled={props.busy}
+                />
+              </label>
+
+              <label>
+                Проєкт
+                <select value={projectId} onChange={(event) => setProjectId(event.target.value)} disabled={props.busy}>
+                  <option value="">Без проєкту</option>
+                  {props.projects.length === 0 ? <option value="" disabled>Немає проєктів</option> : null}
+                  {props.projects.map((project) => (
+                    <option key={project.id} value={project.id}>
+                      {project.name}
+                    </option>
+                  ))}
+                </select>
+              </label>
+            </>
+          ) : (
+            <label>
+              Деталі
+              <textarea
+                rows={4}
+                value={details}
+                onChange={(event) => setDetails(event.target.value)}
+                placeholder="Що саме потрібно зробити або зберегти"
+                disabled={props.busy}
+              />
+            </label>
+          )}
 
           {targetKind === "task" ? (
             <>
@@ -426,12 +459,13 @@ export function VoiceConfirmModal(props: VoiceConfirmModalProps) {
                 targetKind,
                 title: title.trim(),
                 details: details.trim(),
-                noteBody,
+                noteBody: targetKind === "worklog" ? worklogBody.trim() : noteBody,
                 projectId: projectId || null,
                 taskType: taskType || null,
                 importance: typeof importance === "number" ? importance : null,
-                dueAt: localInputToIso(dueAtInput),
-                scheduledFor: localInputToIso(scheduledForInput),
+                dueAt: targetKind === "task" || targetKind === "calendar_event" ? localInputToIso(dueAtInput) : null,
+                scheduledFor:
+                  targetKind === "task" || targetKind === "calendar_event" ? localInputToIso(scheduledForInput) : null,
                 timezone: timezone.trim() || "UTC"
               })
             }
@@ -444,4 +478,3 @@ export function VoiceConfirmModal(props: VoiceConfirmModalProps) {
     </div>
   );
 }
-
