@@ -1,6 +1,16 @@
 import { useEffect, useMemo, useState } from "react";
 import { useDiagnostics } from "../../lib/diagnostics";
-import { formatTaskDateTime, formatTaskTimingSummary, isBacklogTask, isDueOnDay, isScheduledForDay, sortTasksByTimeField } from "../../lib/taskTiming";
+import {
+  countMissingEstimates,
+  formatTaskDateTime,
+  formatTaskEstimate,
+  formatTaskTimingSummary,
+  isBacklogTask,
+  isDueOnDay,
+  isScheduledForDay,
+  sortTasksByTimeField,
+  sumKnownEstimateMinutes
+} from "../../lib/taskTiming";
 import {
   ApiError,
   getAiAdvisor,
@@ -19,7 +29,6 @@ import type {
 } from "../../types/api";
 
 const SESSION_KEY = "personal_assistant_app_session_token";
-
 
 function projectName(task: TaskItem): string {
   if (!task.projects) return "Без проєкту";
@@ -80,6 +89,22 @@ function endOfToday(now: Date): Date {
   return d;
 }
 
+function formatKnownLoad(minutes: number): string {
+  if (minutes <= 0) return "Немає відомого навантаження";
+  const formatted = formatTaskEstimate(minutes);
+  return formatted ? formatted : "Немає відомого навантаження";
+}
+
+function loadCoverageLine(input: { knownMinutes: number; missingCount: number; plannedCount: number }): string {
+  if (input.plannedCount === 0) return "На сьогодні ще немає задач у денному плані.";
+  if (input.knownMinutes <= 0 && input.missingCount > 0) {
+    return `Оцінок для запланованого дня ще немає. Без оцінки лишаються ${input.missingCount} задач.`;
+  }
+  if (input.missingCount > 0) {
+    return `Відоме навантаження: ${formatKnownLoad(input.knownMinutes)}. Без оцінки лишаються ${input.missingCount} задач.`;
+  }
+  return `Відоме навантаження запланованого дня: ${formatKnownLoad(input.knownMinutes)}.`;
+}
 
 export function TodayPage() {
   const [items, setItems] = useState<TaskItem[]>([]);
@@ -223,16 +248,16 @@ export function TodayPage() {
     return sortTasksByTimeField(relevant, "due_at");
   }, [items, todayEnd, todayStart]);
 
-  const backlogOpenCount = useMemo(
+  const backlogItems = useMemo(
     () =>
       items.filter(
-        (task) =>
-          task.status !== "done" &&
-          task.status !== "cancelled" &&
-          isBacklogTask(task)
-      ).length,
+        (task) => task.status !== "done" && task.status !== "cancelled" && isBacklogTask(task)
+      ),
     [items]
   );
+
+  const todayKnownEstimateMinutes = useMemo(() => sumKnownEstimateMinutes(scheduledToday), [scheduledToday]);
+  const todayMissingEstimateCount = useMemo(() => countMissingEstimates(scheduledToday), [scheduledToday]);
 
   const protectedEssentials = useMemo(() => {
     return items.filter(
@@ -320,6 +345,17 @@ export function TodayPage() {
             </p>
           ) : null}
 
+          <p className="inbox-meta">
+            У денному плані: {planning.overload.plannedTodayCount} · Дедлайни без плану: {planning.overload.dueTodayWithoutPlannedStartCount} · Беклог: {planning.overload.backlogCount}
+          </p>
+          <p className="inbox-meta">
+            {loadCoverageLine({
+              knownMinutes: planning.overload.scheduledKnownEstimateMinutes,
+              missingCount: planning.overload.scheduledMissingEstimateCount,
+              plannedCount: planning.overload.plannedTodayCount
+            })}
+          </p>
+
           <h3>Що робити зараз?</h3>
           {planning.whatNow.primary ? (
             <div className="assistant-primary">
@@ -341,13 +377,13 @@ export function TodayPage() {
             </ul>
           ) : null}
 
-          <h3>Сигнали перевантаження</h3>
+          <h3>Сигнали плану</h3>
           <p className="inbox-meta">
-            Відкритих швидких комунікацій: {planning.overload.quickCommunicationOpenCount}
-            {planning.overload.quickCommunicationBatchingRecommended ? " · рекомендується батчинг" : ""}
+            Прострочені заплановані: {planning.overload.overduePlannedCount} · Швидкі комунікації: {planning.overload.quickCommunicationOpenCount}
+            {planning.overload.quickCommunicationBatchingRecommended ? " · варто закрити одним блоком" : ""}
           </p>
           {planning.overload.flags.length === 0 ? (
-            <p className="empty-note">Сигналів перевантаження зараз немає.</p>
+            <p className="empty-note">Сигнали перевантаження зараз не спрацювали.</p>
           ) : (
             <ul className="assistant-secondary">
               {planning.overload.flags.map((flag) => (
@@ -412,6 +448,16 @@ export function TodayPage() {
           ) : null}
 
           <p className="assistant-title">{aiAdvisor.advisor.whatMattersMostNow}</p>
+          <p className="inbox-meta">
+            У плані: {aiAdvisor.contextSnapshot.plannedTodayCount} · Дедлайни без плану: {aiAdvisor.contextSnapshot.dueTodayWithoutPlannedStartCount} · Беклог: {aiAdvisor.contextSnapshot.backlogCount}
+          </p>
+          <p className="inbox-meta">
+            {loadCoverageLine({
+              knownMinutes: aiAdvisor.contextSnapshot.scheduledKnownEstimateMinutes,
+              missingCount: aiAdvisor.contextSnapshot.scheduledMissingEstimateCount,
+              plannedCount: aiAdvisor.contextSnapshot.plannedTodayCount
+            })}
+          </p>
 
           <div className="assistant-primary">
             <p className="assistant-title">Рекомендована наступна дія: {aiAdvisor.advisor.suggestedNextAction.title}</p>
@@ -460,7 +506,10 @@ export function TodayPage() {
           </section>
           <section className="today-section">
             <h3>Структура дня</h3>
-            <p className="inbox-meta">Заплановано на сьогодні: {scheduledToday.length} · Дедлайни сьогодні без плану: {dueTodayWithoutSchedule.length} · У беклозі: {backlogOpenCount}</p>
+            <p className="inbox-meta">
+              Заплановано на сьогодні: {scheduledToday.length} · Дедлайни сьогодні без плану: {dueTodayWithoutSchedule.length} · У беклозі: {backlogItems.length}
+            </p>
+            <p className="inbox-meta">{loadCoverageLine({ knownMinutes: todayKnownEstimateMinutes, missingCount: todayMissingEstimateCount, plannedCount: scheduledToday.length })}</p>
             <p className="inbox-meta">Сторінка «Сьогодні» зосереджена на задачах із планованим стартом. Беклог не підтягується в день автоматично.</p>
           </section>
           {renderSection("Заплановано на сьогодні", "Основний список дня: тільки задачі з планованим стартом на цей день.", scheduledToday)}
@@ -472,9 +521,3 @@ export function TodayPage() {
     </section>
   );
 }
-
-
-
-
-
-

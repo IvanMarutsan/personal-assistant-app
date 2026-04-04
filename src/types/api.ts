@@ -164,6 +164,8 @@ export type PlanningSummary = {
     quickCommunicationOpenCount: number;
     quickCommunicationBatchingRecommended: boolean;
     protectedPendingCount: number;
+    scheduledKnownEstimateMinutes: number;
+    scheduledMissingEstimateCount: number;
     flags: Array<{ code: string; message: string }>;
   };
   essentialRisk: {
@@ -221,6 +223,8 @@ export type AiAdvisorSummary = {
     dueTodayWithoutPlannedStartCount: number;
     backlogCount: number;
     overduePlannedCount: number;
+    scheduledKnownEstimateMinutes: number;
+    scheduledMissingEstimateCount: number;
     protectedPendingCount: number;
     recurringAtRiskCount: number;
     topMovedReasonsToday: Array<{ reason: string; count: number }>;
@@ -251,6 +255,10 @@ export type AiAdvisorSummary = {
     evidence: string[];
   };
 };
+
+
+
+
 
 
 

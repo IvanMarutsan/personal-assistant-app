@@ -22,6 +22,7 @@ type TaskRow = {
   postpone_count: number;
   due_at: string | null;
   scheduled_for: string | null;
+  estimated_minutes: number | null;
   projects?: { name: string } | { name: string }[] | null;
 };
 
@@ -109,6 +110,14 @@ function isScheduledOverdue(task: TaskRow, now: DateTime): boolean {
   return !!scheduled && scheduled < now;
 }
 
+function sumKnownEstimateMinutes(tasks: TaskRow[]): number {
+  return tasks.reduce((sum, task) => sum + (task.estimated_minutes ?? 0), 0);
+}
+
+function countMissingEstimates(tasks: TaskRow[]): number {
+  return tasks.filter((task) => task.estimated_minutes == null).length;
+}
+
 function topTask(
   tasks: TaskRow[],
   zone: string,
@@ -182,7 +191,7 @@ Deno.serve(async (req) => {
   const { data: tasksData, error: tasksError } = await supabase
     .from("tasks")
     .select(
-      "id, title, task_type, status, importance, commitment_type, is_recurring, is_protected_essential, postpone_count, due_at, scheduled_for, projects(name)"
+      "id, title, task_type, status, importance, commitment_type, is_recurring, is_protected_essential, postpone_count, due_at, scheduled_for, estimated_minutes, projects(name)"
     )
     .eq("user_id", sessionUser.userId)
     .neq("status", "cancelled")
@@ -226,6 +235,8 @@ Deno.serve(async (req) => {
     (task) => task.importance >= planningThresholds.highImportanceMin && task.status === "planned"
   );
   const backlogCount = actionableTasks.filter((task) => isBacklogTask(task)).length;
+  const scheduledKnownEstimateMinutes = sumKnownEstimateMinutes(scheduledToday);
+  const scheduledMissingEstimateCount = countMissingEstimates(scheduledToday);
 
   const quickCommunicationOpen = actionableTasks.filter(
     (task) => task.task_type === "quick_communication"
@@ -246,7 +257,7 @@ Deno.serve(async (req) => {
     topTask(
       dueTodayWithoutPlannedStart,
       timezone,
-      "Є задача з дедлайном на сьогодні без планованого старту. Її треба або свідомо поставити в день, або закрити.",
+      "Є задача з дедлайном на сьогодні без планованого старту. Її треба свідомо включити в день або закрити.",
       "due_today_unscheduled"
     ),
     topTask(
@@ -258,7 +269,7 @@ Deno.serve(async (req) => {
     topTask(
       highImportanceToday,
       timezone,
-      "На сьогодні є запланована задача з високою важливістю.",
+      "На сьогодні вже є запланована задача з високою важливістю.",
       "high_importance"
     ),
     quickBatchRecommendation
@@ -283,6 +294,12 @@ Deno.serve(async (req) => {
     overloadFlags.push({
       code: "due_today_without_planned_start",
       message: "Є задачі з дедлайном на сьогодні без планованого старту. Вони не входять у день автоматично."
+    });
+  }
+  if (scheduledToday.length > 0 && scheduledMissingEstimateCount > 0) {
+    overloadFlags.push({
+      code: "scheduled_missing_estimates",
+      message: `Для ${scheduledMissingEstimateCount} запланованих задач ще немає оцінки, тож фактичне навантаження дня неповне.`
     });
   }
   if (protectedPending.length > 0 && protectedScheduledTodayCount === 0) {
@@ -383,6 +400,8 @@ Deno.serve(async (req) => {
       quickCommunicationBatchingRecommended:
         quickCommunicationOpen.length >= planningThresholds.quickCommunicationBatching,
       protectedPendingCount: protectedPending.length,
+      scheduledKnownEstimateMinutes,
+      scheduledMissingEstimateCount,
       flags: overloadFlags
     },
     essentialRisk: {

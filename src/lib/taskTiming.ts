@@ -37,6 +37,14 @@ export function isDueOnDay(task: Pick<TaskItem, "due_at">, start: Date, end: Dat
   return !!due && due >= start && due <= end;
 }
 
+export function sumKnownEstimateMinutes(tasks: Array<Pick<TaskItem, "estimated_minutes">>): number {
+  return tasks.reduce((sum, task) => sum + (task.estimated_minutes ?? 0), 0);
+}
+
+export function countMissingEstimates(tasks: Array<Pick<TaskItem, "estimated_minutes">>): number {
+  return tasks.filter((task) => task.estimated_minutes == null).length;
+}
+
 export function sortTasksByTimeField<T extends Pick<TaskItem, "title" | "scheduled_for" | "due_at">>(
   tasks: T[],
   field: "scheduled_for" | "due_at"

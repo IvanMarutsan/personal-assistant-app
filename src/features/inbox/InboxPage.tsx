@@ -590,7 +590,13 @@ export function InboxPage() {
     }
   }
 
-  async function confirmModalTriage(payload: { title?: string; noteBody?: string }) {
+  async function confirmModalTriage(payload: {
+    title?: string;
+    noteBody?: string;
+    dueAt?: string | null;
+    scheduledFor?: string | null;
+    estimatedMinutes?: number | null;
+  }) {
     if (!sessionToken || !pendingTriage) return;
     if (!beginTriage(pendingTriage.item.id)) return;
     diagnostics.trackAction(pendingTriage.mode === "task" ? "confirm_as_task" : "confirm_as_note", {
@@ -1187,6 +1193,7 @@ export function InboxPage() {
     </section>
   );
 }
+
 
 
 
