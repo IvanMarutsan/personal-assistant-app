@@ -1,4 +1,4 @@
-﻿-- Worklog Capture V1: allow inbox triage to save factual updates as worklogs.
+-- Worklog Capture V1: allow inbox triage to save factual updates as worklogs.
 
 CREATE OR REPLACE FUNCTION public.triage_inbox_item_atomic(
   p_user_id uuid,
