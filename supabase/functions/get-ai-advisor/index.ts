@@ -1,4 +1,4 @@
-import { DateTime } from "npm:luxon@3.6.1";
+﻿import { DateTime } from "npm:luxon@3.6.1";
 import { createAdminClient } from "../_shared/db.ts";
 import { handleOptions, jsonResponse } from "../_shared/http.ts";
 import { planningThresholds } from "../_shared/planning-config.ts";
@@ -72,6 +72,43 @@ type AiAdvisorPayload = {
   explanation: string;
   evidence: string[];
 };
+function hasUkrainianSignal(text: string | null | undefined): boolean {
+  if (!text) return false;
+  return /[?-??-?????????]/.test(text);
+}
+function sanitizeAiAdvisorPayload(
+  payload: AiAdvisorPayload,
+  taskLookup: Map<string, TaskRow>,
+  fallback: AiAdvisorPayload
+): AiAdvisorPayload | null {
+  const visibleNarrative = [
+    payload.whatMattersMostNow,
+    payload.suggestedNextAction.reason,
+    payload.suggestedDefer.reason,
+    payload.protectedEssentialsWarning.message,
+    payload.explanation
+  ];
+  if (visibleNarrative.some((item) => !hasUkrainianSignal(item))) {
+    return null;
+  }
+  const nextTask = payload.suggestedNextAction.taskId
+    ? taskLookup.get(payload.suggestedNextAction.taskId) ?? null
+    : null;
+  const deferTask = payload.suggestedDefer.taskId
+    ? taskLookup.get(payload.suggestedDefer.taskId) ?? null
+    : null;
+  return {
+    ...payload,
+    suggestedNextAction: {
+      ...payload.suggestedNextAction,
+      title: nextTask?.title ?? fallback.suggestedNextAction.title
+    },
+    suggestedDefer: {
+      ...payload.suggestedDefer,
+      title: deferTask?.title ?? fallback.suggestedDefer.title
+    }
+  };
+}
 
 type AdvisorResponse = {
   ok: true;
@@ -304,6 +341,8 @@ async function generateAiAdvisor(input: {
   model: string;
   apiKey: string;
   context: Record<string, unknown>;
+  taskLookup: Map<string, TaskRow>;
+  fallback: AiAdvisorPayload;
 }): Promise<AiAdvisorPayload | null> {
   const requestBody = {
     model: input.model,
@@ -398,7 +437,9 @@ async function generateAiAdvisor(input: {
 
   const raw = payload.choices?.[0]?.message?.content;
   if (!raw) return null;
-  return parseAiPayload(raw);
+  const parsed = parseAiPayload(raw);
+  if (!parsed) return null;
+  return sanitizeAiAdvisorPayload(parsed, input.taskLookup, input.fallback);
 }
 
 Deno.serve(async (req) => {
@@ -647,6 +688,7 @@ Deno.serve(async (req) => {
     nextAction,
     deferCandidate
   });
+  const taskLookup = new Map(tasks.map((task) => [task.id, task]));
 
   const openAiApiKey = Deno.env.get("OPENAI_API_KEY");
   const model = Deno.env.get("OPENAI_MODEL") ?? "gpt-4.1-mini";
@@ -660,7 +702,9 @@ Deno.serve(async (req) => {
       const aiPayload = await generateAiAdvisor({
         model,
         apiKey: openAiApiKey,
-        context: aiContext
+        context: aiContext,
+        taskLookup,
+        fallback
       });
       if (aiPayload) {
         source = "ai";
@@ -698,3 +742,4 @@ Deno.serve(async (req) => {
     advisor
   } satisfies AdvisorResponse);
 });
+

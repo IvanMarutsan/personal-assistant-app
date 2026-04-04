@@ -1,4 +1,4 @@
-import { DateTime } from "npm:luxon@3.6.1";
+﻿import { DateTime } from "npm:luxon@3.6.1";
 import { createAdminClient } from "../_shared/db.ts";
 import { handleOptions, jsonResponse, safeJson } from "../_shared/http.ts";
 import {
@@ -37,6 +37,10 @@ type ParsedProposal = {
   rationale: string | null;
   payload: TaskPatchPayload;
 };
+function hasUkrainianSignal(text: string | null | undefined): boolean {
+  if (!text) return false;
+  return /[?-??-?????????]/.test(text);
+}
 
 function parseAiPayload(raw: string): AiTurnPayload | null {
   try {
@@ -83,10 +87,11 @@ function normalizeAiProposals(raw: RawAiProposal[], allowedTaskIds: Set<string>)
     const payload = normalizeTaskPatchPayload(item.payload);
     if (!payload) continue;
     seenTaskIds.add(item.task_id);
+    const rationale = typeof item.rationale === "string" && item.rationale.trim() ? item.rationale.trim() : null;
     result.push({
       taskId: item.task_id,
       proposalType: "task_patch",
-      rationale: typeof item.rationale === "string" && item.rationale.trim() ? item.rationale.trim() : null,
+      rationale: rationale && hasUkrainianSignal(rationale) ? rationale : null,
       payload
     });
   }
@@ -359,3 +364,4 @@ Deno.serve(async (req) => {
     );
   }
 });
+
