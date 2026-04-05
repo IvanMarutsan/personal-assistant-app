@@ -1,10 +1,12 @@
-import { useEffect, useMemo, useState } from "react";
+﻿import { useEffect, useMemo, useState } from "react";
 import { NoteDetailModal } from "../../components/NoteDetailModal";
 import { useDiagnostics } from "../../lib/diagnostics";
-import { ApiError, getNotes, getProjects, updateNote } from "../../lib/api";
+import { ApiError, createNote, deleteNote, getNotes, getProjects, updateNote } from "../../lib/api";
 import type { NoteItem, ProjectItem } from "../../types/api";
 
 const SESSION_KEY = "personal_assistant_app_session_token";
+
+type NoteModalMode = "edit" | "create";
 
 function noteTitle(note: NoteItem): string {
   const title = note.title?.trim();
@@ -29,6 +31,7 @@ export function NotesPage() {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [pendingNote, setPendingNote] = useState<NoteItem | null>(null);
+  const [noteModalMode, setNoteModalMode] = useState<NoteModalMode>("edit");
   const [saving, setSaving] = useState(false);
   const [projects, setProjects] = useState<ProjectItem[]>([]);
   const diagnostics = useDiagnostics();
@@ -85,22 +88,68 @@ export function NotesPage() {
 
   const hasItems = useMemo(() => items.length > 0, [items]);
 
-  async function saveNote(payload: { title: string; body: string; convertToTask: boolean; projectId: string | null }) {
-    if (!pendingNote || !sessionToken) return;
+  async function deleteCurrentNote() {
+    if (!sessionToken || !pendingNote || noteModalMode === "create") return;
+
+    const confirmed = window.confirm(`Видалити нотатку "${noteTitle(pendingNote)}"?`);
+    if (!confirmed) return;
+
     setSaving(true);
     setError(null);
-    diagnostics.trackAction("save_note", { noteId: pendingNote.id, convertToTask: payload.convertToTask });
+    diagnostics.trackAction("delete_note", { noteId: pendingNote.id });
     try {
-      await updateNote({
-        sessionToken,
-        noteId: pendingNote.id,
-        title: payload.title || null,
-        body: payload.body,
-        convertToTask: payload.convertToTask,
-        projectId: payload.projectId
-      });
+      await deleteNote({ sessionToken, noteId: pendingNote.id });
       await loadNotes();
       setPendingNote(null);
+      setNoteModalMode("edit");
+    } catch (deleteError) {
+      if (deleteError instanceof ApiError) {
+        diagnostics.trackFailure({
+          path: deleteError.path,
+          status: deleteError.status,
+          code: deleteError.code,
+          message: deleteError.message,
+          details: deleteError.details
+        });
+      }
+      setError(deleteError instanceof Error ? deleteError.message : "Не вдалося видалити нотатку");
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  async function saveNote(payload: { noteId?: string; title: string; body: string; convertToTask: boolean; projectId: string | null }) {
+    if (!sessionToken) return;
+    const isCreate = noteModalMode === "create";
+    if (!isCreate && !pendingNote) return;
+
+    setSaving(true);
+    setError(null);
+    diagnostics.trackAction(isCreate ? "create_note_manual" : "save_note", {
+      noteId: pendingNote?.id ?? null,
+      convertToTask: payload.convertToTask
+    });
+    try {
+      if (isCreate) {
+        await createNote({
+          sessionToken,
+          title: payload.title || null,
+          body: payload.body,
+          projectId: payload.projectId
+        });
+      } else {
+        await updateNote({
+          sessionToken,
+          noteId: payload.noteId ?? pendingNote!.id,
+          title: payload.title || null,
+          body: payload.body,
+          convertToTask: payload.convertToTask,
+          projectId: payload.projectId
+        });
+      }
+      await loadNotes();
+      setPendingNote(null);
+      setNoteModalMode("edit");
     } catch (saveError) {
       if (saveError instanceof ApiError) {
         diagnostics.trackFailure({
@@ -111,7 +160,7 @@ export function NotesPage() {
           details: saveError.details
         });
       }
-      setError(saveError instanceof Error ? saveError.message : "Не вдалося зберегти нотатку");
+      setError(saveError instanceof Error ? saveError.message : isCreate ? "Не вдалося створити нотатку" : "Не вдалося зберегти нотатку");
     } finally {
       setSaving(false);
     }
@@ -120,7 +169,21 @@ export function NotesPage() {
   return (
     <section className="panel">
       <h2>Нотатки</h2>
-      <p>Збережені нотатки з інбоксу та голосового розбору.</p>
+      <p>Збережені нотатки з інбоксу, голосового розбору та ручного створення.</p>
+
+      <div className="toolbar-row">
+        <button
+          type="button"
+          onClick={() => {
+            setPendingNote(null);
+            setNoteModalMode("create");
+            setError(null);
+          }}
+          disabled={!sessionToken || loading || saving}
+        >
+          Створити нотатку
+        </button>
+      </div>
 
       {!sessionToken ? <p className="empty-note">Відкрий Інбокс для авторизації сесії.</p> : null}
       {error ? <p className="error-note">{error}</p> : null}
@@ -138,7 +201,13 @@ export function NotesPage() {
               </p>
               <p className="inbox-meta">{previewBody(note)}</p>
               <div className="inbox-actions">
-                <button type="button" onClick={() => setPendingNote(note)}>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setPendingNote(note);
+                    setNoteModalMode("edit");
+                  }}
+                >
                   Відкрити
                 </button>
               </div>
@@ -148,11 +217,18 @@ export function NotesPage() {
       ) : null}
 
       <NoteDetailModal
-        open={!!pendingNote}
+        open={noteModalMode === "create" || !!pendingNote}
+        mode={noteModalMode}
         note={pendingNote}
         projects={projects}
         busy={saving}
-        onClose={() => setPendingNote(null)}
+        onClose={() => {
+          setPendingNote(null);
+          setNoteModalMode("edit");
+        }}
+        onDelete={() => {
+          void deleteCurrentNote();
+        }}
         onSave={(payload) => {
           void saveNote(payload);
         }}

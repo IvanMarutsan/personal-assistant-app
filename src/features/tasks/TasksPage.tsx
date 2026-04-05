@@ -6,6 +6,8 @@ import { useDiagnostics } from "../../lib/diagnostics";
 import {
   ApiError,
   createGoogleCalendarEvent,
+  createTask,
+  deleteTask,
   getGoogleCalendarStatus,
   getProjects,
   getTasks,
@@ -27,8 +29,8 @@ const TASK_TYPE_FILTERS: Array<{ label: string; value: TaskType }> = [
 ];
 
 type TaskStatusScope = "active" | "completed" | "blocked" | "cancelled";
-
 type TaskActionKind = "postpone" | "reschedule" | "block" | "unblock" | "cancel";
+type TaskModalMode = "view" | "create";
 
 type PendingAction = {
   task: TaskItem;
@@ -73,7 +75,6 @@ function statusLabel(status: TaskItem["status"]): string {
   }
 }
 
-
 function statusScopeMatch(task: TaskItem, scopes: TaskStatusScope[]): boolean {
   if (scopes.length === 0) return true;
   return scopes.some((scope) => {
@@ -108,6 +109,7 @@ export function TasksPage() {
   const [selectedStatuses, setSelectedStatuses] = useState<TaskStatusScope[]>(["active"]);
   const [pendingAction, setPendingAction] = useState<PendingAction | null>(null);
   const [activeTask, setActiveTask] = useState<TaskItem | null>(null);
+  const [taskModalMode, setTaskModalMode] = useState<TaskModalMode>("view");
   const [projects, setProjects] = useState<ProjectItem[]>([]);
   const [calendarStatus, setCalendarStatus] = useState<GoogleCalendarStatus | null>(null);
   const [pendingCalendarTask, setPendingCalendarTask] = useState<TaskItem | null>(null);
@@ -390,6 +392,113 @@ export function TasksPage() {
     }
   }
 
+  async function deleteCurrentTask() {
+    if (!sessionToken || !activeTask) return;
+
+    const calendarWarning = activeTask.linked_calendar_event
+      ? " Задача пов'язана з подією Google Calendar, але сама подія не буде видалена."
+      : "";
+    const confirmed = window.confirm(`Видалити задачу "${activeTask.title}"?${calendarWarning}`);
+    if (!confirmed) return;
+
+    setWorkingTaskId(activeTask.id);
+    setError(null);
+    diagnostics.trackAction("delete_task", { taskId: activeTask.id });
+
+    try {
+      await deleteTask({ sessionToken, taskId: activeTask.id });
+      setActiveTask(null);
+      setTaskModalMode("view");
+      await loadTasks();
+    } catch (deleteError) {
+      if (deleteError instanceof ApiError) {
+        diagnostics.trackFailure({
+          path: deleteError.path,
+          status: deleteError.status,
+          code: deleteError.code,
+          message: deleteError.message,
+          details: deleteError.details
+        });
+      }
+      setError(deleteError instanceof Error ? deleteError.message : "Не вдалося видалити задачу");
+    } finally {
+      setWorkingTaskId(null);
+    }
+  }
+
+  async function saveTask(payload: {
+    taskId?: string;
+    title: string;
+    details: string;
+    projectId: string | null;
+    taskType: TaskType;
+    dueAt: string | null;
+    scheduledFor: string | null;
+    estimatedMinutes: number | null;
+    planningFlexibility: "essential" | "flexible" | null;
+  }) {
+    if (!sessionToken) return;
+
+    const isCreate = taskModalMode === "create";
+    setWorkingTaskId(payload.taskId ?? "create_task");
+    setError(null);
+    diagnostics.trackAction(isCreate ? "create_task_manual" : "update_task_fields", {
+      taskId: payload.taskId ?? null
+    });
+
+    try {
+      if (isCreate) {
+        await createTask({
+          sessionToken,
+          title: payload.title,
+          details: payload.details,
+          projectId: payload.projectId,
+          taskType: payload.taskType,
+          dueAt: payload.dueAt,
+          scheduledFor: payload.scheduledFor,
+          estimatedMinutes: payload.estimatedMinutes,
+          planningFlexibility: payload.planningFlexibility
+        });
+      } else if (payload.taskId) {
+        await updateTask({
+          sessionToken,
+          taskId: payload.taskId,
+          title: payload.title,
+          details: payload.details,
+          projectId: payload.projectId,
+          taskType: payload.taskType,
+          dueAt: payload.dueAt,
+          scheduledFor: payload.scheduledFor,
+          estimatedMinutes: payload.estimatedMinutes,
+          planningFlexibility: payload.planningFlexibility
+        });
+      }
+
+      setActiveTask(null);
+      setTaskModalMode("view");
+      await loadTasks();
+    } catch (saveError) {
+      if (saveError instanceof ApiError) {
+        diagnostics.trackFailure({
+          path: saveError.path,
+          status: saveError.status,
+          code: saveError.code,
+          message: saveError.message,
+          details: saveError.details
+        });
+      }
+      setError(saveError instanceof Error ? saveError.message : isCreate ? "Не вдалося створити задачу" : "Не вдалося зберегти зміни задачі");
+    } finally {
+      setWorkingTaskId(null);
+    }
+  }
+
+  function openCreateTask() {
+    setTaskModalMode("create");
+    setActiveTask(null);
+    setError(null);
+  }
+
   function renderTaskGroups(groups: Array<{ project: string; tasks: TaskItem[] }>, emptyMessage: string) {
     if (groups.length === 0) {
       return <p className="empty-note">{emptyMessage}</p>;
@@ -425,7 +534,14 @@ export function TasksPage() {
                       Виконано
                     </button>
                   ) : null}
-                  <button type="button" className="ghost" onClick={() => setActiveTask(task)}>
+                  <button
+                    type="button"
+                    className="ghost"
+                    onClick={() => {
+                      setTaskModalMode("view");
+                      setActiveTask(task);
+                    }}
+                  >
                     Деталі
                   </button>
                 </div>
@@ -441,6 +557,12 @@ export function TasksPage() {
     <section className="panel">
       <h2>Задачі</h2>
       <p>Заплановані задачі відокремлені від беклогу, без автоматичного перепланування.</p>
+
+      <div className="toolbar-row">
+        <button type="button" onClick={openCreateTask} disabled={!sessionToken || loading || workingTaskId !== null}>
+          Створити задачу
+        </button>
+      </div>
 
       <div className="filters-wrap">
         <details className="filter-dropdown">
@@ -537,48 +659,20 @@ export function TasksPage() {
       />
 
       <TaskDetailModal
-        open={!!activeTask}
+        open={taskModalMode === "create" || !!activeTask}
+        initialMode={taskModalMode === "create" ? "create" : "view"}
         task={activeTask}
         projects={projects}
         busy={workingTaskId !== null}
-        onClose={() => setActiveTask(null)}
+        onClose={() => {
+          setActiveTask(null);
+          setTaskModalMode("view");
+        }}
         onSave={(payload) => {
-          void (async () => {
-            if (!sessionToken) return;
-            setWorkingTaskId(payload.taskId);
-            setError(null);
-            diagnostics.trackAction("update_task_fields", { taskId: payload.taskId });
-            try {
-              await updateTask({
-                sessionToken,
-                taskId: payload.taskId,
-                title: payload.title,
-                details: payload.details,
-                projectId: payload.projectId,
-                taskType: payload.taskType,
-                dueAt: payload.dueAt,
-                scheduledFor: payload.scheduledFor,
-                estimatedMinutes: payload.estimatedMinutes,
-                planningFlexibility: payload.planningFlexibility
-              });
-
-              setActiveTask(null);
-              await loadTasks();
-            } catch (saveError) {
-              if (saveError instanceof ApiError) {
-                diagnostics.trackFailure({
-                  path: saveError.path,
-                  status: saveError.status,
-                  code: saveError.code,
-                  message: saveError.message,
-                  details: saveError.details
-                });
-              }
-              setError(saveError instanceof Error ? saveError.message : "Не вдалося зберегти зміни задачі");
-            } finally {
-              setWorkingTaskId(null);
-            }
-          })();
+          void saveTask(payload);
+        }}
+        onDelete={() => {
+          void deleteCurrentTask();
         }}
         onAction={(action) => {
           if (!activeTask) return;
@@ -587,6 +681,7 @@ export function TasksPage() {
             return;
           }
           setActiveTask(null);
+          setTaskModalMode("view");
           setPendingAction({ task: activeTask, action });
         }}
         onCreateCalendarEvent={() => {
@@ -632,11 +727,3 @@ export function TasksPage() {
     </section>
   );
 }
-
-
-
-
-
-
-
-

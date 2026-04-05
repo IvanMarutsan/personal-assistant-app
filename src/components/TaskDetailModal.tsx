@@ -4,6 +4,7 @@ import type { PlanningFlexibility, ProjectItem, TaskItem, TaskStatus, TaskType }
 import { moveReasonLabel } from "../lib/reasons";
 
 type TaskActionKind = "done" | "reschedule" | "block" | "unblock" | "cancel";
+type TaskModalMode = "view" | "edit" | "create";
 
 type TaskDetailModalProps = {
   open: boolean;
@@ -12,7 +13,7 @@ type TaskDetailModalProps = {
   busy: boolean;
   onClose: () => void;
   onSave: (payload: {
-    taskId: string;
+    taskId?: string;
     title: string;
     details: string;
     projectId: string | null;
@@ -22,10 +23,11 @@ type TaskDetailModalProps = {
     estimatedMinutes: number | null;
     planningFlexibility: PlanningFlexibility | null;
   }) => void;
+  onDelete?: () => void;
   onAction: (action: TaskActionKind) => void;
   onCreateCalendarEvent: () => void;
   onOpenLinkedCalendarEvent: (url: string) => void;
-  initialMode?: "view" | "edit";
+  initialMode?: TaskModalMode;
   showWorkflowActions?: boolean;
 };
 
@@ -114,8 +116,8 @@ function timingLabel(task: TaskItem): string {
   const estimate = formatEstimate(task.estimated_minutes);
 
   if (!scheduled && !due) return `Беклог · Оцінка: ${estimate}`;
-  if (scheduled && due) return `Плановий старт: ${scheduled} · Дедлайн: ${due} · Оцінка: ${estimate}`;
-  if (scheduled) return `Плановий старт: ${scheduled} · Оцінка: ${estimate}`;
+  if (scheduled && due) return `Планований старт: ${scheduled} · Дедлайн: ${due} · Оцінка: ${estimate}`;
+  if (scheduled) return `Планований старт: ${scheduled} · Оцінка: ${estimate}`;
   return `Беклог · Дедлайн: ${due} · Оцінка: ${estimate}`;
 }
 
@@ -132,10 +134,25 @@ export function TaskDetailModal(props: TaskDetailModalProps) {
   const [planningFlexibility, setPlanningFlexibility] = useState<PlanningFlexibility | null>(null);
 
   const initialMode = props.initialMode ?? "view";
+  const isCreateMode = initialMode === "create";
   const showWorkflowActions = props.showWorkflowActions ?? true;
 
   useEffect(() => {
-    if (!props.open || !props.task) return;
+    if (!props.open) return;
+    if (isCreateMode) {
+      setEditMode(true);
+      setTitle("");
+      setDetails("");
+      setProjectId("");
+      setTaskType("admin_operational");
+      setScheduledForInput("");
+      setDueAtInput("");
+      setEstimatedMinutesInput("");
+      setPlanningFlexibility(null);
+      return;
+    }
+
+    if (!props.task) return;
     setEditMode(initialMode === "edit");
     setTitle(props.task.title);
     setDetails(props.task.details ?? "");
@@ -145,7 +162,7 @@ export function TaskDetailModal(props: TaskDetailModalProps) {
     setDueAtInput(toLocalInput(props.task.due_at));
     setEstimatedMinutesInput(props.task.estimated_minutes ? String(props.task.estimated_minutes) : "");
     setPlanningFlexibility(props.task.planning_flexibility ?? null);
-  }, [props.open, props.task?.id, initialMode]);
+  }, [props.open, props.task?.id, initialMode, isCreateMode, props.task]);
 
   useEffect(() => {
     if (!props.open) return;
@@ -161,12 +178,25 @@ export function TaskDetailModal(props: TaskDetailModalProps) {
     requestAnimationFrame(() => {
       if (bodyRef.current) bodyRef.current.scrollTop = 0;
     });
-  }, [props.open, props.task?.id, editMode]);
+  }, [props.open, props.task?.id, editMode, isCreateMode]);
 
   const parsedEstimatedMinutes = useMemo(() => parseEstimatedMinutes(estimatedMinutesInput), [estimatedMinutesInput]);
   const estimatedMinutesInvalid = estimatedMinutesInput.trim().length > 0 && parsedEstimatedMinutes === null;
 
   const isDirty = useMemo(() => {
+    if (isCreateMode) {
+      return Boolean(
+        title.trim() ||
+          details.trim() ||
+          projectId ||
+          taskType !== "admin_operational" ||
+          scheduledForInput ||
+          dueAtInput ||
+          estimatedMinutesInput.trim() ||
+          planningFlexibility
+      );
+    }
+
     if (!props.task) return false;
     const sameTitle = title.trim() === props.task.title;
     const sameDetails = details.trim() === (props.task.details ?? "");
@@ -177,20 +207,41 @@ export function TaskDetailModal(props: TaskDetailModalProps) {
     const sameEstimate = parsedEstimatedMinutes === (props.task.estimated_minutes ?? null);
     const sameFlexibility = planningFlexibility === (props.task.planning_flexibility ?? null);
     return !(sameTitle && sameDetails && sameProject && sameType && sameScheduled && sameDue && sameEstimate && sameFlexibility);
-  }, [props.task, title, details, projectId, taskType, scheduledForInput, dueAtInput, parsedEstimatedMinutes, planningFlexibility]);
+  }, [
+    props.task,
+    title,
+    details,
+    projectId,
+    taskType,
+    scheduledForInput,
+    dueAtInput,
+    parsedEstimatedMinutes,
+    planningFlexibility,
+    isCreateMode,
+    estimatedMinutesInput
+  ]);
 
-  if (!props.open || !props.task) return null;
+  if (!props.open || (!isCreateMode && !props.task)) return null;
 
   function closeWithGuard() {
     if (!editMode || !isDirty) {
       props.onClose();
       return;
     }
-    const confirmed = window.confirm("Є незбережені зміни. Закрити без збереження?");
+    const confirmed = window.confirm(isCreateMode ? "Є незбережені дані. Закрити без створення задачі?" : "Є незбережені зміни. Закрити без збереження?");
     if (confirmed) props.onClose();
   }
 
   function cancelEdit() {
+    if (isCreateMode) {
+      if (isDirty) {
+        const confirmed = window.confirm("Скасувати створення і відкинути введені дані?");
+        if (!confirmed) return;
+      }
+      props.onClose();
+      return;
+    }
+
     if (!props.task) return;
     if (isDirty) {
       const confirmed = window.confirm("Скасувати редагування і відкинути зміни?");
@@ -222,12 +273,14 @@ export function TaskDetailModal(props: TaskDetailModalProps) {
     <div className="modal-backdrop" role="dialog" aria-modal="true" onClick={onBackdropClick}>
       <section className="modal-card" onClick={(event) => event.stopPropagation()}>
         <header className="modal-header">
-          <h3>Деталі задачі</h3>
-          <p className="modal-task-title">{editMode ? "Режим редагування" : "Режим перегляду"}</p>
+          <h3>{isCreateMode ? "Створити задачу" : "Деталі задачі"}</h3>
+          <p className="modal-task-title">
+            {isCreateMode ? "Нова задача" : editMode ? "Режим редагування" : "Режим перегляду"}
+          </p>
         </header>
 
         <div className="modal-body" ref={bodyRef}>
-          {!editMode ? (
+          {!editMode && task ? (
             <>
               <p className="inbox-main-text">{task.title}</p>
               <p className="inbox-meta">Проєкт: {projectName(task)}</p>
@@ -240,9 +293,10 @@ export function TaskDetailModal(props: TaskDetailModalProps) {
                 <div className="project-group">
                   <p className="inbox-meta">Пов'язано з Google Calendar: так</p>
                   <p className="inbox-meta">
-                    Подія: {task.linked_calendar_event.title} ·{" "}
+                    Подія: {task.linked_calendar_event.title} · {" "}
                     {formatLocalDateTime(new Date(task.linked_calendar_event.starts_at))}
                   </p>
+                  <p className="inbox-meta">Видалення прибере лише задачу. Подія в календарі лишиться без змін.</p>
                   {task.linked_calendar_event.provider_event_url ? (
                     <div className="inbox-actions">
                       <button
@@ -274,6 +328,11 @@ export function TaskDetailModal(props: TaskDetailModalProps) {
                 <button type="button" onClick={() => setEditMode(true)} disabled={props.busy}>
                   Редагувати
                 </button>
+                {props.onDelete ? (
+                  <button type="button" className="danger" onClick={props.onDelete} disabled={props.busy}>
+                    Видалити
+                  </button>
+                ) : null}
                 {showWorkflowActions ? (
                   <>
                     <button type="button" onClick={props.onCreateCalendarEvent} disabled={props.busy || task.status === "cancelled"}>
@@ -320,12 +379,23 @@ export function TaskDetailModal(props: TaskDetailModalProps) {
             <>
               <label>
                 Назва
-                <input value={title} onChange={(event) => setTitle(event.target.value)} disabled={props.busy} />
+                <input
+                  value={title}
+                  onChange={(event) => setTitle(event.target.value)}
+                  placeholder="Назва задачі"
+                  disabled={props.busy}
+                />
               </label>
 
               <label>
                 Опис
-                <textarea value={details} onChange={(event) => setDetails(event.target.value)} rows={6} disabled={props.busy} />
+                <textarea
+                  value={details}
+                  onChange={(event) => setDetails(event.target.value)}
+                  rows={6}
+                  placeholder="Опис задачі (необов'язково)"
+                  disabled={props.busy}
+                />
               </label>
 
               <label>
@@ -419,7 +489,7 @@ export function TaskDetailModal(props: TaskDetailModalProps) {
                   type="button"
                   onClick={() =>
                     props.onSave({
-                      taskId: task.id,
+                      taskId: task?.id,
                       title: title.trim(),
                       details: details.trim(),
                       projectId: projectId || null,
@@ -432,7 +502,7 @@ export function TaskDetailModal(props: TaskDetailModalProps) {
                   }
                   disabled={props.busy || !title.trim() || estimatedMinutesInvalid}
                 >
-                  {props.busy ? "Збереження..." : "Зберегти"}
+                  {props.busy ? (isCreateMode ? "Створення..." : "Збереження...") : isCreateMode ? "Створити" : "Зберегти"}
                 </button>
               </>
             ) : (

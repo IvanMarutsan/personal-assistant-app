@@ -1,6 +1,6 @@
-import { useEffect, useMemo, useState, type FormEvent } from "react";
+﻿import { useEffect, useMemo, useState, type FormEvent } from "react";
 import { useDiagnostics } from "../../lib/diagnostics";
-import { ApiError, createWorklog, getProjects, getWorklogs } from "../../lib/api";
+import { ApiError, createWorklog, deleteWorklog, getProjects, getWorklogs } from "../../lib/api";
 import type { ProjectItem, WorklogItem } from "../../types/api";
 
 const SESSION_KEY = "personal_assistant_app_session_token";
@@ -50,6 +50,7 @@ export function WorklogsPage() {
   const [range, setRange] = useState<InsightsRange>("today");
   const [loading, setLoading] = useState(false);
   const [saving, setSaving] = useState(false);
+  const [deletingId, setDeletingId] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const diagnostics = useDiagnostics();
   const sessionToken = localStorage.getItem(SESSION_KEY) ?? "";
@@ -190,6 +191,35 @@ export function WorklogsPage() {
     }
   }
 
+  async function removeWorklog(item: WorklogItem) {
+    if (!sessionToken) return;
+    const confirmed = window.confirm("Видалити цей контекстний запис?");
+    if (!confirmed) return;
+
+    setDeletingId(item.id);
+    setError(null);
+    diagnostics.trackAction("delete_worklog", { worklogId: item.id });
+
+    try {
+      await deleteWorklog({ sessionToken, worklogId: item.id });
+      setItems((current) => current.filter((entry) => entry.id !== item.id));
+      diagnostics.markRefresh();
+    } catch (deleteError) {
+      if (deleteError instanceof ApiError) {
+        diagnostics.trackFailure({
+          path: deleteError.path,
+          status: deleteError.status,
+          code: deleteError.code,
+          message: deleteError.message,
+          details: deleteError.details
+        });
+      }
+      setError(deleteError instanceof Error ? deleteError.message : "Не вдалося видалити контекстний запис");
+    } finally {
+      setDeletingId(null);
+    }
+  }
+
   return (
     <section className="panel">
       <h2>Контекст</h2>
@@ -292,6 +322,16 @@ export function WorklogsPage() {
                 {projectName(item)} · сталося: {formatOccurredAt(item.occurred_at)} · {sourceLabel(item.source)}
               </p>
               <p className="worklog-entry-body">{item.body}</p>
+              <div className="inbox-actions">
+                <button
+                  type="button"
+                  className="danger"
+                  onClick={() => void removeWorklog(item)}
+                  disabled={deletingId === item.id}
+                >
+                  {deletingId === item.id ? "Видаляємо..." : "Видалити"}
+                </button>
+              </div>
             </li>
           ))}
         </ul>

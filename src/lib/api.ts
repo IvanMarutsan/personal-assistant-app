@@ -385,6 +385,38 @@ export async function updateProject(input: {
   return result.item;
 }
 
+export async function createTask(input: {
+  sessionToken: string;
+  title: string;
+  details?: string | null;
+  projectId?: string | null;
+  taskType?: TaskType;
+  dueAt?: string | null;
+  scheduledFor?: string | null;
+  estimatedMinutes?: number | null;
+  planningFlexibility?: PlanningFlexibility | null;
+}): Promise<{ taskId: string }> {
+  const result = await request<{
+    ok: true;
+    taskId: string;
+  }>("create-task", {
+    method: "POST",
+    headers: sessionHeaders(input.sessionToken),
+    body: JSON.stringify({
+      title: input.title,
+      details: input.details ?? null,
+      projectId: input.projectId ?? null,
+      taskType: input.taskType ?? "admin_operational",
+      dueAt: input.dueAt ?? null,
+      scheduledFor: input.scheduledFor ?? null,
+      estimatedMinutes: input.estimatedMinutes ?? null,
+      planningFlexibility: input.planningFlexibility ?? null
+    })
+  });
+
+  return { taskId: result.taskId };
+}
+
 export async function getTasks(sessionToken: string): Promise<TaskItem[]> {
   const result = await request<{
     ok: true;
@@ -466,6 +498,17 @@ export async function updateTask(input: {
   });
 }
 
+export async function deleteTask(input: {
+  sessionToken: string;
+  taskId: string;
+}): Promise<void> {
+  await request<{ ok: true }>("delete-task", {
+    method: "POST",
+    headers: sessionHeaders(input.sessionToken),
+    body: JSON.stringify({ taskId: input.taskId })
+  });
+}
+
 export async function getWorklogs(sessionToken: string): Promise<WorklogItem[]> {
   const result = await request<{
     ok: true;
@@ -476,6 +519,17 @@ export async function getWorklogs(sessionToken: string): Promise<WorklogItem[]> 
   });
 
   return result.items;
+}
+
+export async function deleteWorklog(input: {
+  sessionToken: string;
+  worklogId: string;
+}): Promise<void> {
+  await request<{ ok: true }>("delete-worklog", {
+    method: "POST",
+    headers: sessionHeaders(input.sessionToken),
+    body: JSON.stringify({ worklogId: input.worklogId })
+  });
 }
 
 export async function createWorklog(input: {
@@ -500,6 +554,39 @@ export async function createWorklog(input: {
   });
 
   return result.item;
+}
+
+export async function createNote(input: {
+  sessionToken: string;
+  title?: string | null;
+  body: string;
+  projectId?: string | null;
+}): Promise<{ noteId: string }> {
+  const result = await request<{
+    ok: true;
+    noteId: string;
+  }>("create-note", {
+    method: "POST",
+    headers: sessionHeaders(input.sessionToken),
+    body: JSON.stringify({
+      title: input.title ?? null,
+      body: input.body,
+      projectId: input.projectId ?? null
+    })
+  });
+
+  return { noteId: result.noteId };
+}
+
+export async function deleteNote(input: {
+  sessionToken: string;
+  noteId: string;
+}): Promise<void> {
+  await request<{ ok: true }>("delete-note", {
+    method: "POST",
+    headers: sessionHeaders(input.sessionToken),
+    body: JSON.stringify({ noteId: input.noteId })
+  });
 }
 
 export async function updateNote(input: {
@@ -696,6 +783,8 @@ export async function updatePlanningProposal(input: {
     })
   });
 }
+
+
 
 
 
