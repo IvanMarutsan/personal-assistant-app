@@ -1,4 +1,5 @@
 ﻿import { useEffect, useMemo, useState } from "react";
+import type { InterruptTriageRecommendation } from "../lib/interrupt-triage";
 import type { ProjectItem } from "../types/api";
 
 type InboxTriageModalProps = {
@@ -7,6 +8,7 @@ type InboxTriageModalProps = {
   sourceText: string;
   projects: ProjectItem[];
   busy: boolean;
+  recommendation?: InterruptTriageRecommendation | null;
   onCancel: () => void;
   onConfirm: (payload: {
     title?: string;
@@ -67,6 +69,14 @@ export function InboxTriageModal(props: InboxTriageModalProps) {
             ? "Перетворення в нотатку"
             : "Збереження контекстного запису"}
         </h3>
+
+        {props.recommendation ? (
+          <>
+            <p className="inbox-meta">{"\u0420\u0435\u043a\u043e\u043c\u0435\u043d\u0434\u0430\u0446\u0456\u044f:"} {props.recommendation.label}</p>
+            <p className="inbox-meta">{props.recommendation.summary}</p>
+            <p className="inbox-meta">{props.recommendation.actionHint}</p>
+          </>
+        ) : null}
 
         {props.mode === "task" ? (
           <>

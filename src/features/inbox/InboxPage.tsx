@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { InboxTriageModal } from "../../components/InboxTriageModal";
 import { VoiceConfirmModal } from "../../components/VoiceConfirmModal";
 import { useDiagnostics } from "../../lib/diagnostics";
+import { recommendationDefaultKind, recommendInterruptTriage, type InterruptTriageRecommendation } from "../../lib/interrupt-triage";
 import {
   ApiError,
   authTelegram,
@@ -40,6 +41,7 @@ type VoiceConfirmState = {
     matchedProjectName: string | null;
     score: number | null;
   } | null;
+  recommendation: InterruptTriageRecommendation;
 } | null;
 
 type PreparedInboxItem = {
@@ -61,6 +63,7 @@ type PreparedInboxItem = {
     parseError: string | null;
   };
   isVoiceItem: boolean;
+  interruptRecommendation: InterruptTriageRecommendation;
 };
 
 function previewText(item: InboxItem): string {
@@ -378,6 +381,10 @@ function candidateStatusLabel(status: VoiceCandidateStatus): string {
   return "Очікує обробки";
 }
 
+function recommendationLine(recommendation: InterruptTriageRecommendation): string {
+  return `Рекомендація: ${recommendation.label} ? ${recommendation.summary}`;
+}
+
 export function InboxPage() {
   const [authState, setAuthState] = useState<AuthState>("idle");
   const [error, setError] = useState<string | null>(null);
@@ -387,7 +394,7 @@ export function InboxPage() {
   const [sessionToken, setSessionToken] = useState<string>(localStorage.getItem(SESSION_KEY) ?? "");
   const [triageLoading, setTriageLoading] = useState(false);
   const [workingItemId, setWorkingItemId] = useState<string | null>(null);
-  const [pendingTriage, setPendingTriage] = useState<{ item: InboxItem; mode: "task" | "note" | "worklog" } | null>(null);
+  const [pendingTriage, setPendingTriage] = useState<{ item: InboxItem; mode: "task" | "note" | "worklog"; recommendation: InterruptTriageRecommendation } | null>(null);
   const [pendingVoiceConfirm, setPendingVoiceConfirm] = useState<VoiceConfirmState>(null);
   const [projects, setProjects] = useState<ProjectItem[]>([]);
   const [calendarStatus, setCalendarStatus] = useState<GoogleCalendarStatus | null>(null);
@@ -405,10 +412,46 @@ export function InboxPage() {
         candidateCountEstimated: extractCandidateCountEstimated(item),
         projectMatch: extractProjectMatch(item),
         statuses: extractVoiceStatuses(item),
-        isVoiceItem: item.source_type === "voice"
+        isVoiceItem: item.source_type === "voice",
+        interruptRecommendation: recommendInterruptTriage({ sourceText: previewText(item), suggestion: extractVoiceSuggestion(item) })
       })),
     [items]
   );
+
+  function recommendationForSuggestion(item: InboxItem, suggestion: VoiceAiSuggestion): InterruptTriageRecommendation {
+    return recommendInterruptTriage({ sourceText: previewText(item), suggestion });
+  }
+
+  function buildVoiceConfirmState(params: {
+    item: InboxItem;
+    candidateId: string | null;
+    suggestion: VoiceAiSuggestion;
+    projectMatch: {
+      status: "matched" | "suggested_only" | "none";
+      matchedProjectId: string | null;
+      matchedProjectName: string | null;
+      score: number | null;
+    } | null;
+    forcedKind?: VoiceConfirmTargetKind;
+  }): NonNullable<VoiceConfirmState> {
+    const recommendation = recommendationForSuggestion(params.item, params.suggestion);
+    const defaultKind =
+      params.forcedKind ??
+      (params.suggestion.detectedIntent === "worklog_candidate"
+        ? "worklog"
+        : params.suggestion.detectedIntent === "note"
+        ? "note"
+        : recommendationDefaultKind(recommendation));
+
+    return {
+      item: params.item,
+      candidateId: params.candidateId,
+      defaultKind,
+      suggestion: params.suggestion,
+      projectMatch: params.projectMatch,
+      recommendation
+    };
+  }
 
   function invalidateSession() {
     localStorage.removeItem(SESSION_KEY);
@@ -571,7 +614,7 @@ export function InboxPage() {
         return;
       }
 
-      setPendingTriage({ item, mode: action });
+      setPendingTriage({ item, mode: action, recommendation: recommendInterruptTriage({ sourceText: previewText(item) }) });
       endTriage(item.id);
       return;
     } catch (triageError) {
@@ -881,7 +924,7 @@ export function InboxPage() {
         <p className="empty-note">Інбокс порожній.</p>
       ) : (
         <ul className="inbox-list">
-          {preparedItems.map(({ item, suggestion, candidates, parseMode, candidateCountEstimated, projectMatch, statuses, isVoiceItem }) => {
+          {preparedItems.map(({ item, suggestion, candidates, parseMode, candidateCountEstimated, projectMatch, statuses, isVoiceItem, interruptRecommendation }) => {
             const isBusyItem = triageLoading && workingItemId === item.id;
             const pendingCandidates = candidates.filter((candidate) => candidate.status === "pending");
             const processedCandidates = candidates.length - pendingCandidates.length;
@@ -917,6 +960,7 @@ export function InboxPage() {
                         ) : null}
                         <ul className="inbox-list">
                           {candidates.map((candidate) => {
+                            const candidateRecommendation = recommendationForSuggestion(item, candidate);
                             const canCreateCalendar =
                               (candidate.detectedIntent === "meeting_candidate" ||
                                 candidate.detectedIntent === "reminder_candidate") &&
@@ -950,19 +994,20 @@ export function InboxPage() {
                                   <div className="inbox-actions">
                                     <button
                                       onClick={() => {
-                                        const defaultKind = candidate.detectedIntent === "worklog_candidate" ? "worklog" : "task";
+                                        const defaultKind =
+                                          candidate.detectedIntent === "worklog_candidate"
+                                            ? "worklog"
+                                            : candidate.detectedIntent === "note"
+                                            ? "note"
+                                            : recommendationDefaultKind(candidateRecommendation);
                                         diagnostics.trackAction("open_voice_confirm", {
                                           itemId: item.id,
                                           candidateId: candidate.candidateId,
                                           defaultKind
                                         });
-                                        setPendingVoiceConfirm({
-                                          item,
-                                          candidateId: candidate.candidateId,
-                                          defaultKind,
-                                          suggestion: candidate,
-                                          projectMatch
-                                        });
+                                        setPendingVoiceConfirm(
+                                          buildVoiceConfirmState({ item, candidateId: candidate.candidateId, suggestion: candidate, projectMatch, forcedKind: defaultKind })
+                                        );
                                       }}
                                       disabled={isBusyItem}
                                     >
@@ -975,13 +1020,9 @@ export function InboxPage() {
                                           candidateId: candidate.candidateId,
                                           defaultKind: "note"
                                         });
-                                        setPendingVoiceConfirm({
-                                          item,
-                                          candidateId: candidate.candidateId,
-                                          defaultKind: "note",
-                                          suggestion: candidate,
-                                          projectMatch
-                                        });
+                                        setPendingVoiceConfirm(
+                                          buildVoiceConfirmState({ item, candidateId: candidate.candidateId, suggestion: candidate, projectMatch, forcedKind: "note" })
+                                        );
                                       }}
                                       disabled={isBusyItem}
                                     >
@@ -995,13 +1036,9 @@ export function InboxPage() {
                                             candidateId: candidate.candidateId,
                                             defaultKind: "calendar_event"
                                           });
-                                          setPendingVoiceConfirm({
-                                            item,
-                                            candidateId: candidate.candidateId,
-                                            defaultKind: "calendar_event",
-                                            suggestion: candidate,
-                                            projectMatch
-                                          });
+                                          setPendingVoiceConfirm(
+                                            buildVoiceConfirmState({ item, candidateId: candidate.candidateId, suggestion: candidate, projectMatch, forcedKind: "calendar_event" })
+                                          );
                                         }}
                                         disabled={isBusyItem}
                                       >
@@ -1070,18 +1107,19 @@ export function InboxPage() {
                         <div className="inbox-actions">
                           <button
                             onClick={() => {
-                              const defaultKind = suggestion.detectedIntent === "worklog_candidate" ? "worklog" : "task";
+                              const defaultKind =
+                                suggestion.detectedIntent === "worklog_candidate"
+                                  ? "worklog"
+                                  : suggestion.detectedIntent === "note"
+                                  ? "note"
+                                  : recommendationDefaultKind(interruptRecommendation);
                               diagnostics.trackAction("open_voice_confirm", {
                                 itemId: item.id,
                                 defaultKind
                               });
-                              setPendingVoiceConfirm({
-                                item,
-                                candidateId: null,
-                                defaultKind,
-                                suggestion,
-                                projectMatch
-                              });
+                              setPendingVoiceConfirm(
+                                buildVoiceConfirmState({ item, candidateId: null, suggestion, projectMatch, forcedKind: defaultKind })
+                              );
                             }}
                             disabled={isBusyItem}
                           >
@@ -1093,13 +1131,9 @@ export function InboxPage() {
                                 itemId: item.id,
                                 defaultKind: "note"
                               });
-                              setPendingVoiceConfirm({
-                                item,
-                                candidateId: null,
-                                defaultKind: "note",
-                                suggestion,
-                                projectMatch
-                              });
+                              setPendingVoiceConfirm(
+                                buildVoiceConfirmState({ item, candidateId: null, suggestion, projectMatch, forcedKind: "note" })
+                              );
                             }}
                             disabled={isBusyItem}
                           >
@@ -1114,13 +1148,9 @@ export function InboxPage() {
                                   itemId: item.id,
                                   defaultKind: "calendar_event"
                                 });
-                                setPendingVoiceConfirm({
-                                  item,
-                                  candidateId: null,
-                                  defaultKind: "calendar_event",
-                                  suggestion,
-                                  projectMatch
-                                });
+                                setPendingVoiceConfirm(
+                                  buildVoiceConfirmState({ item, candidateId: null, suggestion, projectMatch, forcedKind: "calendar_event" })
+                                );
                               }}
                               disabled={isBusyItem}
                             >
@@ -1167,7 +1197,9 @@ export function InboxPage() {
                     {statuses.parseError ? <p className="inbox-meta">Помилка розбору: {statuses.parseError}</p> : null}
                   </section>
                 ) : (
-                  <div className="inbox-actions">
+                  <>
+                    <p className="inbox-meta">{recommendationLine(interruptRecommendation)}</p>
+                    <div className="inbox-actions">
                     <button onClick={() => void handleTriage(item, "task")} disabled={isBusyItem}>
                       У задачу
                     </button>
@@ -1180,7 +1212,8 @@ export function InboxPage() {
                     <button className="danger" onClick={() => void handleTriage(item, "discard")} disabled={isBusyItem}>
                       Відхилити
                     </button>
-                  </div>
+                    </div>
+                  </>
                 )}
               </li>
             );
@@ -1192,6 +1225,7 @@ export function InboxPage() {
         open={Boolean(pendingTriage)}
         mode={pendingTriage?.mode ?? null}
         sourceText={pendingTriage ? previewText(pendingTriage.item) : ""}
+        recommendation={pendingTriage?.recommendation ?? null}
         projects={projects}
         busy={triageLoading}
         onCancel={() => setPendingTriage(null)}
@@ -1217,6 +1251,7 @@ export function InboxPage() {
         projectMatch={pendingVoiceConfirm?.projectMatch ?? null}
         projects={projects}
         transcript={pendingVoiceConfirm?.item.transcript_text ?? ""}
+        recommendation={pendingVoiceConfirm?.recommendation ?? null}
         busy={triageLoading}
         errorMessage={pendingVoiceConfirm ? error : null}
         onCancel={() => setPendingVoiceConfirm(null)}

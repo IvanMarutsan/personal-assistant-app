@@ -1,4 +1,5 @@
 ﻿import { useEffect, useMemo, useRef, useState } from "react";
+import type { InterruptTriageRecommendation } from "../lib/interrupt-triage";
 import type { ProjectItem, TaskType, VoiceAiSuggestion, VoiceConfirmTargetKind } from "../types/api";
 
 type VoiceConfirmModalProps = {
@@ -17,6 +18,7 @@ type VoiceConfirmModalProps = {
   projects: ProjectItem[];
   busy: boolean;
   errorMessage?: string | null;
+  recommendation?: InterruptTriageRecommendation | null;
   onCancel: () => void;
   onConfirm: (payload: {
     targetKind: VoiceConfirmTargetKind;
@@ -283,6 +285,13 @@ export function VoiceConfirmModal(props: VoiceConfirmModalProps) {
             <p className="inbox-meta">AI запропонував проєкт, але точного зіставлення не знайдено.</p>
           ) : null}
           {props.errorMessage ? <p className="error-note">{props.errorMessage}</p> : null}
+          {props.recommendation ? (
+            <>
+              <p className="inbox-meta">{"\u0420\u0435\u043a\u043e\u043c\u0435\u043d\u0434\u0430\u0446\u0456\u044f:"} {props.recommendation.label}</p>
+              <p className="inbox-meta">{props.recommendation.summary}</p>
+              <p className="inbox-meta">{props.recommendation.actionHint}</p>
+            </>
+          ) : null}
         </header>
 
         <div className="modal-body" ref={bodyRef}>
