@@ -1,6 +1,7 @@
-﻿import { createAdminClient } from "../_shared/db.ts";
+import { createAdminClient } from "../_shared/db.ts";
 import { handleOptions, jsonResponse, safeJson } from "../_shared/http.ts";
 import { resolveSessionUser } from "../_shared/session.ts";
+import { syncTaskCalendarAfterMutation } from "../_shared/task-calendar-sync.ts";
 
 type TaskType =
   | "deep_work"
@@ -132,6 +133,7 @@ Deno.serve(async (req) => {
   if (body.planningFlexibility !== undefined) {
     updatePayload.planning_flexibility = body.planningFlexibility;
   }
+
   const { error: updateError } = await supabase
     .from("tasks")
     .update(updatePayload)
@@ -142,10 +144,7 @@ Deno.serve(async (req) => {
     return jsonResponse({ ok: false, error: "task_update_failed", message: updateError.message }, 500);
   }
 
+  await syncTaskCalendarAfterMutation(supabase, sessionUser.userId, body.taskId);
+
   return jsonResponse({ ok: true, taskId: body.taskId });
 });
-
-
-
-
-

@@ -32,6 +32,14 @@ const MOVE_REASONS: Array<{ code: MoveReasonCode; label: string }> = [
   { code: "other", label: "Інше" }
 ];
 
+function localInputToIso(value: string): string | null {
+  const trimmed = value.trim();
+  if (!trimmed) return null;
+  const parsed = new Date(trimmed);
+  if (Number.isNaN(parsed.getTime())) return null;
+  return parsed.toISOString();
+}
+
 function titleForAction(action: TaskActionModalAction | null): string {
   if (action === "postpone") return "Відкласти задачу";
   if (action === "reschedule") return "Перенести задачу";
@@ -115,7 +123,12 @@ export function TaskActionModal(props: TaskActionModalProps) {
         setError("Вкажи нову дату й час.");
         return;
       }
-      payload.rescheduleTo = rescheduleTo.trim();
+      const isoValue = localInputToIso(rescheduleTo);
+      if (!isoValue) {
+        setError('Вкажи коректну дату й час.');
+        return;
+      }
+      payload.rescheduleTo = isoValue;
     }
 
     props.onConfirm(payload);
@@ -192,3 +205,4 @@ export function TaskActionModal(props: TaskActionModalProps) {
     </div>
   );
 }
+

@@ -28,6 +28,17 @@ type PlanningConversationModalProps = {
 
 type VoiceState = "idle" | "recording" | "transcribing";
 
+type WeekDaySummary = {
+  scopeDate: string;
+  plannedCount: number;
+  dueWithoutPlannedStartCount: number;
+  scheduledKnownEstimateMinutes: number;
+  scheduledMissingEstimateCount: number;
+  calendarEventCount: number;
+  calendarBusyMinutes: number | null;
+  worklogCount: number;
+};
+
 function formatDayScopeDate(scopeDate: string): string {
   const parsed = new Date(`${scopeDate}T12:00:00`);
   if (Number.isNaN(parsed.getTime())) return scopeDate;
@@ -48,11 +59,17 @@ function formatScopeLabel(scopeType: PlanningConversationScopeType, scopeDate: s
 }
 
 function scopeHeading(scopeType: PlanningConversationScopeType): string {
-  return scopeType === "week" ? "Обговорити тиждень" : "Обговорити план";
+  return scopeType === "week" ? "План на тиждень" : "Обговорити план";
 }
 
 function scopeSubtitle(scopeType: PlanningConversationScopeType, scopeDate: string): string {
-  return scopeType === "week" ? `Тиждень ${formatScopeLabel(scopeType, scopeDate)}` : `План на ${formatScopeLabel(scopeType, scopeDate)}`;
+  return scopeType === "week"
+    ? `Понеділок - неділя · ${formatScopeLabel(scopeType, scopeDate)}`
+    : `План на ${formatScopeLabel(scopeType, scopeDate)}`;
+}
+
+function scopeSummaryLead(scopeType: PlanningConversationScopeType): string {
+  return scopeType === "week" ? "Огляд тижня" : "Огляд дня";
 }
 
 function proposalStatusLabel(
@@ -120,6 +137,56 @@ function formatWeekDaySummary(scopeDate: string): string {
   const parsed = new Date(`${scopeDate}T12:00:00`);
   if (Number.isNaN(parsed.getTime())) return scopeDate;
   return new Intl.DateTimeFormat("uk-UA", { weekday: "short", day: "numeric", month: "short" }).format(parsed);
+}
+
+function formatMinutes(value: number | null): string {
+  return formatTaskEstimate(value ?? null) ?? (value && value > 0 ? `${value} хв` : "немає");
+}
+
+function weekDayTone(day: WeekDaySummary): string {
+  const combinedLoad = day.scheduledKnownEstimateMinutes + (day.calendarBusyMinutes ?? 0);
+  if (day.dueWithoutPlannedStartCount > 0 || combinedLoad >= 480) return "Напруженіше";
+  if (day.plannedCount === 0 && day.dueWithoutPlannedStartCount === 0 && combinedLoad <= 120) return "Легше";
+  return "Рівно";
+}
+
+function weekDayDetails(day: WeekDaySummary): string {
+  const parts = [`план: ${day.plannedCount}`];
+  if (day.dueWithoutPlannedStartCount > 0) parts.push(`дедлайни без плану: ${day.dueWithoutPlannedStartCount}`);
+  if (day.scheduledKnownEstimateMinutes > 0) parts.push(`оцінено: ${formatMinutes(day.scheduledKnownEstimateMinutes)}`);
+  if (day.scheduledMissingEstimateCount > 0) parts.push(`без оцінки: ${day.scheduledMissingEstimateCount}`);
+  if (day.calendarEventCount > 0) parts.push(`календар: ${day.calendarEventCount}`);
+  if (day.worklogCount > 0) parts.push(`контекст: ${day.worklogCount}`);
+  return parts.join(" · ");
+}
+
+function summaryStateLabel(scopeType: PlanningConversationScopeType, proposalCount: number): string {
+  if (proposalCount > 0) {
+    return scopeType === "week"
+      ? "Активний лише найновіший набір пропозицій на цей тиждень. Старіші набори лишаються тільки для історії."
+      : "Активний лише найновіший набір пропозицій.";
+  }
+
+  return scopeType === "week"
+    ? "Активних пропозицій на цей тиждень зараз немає. Можна продовжити обговорення без змін."
+    : "Зараз немає активного набору пропозицій.";
+}
+
+function emptyThreadCopy(scopeType: PlanningConversationScopeType, isLightScope: boolean): string {
+  if (scopeType === "week") {
+    return isLightScope
+      ? "Тиждень поки виглядає легким. Можеш уточнити, які дні або задачі хочеш перевірити вручну."
+      : "Напиши, які дні або задачі тиснуть найбільше, і я запропоную обережні зміни на тиждень.";
+  }
+  return isLightScope
+    ? "День поки виглядає легким. Можеш уточнити, що саме хочеш перевірити в плані."
+    : "Напиши, що саме хочеш переглянути в плані цього дня.";
+}
+
+function noProposalCopy(scopeType: PlanningConversationScopeType): string {
+  return scopeType === "week"
+    ? "Явних змін для цього тижня зараз немає."
+    : "Пропозицій змін зараз немає.";
 }
 
 export function PlanningConversationModal(props: PlanningConversationModalProps) {
@@ -266,9 +333,16 @@ export function PlanningConversationModal(props: PlanningConversationModalProps)
   const hasInitialLoadError = !state && !!props.errorMessage && !props.busy;
   const effectiveScopeType = state?.session.scopeType ?? props.scopeType;
   const effectiveScopeDate = state?.session.scopeDate ?? props.scopeDate;
-  const statusScopeDate = formatScopeLabel(effectiveScopeType, effectiveScopeDate);
   const voiceStatus = voiceStatusLabel(voiceState);
   const scopeContext = state?.scopeContext ?? null;
+  const isWeekScope = effectiveScopeType === "week";
+  const isLightScope = scopeContext
+    ? scopeContext.plannedCount === 0 &&
+      scopeContext.dueWithoutPlannedStartCount === 0 &&
+      scopeContext.backlogCount === 0 &&
+      scopeContext.worklogs.count === 0 &&
+      scopeContext.calendar.eventCount === 0
+    : false;
 
   return (
     <div className="modal-backdrop" role="dialog" aria-modal="true" onClick={props.onClose}>
@@ -279,10 +353,15 @@ export function PlanningConversationModal(props: PlanningConversationModalProps)
         </header>
 
         <div className="modal-body planning-body">
-          {isInitialLoading ? <p className="empty-note">Завантажуємо розмову про план...</p> : null}
+          {isInitialLoading ? (
+            <p className="empty-note">{isWeekScope ? "Завантажуємо огляд тижня..." : "Завантажуємо розмову про план..."}</p>
+          ) : null}
 
           {hasInitialLoadError ? (
             <section className="planning-summary">
+              <p className="assistant-title">
+                {isWeekScope ? "Тиждень поки не вдалося відкрити" : "Розмову поки не вдалося відкрити"}
+              </p>
               <p className="error-note">{props.errorMessage ?? "Не вдалося завантажити обговорення плану."}</p>
               <div className="inbox-actions">
                 <button type="button" onClick={props.onRetryLoad} disabled={props.busy}>
@@ -295,54 +374,48 @@ export function PlanningConversationModal(props: PlanningConversationModalProps)
           {state && scopeContext ? (
             <>
               <section className="planning-summary">
+                <p className="assistant-title">{scopeSummaryLead(effectiveScopeType)}</p>
                 <p className="inbox-meta">
                   У плані: {scopeContext.plannedCount} · Дедлайни без плану: {scopeContext.dueWithoutPlannedStartCount} · Беклог: {scopeContext.backlogCount}
                 </p>
                 <p className="inbox-meta">
-                  Відоме навантаження: {formatTaskEstimate(scopeContext.scheduledKnownEstimateMinutes) ?? "немає"} · Без оцінки: {scopeContext.scheduledMissingEstimateCount}
+                  Відоме навантаження: {formatMinutes(scopeContext.scheduledKnownEstimateMinutes)} · Без оцінки: {scopeContext.scheduledMissingEstimateCount}
                 </p>
                 {scopeContext.calendar.available ? (
                   <p className="inbox-meta">
-                    У календарі: {scopeContext.calendar.eventCount} · Зайнято: {formatTaskEstimate(scopeContext.calendar.busyMinutes) ?? `${scopeContext.calendar.busyMinutes ?? 0} хв`}
+                    У календарі: {scopeContext.calendar.eventCount} · Зайнято: {formatMinutes(scopeContext.calendar.busyMinutes)}
                     {scopeContext.calendar.extraEventCount > 0 ? ` · Ще подій: ${scopeContext.calendar.extraEventCount}` : ""}
                   </p>
                 ) : null}
                 {scopeContext.worklogs.count > 0 ? (
                   <p className="inbox-meta">Контекстні записи: {scopeContext.worklogs.count} · Без проєкту: {scopeContext.worklogs.withoutProjectCount}</p>
                 ) : null}
-                {effectiveScopeType === "week" && scopeContext.weekDays.length > 0 ? (
+                {isWeekScope && scopeContext.weekDays.length > 0 ? (
                   <ul className="assistant-secondary">
                     {scopeContext.weekDays.map((day) => (
                       <li key={day.scopeDate}>
                         <strong>{formatWeekDaySummary(day.scopeDate)}</strong>
-                        <span>
-                          {` · План: ${day.plannedCount} · Дедлайни без плану: ${day.dueWithoutPlannedStartCount} · Оцінено: ${formatTaskEstimate(day.scheduledKnownEstimateMinutes) ?? "немає"}`}
-                        </span>
+                        <span>{` · ${weekDayTone(day)} · ${weekDayDetails(day)}`}</span>
                       </li>
                     ))}
                   </ul>
                 ) : null}
                 {scopeContext.notableDeadlines.length > 0 ? (
                   <p className="inbox-meta">
-                    Дедлайни в межах {effectiveScopeType === "week" ? "тижня" : "дня"}: {scopeContext.notableDeadlines.slice(0, 4).map((item) => item.title).join(" · ")}
+                    Дедлайни в межах {isWeekScope ? "тижня" : "дня"}: {scopeContext.notableDeadlines.slice(0, 4).map((item) => item.title).join(" · ")}
                   </p>
                 ) : null}
-                {state.latestActionableProposalCount > 0 ? (
-                  <p className="inbox-meta">Активний лише найновіший набір пропозицій.</p>
-                ) : (
-                  <p className="inbox-meta">Зараз немає активного набору пропозицій.</p>
-                )}
+                {isLightScope ? (
+                  <p className="inbox-meta">{isWeekScope ? "Тиждень поки виглядає легким і не перевантаженим." : "На цей день поки мало навантаження."}</p>
+                ) : null}
+                <p className="inbox-meta">{summaryStateLabel(effectiveScopeType, state.latestActionableProposalCount)}</p>
               </section>
 
               {props.errorMessage ? <p className="error-note">{props.errorMessage}</p> : null}
 
               <div className="planning-thread">
                 {state.messages.length === 0 ? (
-                  <p className="empty-note">
-                    {effectiveScopeType === "week"
-                      ? "Напиши, що саме хочеш переглянути в плані цього тижня."
-                      : "Напиши, що саме хочеш переглянути в плані цього дня."}
-                  </p>
+                  <p className="empty-note">{emptyThreadCopy(effectiveScopeType, isLightScope)}</p>
                 ) : (
                   state.messages.map((message) => {
                     const linkedProposals = proposalsByMessageId.get(message.id) ?? [];
@@ -356,14 +429,14 @@ export function PlanningConversationModal(props: PlanningConversationModalProps)
                         className={`planning-message planning-message--${message.role}`}
                       >
                         <p className="planning-message-role">
-                          {message.role === "user" ? "Ти" : "Планувальник"}
+                          {message.role === "user" ? "Ти" : isWeekScope ? "Помічник тижня" : "Планувальник"}
                         </p>
                         <p className="planning-message-content">{message.content}</p>
 
                         {message.role === "assistant" &&
                         linkedProposals.length === 0 &&
                         state.latestAssistantMessageId === message.id ? (
-                          <p className="empty-note">Пропозицій змін зараз немає.</p>
+                          <p className="empty-note">{noProposalCopy(effectiveScopeType)}</p>
                         ) : null}
 
                         {linkedProposals.length > 0 ? (
@@ -375,7 +448,7 @@ export function PlanningConversationModal(props: PlanningConversationModalProps)
                                   onClick={() => props.onApplyAllLatest(message.id)}
                                   disabled={props.busy}
                                 >
-                                  {props.busy ? "Застосування..." : "Застосувати все"}
+                                  {props.busy ? "Застосування..." : isWeekScope ? "Застосувати весь набір" : "Застосувати все"}
                                 </button>
                                 <button
                                   type="button"
@@ -383,10 +456,12 @@ export function PlanningConversationModal(props: PlanningConversationModalProps)
                                   onClick={() => props.onDismissAllLatest(message.id)}
                                   disabled={props.busy}
                                 >
-                                  Відхилити все
+                                  {isWeekScope ? "Відхилити весь набір" : "Відхилити все"}
                                 </button>
                               </div>
-                            ) : null}
+                            ) : (
+                              <p className="empty-note">Старіший набір пропозицій лишився для історії й більше не застосовується.</p>
+                            )}
 
                             {linkedProposals.map((proposal) => {
                               const isActing = props.actingProposalId === proposal.id;
@@ -440,12 +515,12 @@ export function PlanningConversationModal(props: PlanningConversationModalProps)
           {state ? (
             <>
               <label className="planning-compose">
-                Коментар до плану
+                {isWeekScope ? "Коментар до тижня" : "Коментар до плану"}
                 <textarea
                   rows={3}
                   value={draft}
                   onChange={(event) => setDraft(event.target.value)}
-                  placeholder={effectiveScopeType === "week" ? "Наприклад: середа перевантажена, навчання можна посунути на п’ятницю" : "Наприклад: я не встигну все сьогодні, навчання можна на завтра"}
+                  placeholder={isWeekScope ? "Наприклад: середа виглядає напружено, навчання можна посунути на п'ятницю" : "Наприклад: я не встигну все сьогодні, навчання можна на завтра"}
                   disabled={props.busy || voiceState === "transcribing"}
                 />
               </label>
@@ -504,7 +579,7 @@ export function PlanningConversationModal(props: PlanningConversationModalProps)
                   }}
                   disabled={props.busy || voiceState === "transcribing" || !draft.trim()}
                 >
-                  {props.busy ? "Надсилання..." : "Надіслати"}
+                  {props.busy ? "Надсилання..." : isWeekScope ? "Надіслати коментар" : "Надіслати"}
                 </button>
               </div>
             </>

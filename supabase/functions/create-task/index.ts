@@ -1,6 +1,7 @@
-﻿import { createAdminClient } from "../_shared/db.ts";
+import { createAdminClient } from "../_shared/db.ts";
 import { handleOptions, jsonResponse, safeJson } from "../_shared/http.ts";
 import { resolveSessionUser } from "../_shared/session.ts";
+import { syncTaskCalendarAfterMutation } from "../_shared/task-calendar-sync.ts";
 
 type TaskType =
   | "deep_work"
@@ -112,6 +113,8 @@ Deno.serve(async (req) => {
   if (error || !data) {
     return jsonResponse({ ok: false, error: "task_create_failed", message: error?.message ?? null }, 500);
   }
+
+  await syncTaskCalendarAfterMutation(supabase, sessionUser.userId, data.id as string);
 
   return jsonResponse({ ok: true, taskId: data.id });
 });

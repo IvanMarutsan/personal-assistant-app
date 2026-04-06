@@ -1,6 +1,7 @@
-﻿import { createAdminClient } from "../_shared/db.ts";
+import { createAdminClient } from "../_shared/db.ts";
 import { handleOptions, jsonResponse, safeJson } from "../_shared/http.ts";
 import { resolveSessionUser } from "../_shared/session.ts";
+import { cleanupDeletedTaskCalendarSync, type TaskCalendarSyncRow } from "../_shared/task-calendar-sync.ts";
 
 type DeleteTaskBody = {
   taskId?: string;
@@ -27,7 +28,9 @@ Deno.serve(async (req) => {
   const supabase = createAdminClient();
   const { data: task, error: taskError } = await supabase
     .from("tasks")
-    .select("id")
+    .select(
+      "id, user_id, title, details, due_at, scheduled_for, estimated_minutes, calendar_provider, calendar_event_id, calendar_sync_mode, calendar_sync_error"
+    )
     .eq("id", body.taskId)
     .eq("user_id", sessionUser.userId)
     .maybeSingle();
@@ -35,6 +38,8 @@ Deno.serve(async (req) => {
   if (taskError || !task) {
     return jsonResponse({ ok: false, error: "task_not_found" }, 404);
   }
+
+  await cleanupDeletedTaskCalendarSync(supabase, task as TaskCalendarSyncRow);
 
   const { error } = await supabase
     .from("tasks")

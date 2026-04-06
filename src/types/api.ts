@@ -1,4 +1,4 @@
-﻿export type TelegramAuthPayload = {
+export type TelegramAuthPayload = {
   initDataRaw: string;
 };
 
@@ -125,6 +125,8 @@ export type TaskItem = {
   cancel_reason_text?: string | null;
   calendar_provider?: string | null;
   calendar_event_id?: string | null;
+  calendar_sync_mode?: "app_managed" | "manual" | null;
+  calendar_sync_error?: string | null;
   linked_calendar_event?: {
     provider: "google";
     provider_event_id: string;
@@ -171,6 +173,8 @@ export type WorklogContextSummary = {
 export type PlanningSummary = {
   generatedAt: string;
   timezone: string;
+  scopeType: "day" | "week";
+  scopeDate: string;
   rulesVersion: string;
   whatNow: {
     primary: PlanningRecommendation | null;
@@ -220,6 +224,8 @@ export type PlanningSummary = {
     topMovedReasons: Array<{ reason: string; count: number }>;
     worklogs: WorklogContextSummary;
   };
+  weekDays: PlanningConversationScopeDaySummary[];
+  notableDeadlines: PlanningConversationDeadlineSummary[];
   appliedThresholds: {
     plannedTodayOverload: number;
     overdueOverload: number;
@@ -235,10 +241,13 @@ export type PlanningSummary = {
 export type AiAdvisorSummary = {
   generatedAt: string;
   timezone: string;
+  scopeType: "day" | "week";
   model: string | null;
   source: "ai" | "fallback_rules";
   fallbackReason: string | null;
   contextSnapshot: {
+    scopeType: "day" | "week";
+    scopeDate: string;
     currentLocalTime: string;
     quickCommunicationOpenCount: number;
     plannedTodayCount: number;
@@ -249,6 +258,13 @@ export type AiAdvisorSummary = {
     scheduledMissingEstimateCount: number;
     protectedPendingCount: number;
     recurringAtRiskCount: number;
+    calendarDay: {
+      connected: boolean;
+      available: boolean;
+      eventCount: number;
+      busyMinutes: number | null;
+      extraEventCount: number;
+    };
     topMovedReasonsToday: Array<{ reason: string; count: number }>;
     dailyReview: {
       completedTodayCount: number;
@@ -257,6 +273,8 @@ export type AiAdvisorSummary = {
       protectedEssentialsMissedToday: number;
     };
     worklogs: WorklogContextSummary;
+    weekDays: PlanningConversationScopeDaySummary[];
+    notableDeadlines: PlanningConversationDeadlineSummary[];
   };
   advisor: {
     whatMattersMostNow: string;
@@ -414,6 +432,8 @@ export type PlanningConversationState = {
     notableDeadlines: PlanningConversationDeadlineSummary[];
   };
 };
+
+
 
 
 

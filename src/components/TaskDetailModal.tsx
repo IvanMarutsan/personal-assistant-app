@@ -1,4 +1,4 @@
-﻿import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import type { MouseEvent } from "react";
 import type { PlanningFlexibility, ProjectItem, TaskItem, TaskStatus, TaskType } from "../types/api";
 import { moveReasonLabel } from "../lib/reasons";
@@ -12,6 +12,16 @@ type TaskDetailModalProps = {
   projects: ProjectItem[];
   busy: boolean;
   onClose: () => void;
+  createDefaults?: {
+    title?: string;
+    details?: string | null;
+    projectId?: string | null;
+    taskType?: TaskType;
+    dueAt?: string | null;
+    scheduledFor?: string | null;
+    estimatedMinutes?: number | null;
+    planningFlexibility?: PlanningFlexibility | null;
+  };
   onSave: (payload: {
     taskId?: string;
     title: string;
@@ -27,6 +37,9 @@ type TaskDetailModalProps = {
   onAction: (action: TaskActionKind) => void;
   onCreateCalendarEvent: () => void;
   onOpenLinkedCalendarEvent: (url: string) => void;
+  onRetryCalendarSync?: () => void;
+  onDetachCalendarLink?: () => void;
+  calendarSyncNotice?: { tone: "success" | "error" | "info"; message: string } | null;
   initialMode?: TaskModalMode;
   showWorkflowActions?: boolean;
 };
@@ -110,6 +123,75 @@ function formatEstimate(value: number | null | undefined): string {
   return `${value} хв`;
 }
 
+function calendarSyncLabel(task: TaskItem): string | null {
+  if (task.calendar_sync_error) return "??????? ?? Google Calendar ???????? ?????.";
+  if (task.calendar_sync_mode === "app_managed" && task.linked_calendar_event) return "?????????????? ? Google Calendar.";
+  if (task.calendar_sync_mode === "manual" && task.linked_calendar_event) return "????? ?????????? ??????.";
+  if (task.scheduled_for) return "??????? ? Google Calendar ????? ?????.";
+  return null;
+}
+
+function deleteCalendarBehaviorLabel(task: TaskItem): string | null {
+  if (!task.linked_calendar_event) return null;
+  if (task.calendar_sync_mode === "app_managed") {
+    return "Видалення задачі також прибере синхронізовану подію з Google Calendar.";
+  }
+  return "Видалення прибере лише задачу. Подія в календарі лишиться без змін.";
+}
+function canRetryCalendarSync(task: TaskItem): boolean {
+  if (task.calendar_sync_mode === "manual") return false;
+  if (task.status === "cancelled") return false;
+
+  const recoverableManagedLink =
+    task.calendar_sync_mode === "app_managed" && task.calendar_provider === "google" && !!task.calendar_event_id;
+  const recoverableScheduledState =
+    !!task.scheduled_for &&
+    (task.calendar_sync_mode === "app_managed" || !!task.calendar_sync_error || !!task.calendar_event_id || task.calendar_provider === "google");
+
+  return recoverableManagedLink || recoverableScheduledState;
+}
+
+function retryCalendarLabel(task: TaskItem): string {
+  const needsRecreate =
+    task.calendar_sync_mode === "app_managed" &&
+    (!!task.calendar_sync_error || !task.linked_calendar_event || !task.calendar_event_id);
+  return needsRecreate ? "Створити подію заново" : "Пересинхронізувати";
+}
+
+function detachCalendarLabel(task: TaskItem): string | null {
+  if (!task.linked_calendar_event) return null;
+  if (task.calendar_sync_mode === "app_managed") return "Від'єднати і прибрати з Google Calendar";
+  if (task.calendar_provider === "google" || task.calendar_sync_mode === "manual") return "Від'єднати від задачі";
+  return null;
+}
+
+function detachCalendarConfirm(task: TaskItem): string | null {
+  if (!task.linked_calendar_event) return null;
+  if (task.calendar_sync_mode === "app_managed") {
+    return "Від'єднати задачу і прибрати синхронізовану подію з Google Calendar?";
+  }
+  if (task.calendar_provider === "google" || task.calendar_sync_mode === "manual") {
+    return "Від'єднати подію лише в додатку? Подія в Google Calendar лишиться без змін.";
+  }
+  return null;
+}
+
+function calendarSyncStateSummary(task: TaskItem): string | null {
+  if (task.calendar_sync_error) return "\u0417\u0432\u2019\u044f\u0437\u043e\u043a \u0456\u0437 Google Calendar \u043f\u043e\u0442\u0440\u0435\u0431\u0443\u0454 \u0443\u0432\u0430\u0433\u0438.";
+  if (task.calendar_sync_mode === "app_managed" && task.linked_calendar_event) return "\u0421\u0438\u043d\u0445\u0440\u043e\u043d\u0456\u0437\u043e\u0432\u0430\u043d\u043e \u0437 Google Calendar.";
+  if (task.calendar_sync_mode === "manual" && task.linked_calendar_event) return "\u041f\u043e\u0434\u0456\u044e \u043f\u0440\u0438\u0432\u2019\u044f\u0437\u0430\u043d\u043e \u0432\u0440\u0443\u0447\u043d\u0443.";
+  if (task.scheduled_for) return "\u0417\u0432\u2019\u044f\u0437\u043a\u0443 \u0437 Google Calendar \u0437\u0430\u0440\u0430\u0437 \u043d\u0435\u043c\u0430\u0454.";
+  return null;
+}
+
+function calendarSyncActionHint(task: TaskItem): string | null {
+  if (task.calendar_sync_error) return "\u041c\u043e\u0436\u043d\u0430 \u043f\u0435\u0440\u0435\u0441\u0438\u043d\u0445\u0440\u043e\u043d\u0456\u0437\u0443\u0432\u0430\u0442\u0438, \u0441\u0442\u0432\u043e\u0440\u0438\u0442\u0438 \u043f\u043e\u0434\u0456\u044e \u0437\u0430\u043d\u043e\u0432\u043e \u0430\u0431\u043e \u0432\u0456\u0434\u2019\u0454\u0434\u043d\u0430\u0442\u0438 \u0437\u0432\u2019\u044f\u0437\u043e\u043a.";
+  if (task.calendar_sync_mode === "app_managed" && task.linked_calendar_event) return "\u041c\u043e\u0436\u043d\u0430 \u0432\u0456\u0434\u043a\u0440\u0438\u0442\u0438 \u043f\u043e\u0434\u0456\u044e \u0430\u0431\u043e \u0432\u0456\u0434\u2019\u0454\u0434\u043d\u0430\u0442\u0438 \u0437\u0432\u2019\u044f\u0437\u043e\u043a.";
+  if (task.calendar_sync_mode === "manual" && task.linked_calendar_event) return "\u041f\u043e\u0434\u0456\u044f \u043b\u0438\u0448\u0430\u0454\u0442\u044c\u0441\u044f \u0440\u0443\u0447\u043d\u043e\u044e. \u0407\u0457 \u043c\u043e\u0436\u043d\u0430 \u043b\u0438\u0448\u0435 \u0432\u0456\u0434\u2019\u0454\u0434\u043d\u0430\u0442\u0438 \u0432 \u0434\u043e\u0434\u0430\u0442\u043a\u0443.";
+  if (task.scheduled_for) return "\u0417\u0430 \u043f\u043e\u0442\u0440\u0435\u0431\u0438 \u043c\u043e\u0436\u043d\u0430 \u0441\u0442\u0432\u043e\u0440\u0438\u0442\u0438 \u043d\u043e\u0432\u0443 \u043f\u043e\u0434\u0456\u044e \u0430\u0431\u043e \u0432\u0456\u0434\u043d\u043e\u0432\u0438\u0442\u0438 \u0437\u0432\u2019\u044f\u0437\u043e\u043a.";
+  return null;
+}
+
 function timingLabel(task: TaskItem): string {
   const scheduled = task.scheduled_for ? formatLocalDateTime(new Date(task.scheduled_for)) : null;
   const due = task.due_at ? formatLocalDateTime(new Date(task.due_at)) : null;
@@ -141,14 +223,14 @@ export function TaskDetailModal(props: TaskDetailModalProps) {
     if (!props.open) return;
     if (isCreateMode) {
       setEditMode(true);
-      setTitle("");
-      setDetails("");
-      setProjectId("");
-      setTaskType("admin_operational");
-      setScheduledForInput("");
-      setDueAtInput("");
-      setEstimatedMinutesInput("");
-      setPlanningFlexibility(null);
+      setTitle(props.createDefaults?.title ?? "");
+      setDetails(props.createDefaults?.details ?? "");
+      setProjectId(props.createDefaults?.projectId ?? "");
+      setTaskType(props.createDefaults?.taskType ?? "admin_operational");
+      setScheduledForInput(toLocalInput(props.createDefaults?.scheduledFor ?? null));
+      setDueAtInput(toLocalInput(props.createDefaults?.dueAt ?? null));
+      setEstimatedMinutesInput(props.createDefaults?.estimatedMinutes ? String(props.createDefaults.estimatedMinutes) : "");
+      setPlanningFlexibility(props.createDefaults?.planningFlexibility ?? null);
       return;
     }
 
@@ -162,7 +244,7 @@ export function TaskDetailModal(props: TaskDetailModalProps) {
     setDueAtInput(toLocalInput(props.task.due_at));
     setEstimatedMinutesInput(props.task.estimated_minutes ? String(props.task.estimated_minutes) : "");
     setPlanningFlexibility(props.task.planning_flexibility ?? null);
-  }, [props.open, props.task?.id, initialMode, isCreateMode, props.task]);
+  }, [props.open, props.task?.id, initialMode, isCreateMode, props.task, props.createDefaults]);
 
   useEffect(() => {
     if (!props.open) return;
@@ -289,26 +371,68 @@ export function TaskDetailModal(props: TaskDetailModalProps) {
               <p className="inbox-meta">Планування: {task.scheduled_for ? "Заплановано" : "Беклог"}</p>
               <p className="inbox-meta">Гнучкість у плані: {planningFlexibilityLabel(task.planning_flexibility)}</p>
               <p className="inbox-meta">Час: {timingLabel(task)}</p>
+              {calendarSyncStateSummary(task) ? <p className="inbox-meta">{calendarSyncStateSummary(task)}</p> : null}
+              {calendarSyncActionHint(task) ? <p className="inbox-meta">{calendarSyncActionHint(task)}</p> : null}
+              {task.calendar_sync_mode === "app_managed" ? (
+                <>
+                  <p className="inbox-meta">?????????? ????? ? Google Calendar ???????? ? ?????? ??????.</p>
+                  <p className="inbox-meta">????? ?????????? ?? ???????? ?????????????? ????? ???????????? ? Google Calendar.</p>
+                </>
+              ) : null}
+              {props.calendarSyncNotice ? (
+                <p className={props.calendarSyncNotice.tone === "error" ? "error-note" : "inbox-meta"}>
+                  {props.calendarSyncNotice.message}
+                </p>
+              ) : null}
+              {!task.linked_calendar_event && props.onRetryCalendarSync && canRetryCalendarSync(task) ? (
+                <div className="project-group">
+                  <div className="inbox-actions">
+                    <button type="button" className="ghost" onClick={props.onRetryCalendarSync} disabled={props.busy}>
+                      {retryCalendarLabel(task)}
+                    </button>
+                  </div>
+                </div>
+              ) : null}
               {task.linked_calendar_event ? (
                 <div className="project-group">
-                  <p className="inbox-meta">Пов'язано з Google Calendar: так</p>
+                  <p className="inbox-meta">????????? ? Google Calendar: ???</p>
                   <p className="inbox-meta">
-                    Подія: {task.linked_calendar_event.title} · {" "}
+                    ?????: {task.linked_calendar_event.title} ? {" "}
                     {formatLocalDateTime(new Date(task.linked_calendar_event.starts_at))}
                   </p>
-                  <p className="inbox-meta">Видалення прибере лише задачу. Подія в календарі лишиться без змін.</p>
-                  {task.linked_calendar_event.provider_event_url ? (
-                    <div className="inbox-actions">
+                  <p className="inbox-meta">{deleteCalendarBehaviorLabel(task)}</p>
+                  <div className="inbox-actions">
+                    {task.linked_calendar_event.provider_event_url ? (
                       <button
                         type="button"
                         className="ghost"
                         onClick={() => props.onOpenLinkedCalendarEvent(task.linked_calendar_event!.provider_event_url!)}
                         disabled={props.busy}
                       >
-                        Переглянути в Google Calendar
+                        ??????????? ? Google Calendar
                       </button>
-                    </div>
-                  ) : null}
+                    ) : null}
+                    {props.onRetryCalendarSync && canRetryCalendarSync(task) ? (
+                      <button type="button" className="ghost" onClick={props.onRetryCalendarSync} disabled={props.busy}>
+                        {retryCalendarLabel(task)}
+                      </button>
+                    ) : null}
+                    {props.onDetachCalendarLink && detachCalendarLabel(task) ? (
+                      <button
+                        type="button"
+                        className="ghost"
+                        onClick={() => {
+                          const confirmText = detachCalendarConfirm(task);
+                          if (!confirmText) return;
+                          const confirmed = window.confirm(confirmText);
+                          if (confirmed) props.onDetachCalendarLink?.();
+                        }}
+                        disabled={props.busy}
+                      >
+                        {detachCalendarLabel(task)}
+                      </button>
+                    ) : null}
+                  </div>
                 </div>
               ) : null}
               {task.status === "cancelled" ? (
@@ -335,8 +459,18 @@ export function TaskDetailModal(props: TaskDetailModalProps) {
                 ) : null}
                 {showWorkflowActions ? (
                   <>
-                    <button type="button" onClick={props.onCreateCalendarEvent} disabled={props.busy || task.status === "cancelled"}>
-                      {task.linked_calendar_event ? "Створити ще одну подію" : "У Google Calendar"}
+                    <button
+                      type="button"
+                      onClick={() => {
+                        if (task.linked_calendar_event?.provider_event_url) {
+                          props.onOpenLinkedCalendarEvent(task.linked_calendar_event.provider_event_url);
+                          return;
+                        }
+                        props.onCreateCalendarEvent();
+                      }}
+                      disabled={props.busy || task.status === "cancelled"}
+                    >
+                      {task.linked_calendar_event ? "Відкрити в Google Calendar" : "У Google Calendar"}
                     </button>
                     {task.status !== "done" ? (
                       <button type="button" onClick={() => props.onAction("done")} disabled={props.busy}>
@@ -516,3 +650,12 @@ export function TaskDetailModal(props: TaskDetailModalProps) {
     </div>
   );
 }
+
+
+
+
+
+
+
+
+

@@ -1,8 +1,8 @@
-import { DateTime } from "npm:luxon@3.6.1";
+﻿import { DateTime } from "npm:luxon@3.6.1";
 import { createAdminClient } from "../_shared/db.ts";
 import { handleOptions, jsonResponse } from "../_shared/http.ts";
 import { planningThresholds } from "../_shared/planning-config.ts";
-import { buildCalendarDayContext, validateScopeDate } from "../_shared/planning-conversation.ts";
+import { buildCalendarDayContext, buildPlanningContext, validateScopeDate } from "../_shared/planning-conversation.ts";
 import { resolveSessionUser } from "../_shared/session.ts";
 
 type TaskRow = {
@@ -120,6 +120,7 @@ type AdvisorResponse = {
   ok: true;
   generatedAt: string;
   timezone: string;
+  scopeType: "day" | "week";
   model: string | null;
   source: "ai" | "fallback_rules";
   fallbackReason: string | null;
@@ -155,6 +156,19 @@ type AdvisorResponse = {
       topProjects: Array<{ name: string; count: number }>;
       sourceCounts: Array<{ source: string; count: number }>;
     };
+    weekDays: Array<{
+      scopeDate: string;
+      plannedCount: number;
+      dueWithoutPlannedStartCount: number;
+      scheduledKnownEstimateMinutes: number;
+      scheduledMissingEstimateCount: number;
+      calendarEventCount: number;
+      calendarBusyMinutes: number | null;
+      worklogCount: number;
+      essentialScheduledCount: number;
+      flexibleScheduledCount: number;
+    }>;
+    notableDeadlines: Array<{ taskId: string; title: string; projectName: string | null; dueAt: string }>;
   };
   advisor: AiAdvisorPayload;
 };
@@ -462,11 +476,11 @@ async function generateAiAdvisor(input: {
       {
         role: "system",
         content:
-          "Ти планувальний радник лише для читання в застосунку персонального виконання. Ніколи не пропонуй автоматичних змін задач. Використовуй лише наданий контекст. Чітко розрізняй три категорії: задачі, заплановані на цей день; задачі з дедлайном на цей день без планованого старту; беклог без планового старту. Спирайся на наявні оцінки тривалості, але не вигадуй їх. Не називай беклог частиною плану дня. Відповідай коротко, практично й українською мовою.",
+          "Ти планувальний радник лише для читання в застосунку персонального виконання. Ніколи не пропонуй автоматичних змін задач. Використовуй лише наданий контекст. Якщо scopeType = day, чітко розрізняй задачі, заплановані на цей день; задачі з дедлайном на цей день без планованого старту; і беклог без планового старту. Якщо scopeType = week, спирайся на тижневі підсумки, тиск окремих днів, дедлайни в межах тижня, беклог і read-only сигнали календаря та worklogs. Спирайся на наявні оцінки тривалості, але не вигадуй їх. Не називай беклог частиною вже сформованого плану. Відповідай коротко, практично, обережно й українською мовою.",
       },
       {
         role: "user",
-        content: `Поверни лише строгий JSON з ключами whatMattersMostNow, suggestedNextAction, suggestedDefer, protectedEssentialsWarning, explanation, evidence. Усі значення для користувача мають бути українською мовою. Якщо в контексті є signals про known load або missing estimates, використовуй їх лише як grounded summary, без вигадування нових правил. Контекст: ${JSON.stringify(
+        content: `Поверни лише строгий JSON з ключами whatMattersMostNow, suggestedNextAction, suggestedDefer, protectedEssentialsWarning, explanation, evidence. Усі значення для користувача мають бути українською мовою. Якщо в контексті є signals про known load, missing estimates, calendar load або worklogs, використовуй їх лише як grounded summary, без вигадування нових правил чи автоматичних рішень. Контекст: ${JSON.stringify(
           input.context
         )}`
       }
@@ -577,7 +591,179 @@ Deno.serve(async (req) => {
   const now = DateTime.now().setZone(timezone);
   const url = new URL(req.url);
   const todayStart = now.startOf("day");
+  const scopeType = url.searchParams.get("scopeType") === "week" ? "week" : "day";
   const scopeDate = validateScopeDate(url.searchParams.get("scopeDate")) ?? todayStart.toFormat("yyyy-MM-dd");
+
+  if (scopeType === "week") {
+    const context = await buildPlanningContext(supabase, sessionUser.userId, "week", scopeDate);
+    if (context.scopeType !== "week") {
+      return jsonResponse({ ok: false, error: "invalid_scope_context" }, 500);
+    }
+
+    const weekStart = DateTime.fromISO(context.scopeDate, { zone: timezone }).startOf("day");
+    const weekEnd = weekStart.plus({ days: 6 }).endOf("day");
+    const weekLabel = `${weekStart.setLocale("uk").toFormat("d LLL")} - ${weekEnd.setLocale("uk").toFormat("d LLL")}`;
+    const overloadedDays = context.weekDays.filter(
+      (day) =>
+        day.dueWithoutPlannedStartCount > 0 ||
+        day.plannedCount >= planningThresholds.plannedTodayOverload ||
+        ((day.scheduledKnownEstimateMinutes + (day.calendarBusyMinutes ?? 0)) >= 480) ||
+        (day.scheduledMissingEstimateCount >= 2 && day.plannedCount >= 2)
+    );
+    const lighterDays = context.weekDays.filter(
+      (day) => day.plannedCount === 0 && day.dueWithoutPlannedStartCount === 0 && (day.calendarBusyMinutes ?? 0) < 180
+    );
+    const nextAction = context.notableDeadlines[0]
+      ? context.dueInWeekWithoutPlannedStart.find((task) => task.id === context.notableDeadlines[0].taskId) ?? null
+      : context.scheduledInWeek.find((task) => task.isProtectedEssential || task.planningFlexibility === "essential") ?? context.scheduledInWeek[0] ?? null;
+    const deferCandidate = context.scheduledInWeek.find((task) => task.planningFlexibility === "flexible") ?? context.relevantBacklog[0] ?? null;
+    const calendarWeek = {
+      connected: context.weekDays.some((day) => day.calendarEventCount > 0 || day.calendarBusyMinutes !== null),
+      available: context.weekDays.some((day) => day.calendarBusyMinutes !== null),
+      eventCount: context.weekDays.reduce((sum, day) => sum + day.calendarEventCount, 0),
+      busyMinutes: context.weekDays.reduce((sum, day) => sum + (day.calendarBusyMinutes ?? 0), 0),
+      extraEventCount: 0
+    };
+    const fallback = {
+      whatMattersMostNow:
+        overloadedDays.length > 0
+          ? `У тижні ${weekLabel} є щонайменше ${overloadedDays.length} напружених днів, тож спочатку варто перевірити їх вручну.`
+          : `Тиждень ${weekLabel} виглядає відносно рівним, тож можна спокійно уточнити кілька слабких місць у плані.`,
+      suggestedNextAction: {
+        taskId: nextAction?.id ?? null,
+        title: nextAction?.title ?? (overloadedDays[0] ? `Переглянути ${DateTime.fromISO(overloadedDays[0].scopeDate, { zone: timezone }).setLocale("uk").toFormat("cccc")}` : "Уточнити план тижня"),
+        reason: context.notableDeadlines[0]
+          ? `У тижні є помітний дедлайн, тож краще зафіксувати його місце в плані раніше.`
+          : overloadedDays[0]
+            ? `На цьому дні вже сходяться план, дедлайни без плану або календарне навантаження.`
+            : `Уточни найважливішу задачу тижня й перевір, чи їй вистачає явного слоту.`
+      },
+      suggestedDefer: {
+        taskId: deferCandidate?.id ?? null,
+        title: deferCandidate?.title ?? (lighterDays[0] ? `Тримати ${DateTime.fromISO(lighterDays[0].scopeDate, { zone: timezone }).setLocale("uk").toFormat("cccc")} легшим` : "Не перевантажувати тиждень"),
+        reason: deferCandidate
+          ? `Ця задача виглядає гнучкішою, тож її простіше посунути вручну, якщо тиждень виявиться занадто щільним.`
+          : `Якщо тиждень ущільниться, краще посунути менш критичні пункти, а не стискати всі дні однаково.`
+      },
+      protectedEssentialsWarning: {
+        hasWarning: context.scheduledInWeek.some((task) => task.isProtectedEssential) && overloadedDays.length > 0,
+        message:
+          context.scheduledInWeek.some((task) => task.isProtectedEssential) && overloadedDays.length > 0
+            ? "У тижні вже є важливі захищені задачі, тож розвантаження краще робити за рахунок гнучкіших пунктів."
+            : "Критичного тиску на захищені задачі зараз не видно."
+      },
+      explanation: [
+        `Заплановано в тижні: ${context.plannedCount}.`,
+        context.dueWithoutPlannedStartCount > 0 ? `Є дедлайни без плану: ${context.dueWithoutPlannedStartCount}.` : null,
+        context.scheduledMissingEstimateCount > 0 ? `Без оцінки лишаються ${context.scheduledMissingEstimateCount} задач.` : null,
+        context.worklogs.count > 0 ? `Контекстних записів за тиждень: ${context.worklogs.count}.` : null
+      ].filter((item): item is string => !!item).join(" "),
+      evidence: [
+        `У плані тижня: ${context.plannedCount}`,
+        `Беклог: ${context.backlogCount}`,
+        `Оцінене навантаження: ${context.scheduledKnownEstimateMinutes} хв`,
+        overloadedDays[0] ? `Найнапруженіший день: ${DateTime.fromISO(overloadedDays[0].scopeDate, { zone: timezone }).setLocale("uk").toFormat("cccc d LLL")}` : `Легших днів: ${lighterDays.length}`
+      ]
+    } satisfies AiAdvisorPayload;
+    const taskLookup = new Map(
+      [...context.scheduledInWeek, ...context.dueInWeekWithoutPlannedStart, ...context.relevantBacklog].map((task) => [task.id, { title: task.title } as TaskRow])
+    );
+    const aiContext = {
+      scopeType: "week",
+      generatedAt: now.toUTC().toISO(),
+      timezone,
+      scopeDate: context.scopeDate,
+      weekRange: {
+        start: weekStart.toISODate(),
+        end: weekEnd.toISODate(),
+        label: weekLabel
+      },
+      planningSemantics: {
+        note: "Тиждень оцінюється як набір окремих днів від понеділка до неділі. Беклог не вважається вже запланованою частиною тижня. planning_flexibility = essential означає, що задачу небажано рухати без потреби; flexible означає, що її легше посунути вручну.",
+        suggestedPrimaryTaskId: nextAction?.id ?? null,
+        suggestedDeferTaskId: deferCandidate?.id ?? null
+      },
+      weekTotals: {
+        plannedCount: context.plannedCount,
+        dueWithoutPlannedStartCount: context.dueWithoutPlannedStartCount,
+        backlogCount: context.backlogCount,
+        scheduledKnownEstimateMinutes: context.scheduledKnownEstimateMinutes,
+        scheduledMissingEstimateCount: context.scheduledMissingEstimateCount
+      },
+      calendarWeek,
+      worklogs: context.worklogs,
+      weekDays: context.weekDays,
+      notableDeadlines: context.notableDeadlines.slice(0, 8),
+      tasks: {
+        scheduledInWeek: context.scheduledInWeek.slice(0, 20),
+        dueInWeekWithoutPlannedStart: context.dueInWeekWithoutPlannedStart.slice(0, 20),
+        relevantBacklog: context.relevantBacklog.slice(0, 20)
+      }
+    };
+    const openAiApiKey = Deno.env.get("OPENAI_API_KEY");
+    const model = Deno.env.get("OPENAI_MODEL") ?? "gpt-4.1-mini";
+    let source: AdvisorResponse["source"] = "fallback_rules";
+    let fallbackReason: string | null = "openai_not_configured";
+    let advisor = fallback;
+
+    if (openAiApiKey) {
+      try {
+        const aiPayload = await generateAiAdvisor({
+          model,
+          apiKey: openAiApiKey,
+          context: aiContext,
+          taskLookup,
+          fallback
+        });
+        if (aiPayload) {
+          source = "ai";
+          fallbackReason = null;
+          advisor = aiPayload;
+        } else {
+          fallbackReason = "invalid_ai_response";
+        }
+      } catch {
+        fallbackReason = "ai_request_failed";
+      }
+    }
+
+    return jsonResponse({
+      ok: true,
+      generatedAt: now.toUTC().toISO(),
+      timezone,
+      scopeType: "week",
+      model: source === "ai" ? model : null,
+      source,
+      fallbackReason,
+      contextSnapshot: {
+        scopeType: "week",
+        scopeDate: context.scopeDate,
+        currentLocalTime: now.toISO(),
+        quickCommunicationOpenCount: 0,
+        plannedTodayCount: context.plannedCount,
+        dueTodayWithoutPlannedStartCount: context.dueWithoutPlannedStartCount,
+        backlogCount: context.backlogCount,
+        overduePlannedCount: overloadedDays.length,
+        scheduledKnownEstimateMinutes: context.scheduledKnownEstimateMinutes,
+        scheduledMissingEstimateCount: context.scheduledMissingEstimateCount,
+        protectedPendingCount: context.weekDays.reduce((sum, day) => sum + day.essentialScheduledCount, 0),
+        recurringAtRiskCount: 0,
+        calendarDay: calendarWeek,
+        topMovedReasonsToday: [],
+        dailyReview: {
+          completedTodayCount: 0,
+          movedTodayCount: 0,
+          cancelledTodayCount: 0,
+          protectedEssentialsMissedToday: 0
+        },
+        worklogs: context.worklogs,
+        weekDays: context.weekDays,
+        notableDeadlines: context.notableDeadlines
+      },
+      advisor
+    } satisfies AdvisorResponse);
+  }
+
   const dayStart = DateTime.fromISO(scopeDate, { zone: timezone }).startOf("day");
   const dayEnd = dayStart.endOf("day");
   const sevenDaysAgo = dayStart.minus({ days: 7 }).startOf("day");
@@ -866,10 +1052,12 @@ Deno.serve(async (req) => {
     ok: true,
     generatedAt: now.toUTC().toISO(),
     timezone,
+    scopeType: "day",
     model: source === "ai" ? model : null,
     source,
     fallbackReason,
     contextSnapshot: {
+      scopeType: "day",
       scopeDate,
       currentLocalTime: now.toISO(),
       quickCommunicationOpenCount: quickCommunicationOpen.length,
@@ -890,11 +1078,18 @@ Deno.serve(async (req) => {
       },
       topMovedReasonsToday,
       dailyReview,
-      worklogs: worklogSummary
+      worklogs: worklogSummary,
+      weekDays: [],
+      notableDeadlines: []
     },
     advisor
   } satisfies AdvisorResponse);
 });
+
+
+
+
+
 
 
 

@@ -1,4 +1,5 @@
 ﻿import { useEffect, useMemo, useState } from "react";
+import { NoteDetailModal } from "../../components/NoteDetailModal";
 import { PlanningConversationModal } from "../../components/PlanningConversationModal";
 import { TaskDetailModal } from "../../components/TaskDetailModal";
 import { useDiagnostics } from "../../lib/diagnostics";
@@ -16,6 +17,9 @@ import {
 } from "../../lib/taskTiming";
 import {
   ApiError,
+  createNote,
+  createTask,
+  detachTaskCalendarLink as detachTaskCalendarLinkRequest,
   getAiAdvisor,
   getGoogleCalendarStatus,
   getGoogleCalendarUpcoming,
@@ -23,6 +27,7 @@ import {
   getPlanningConversation,
   getProjects,
   getTasks,
+  retryTaskCalendarSync as retryTaskCalendarSyncRequest,
   sendPlanningConversationTurn,
   transcribePlanningVoice,
   updatePlanningProposal,
@@ -174,6 +179,12 @@ function formatScopeDateLabel(value: string): string {
   return new Intl.DateTimeFormat("uk-UA", { weekday: "long", day: "numeric", month: "long" }).format(parsed);
 }
 
+function defaultScheduledForForSelectedDay(input: { scopeDate: string; isSelectedToday: boolean }): string | null {
+  if (input.isSelectedToday) return null;
+  const selected = parseScopeDateLocal(input.scopeDate);
+  selected.setHours(9, 0, 0, 0);
+  return selected.toISOString();
+}
 function formatKnownLoad(minutes: number): string {
   if (minutes <= 0) return "Немає відомого навантаження";
   const formatted = formatTaskEstimate(minutes);
@@ -189,6 +200,52 @@ function loadCoverageLine(input: { knownMinutes: number; missingCount: number; p
     return `Відоме навантаження: ${formatKnownLoad(input.knownMinutes)}. Без оцінки лишаються ${input.missingCount} задач.`;
   }
   return `Відоме навантаження запланованого дня: ${formatKnownLoad(input.knownMinutes)}.`;
+}
+
+function formatWeekRangeLabel(scopeDate: string): string {
+  const start = parseScopeDateLocal(scopeDate);
+  const end = new Date(start);
+  end.setDate(end.getDate() + 6);
+  return `${new Intl.DateTimeFormat("uk-UA", { day: "numeric", month: "long" }).format(start)} - ${new Intl.DateTimeFormat("uk-UA", { day: "numeric", month: "long" }).format(end)}`;
+}
+
+function weekLoadCoverageLine(input: { knownMinutes: number; missingCount: number; plannedCount: number }): string {
+  if (input.plannedCount === 0) return "На цей тиждень ще немає задач із планованим стартом.";
+  if (input.knownMinutes <= 0 && input.missingCount > 0) {
+    return `Оцінок для тижневого плану ще немає. Без оцінки лишаються ${input.missingCount} задач.`;
+  }
+  if (input.missingCount > 0) {
+    return `Відоме навантаження тижня: ${formatKnownLoad(input.knownMinutes)}. Без оцінки лишаються ${input.missingCount} задач.`;
+  }
+  return `Відоме навантаження тижня: ${formatKnownLoad(input.knownMinutes)}.`;
+}
+
+function weekDayPressureLabel(input: {
+  plannedCount: number;
+  dueWithoutPlannedStartCount: number;
+  scheduledKnownEstimateMinutes: number;
+  calendarBusyMinutes: number | null;
+  scheduledMissingEstimateCount: number;
+}): string {
+  const loadScore = input.scheduledKnownEstimateMinutes + (input.calendarBusyMinutes ?? 0);
+  if (input.dueWithoutPlannedStartCount > 0 || loadScore >= 480 || input.plannedCount >= 5) return "Напруженіше";
+  if (input.plannedCount === 0 && input.dueWithoutPlannedStartCount === 0 && loadScore < 180) return "Легше";
+  if (input.scheduledMissingEstimateCount > 0) return "Потрібне уточнення";
+  return "Рівно";
+}
+
+function formatWeekDaySummary(day: PlanningSummary["weekDays"][number]): string {
+  const dayLabel = formatScopeDateLabel(day.scopeDate);
+  const parts = [
+    `${dayLabel}: ${weekDayPressureLabel(day)}`,
+    `план ${day.plannedCount}`,
+    `дедлайни без плану ${day.dueWithoutPlannedStartCount}`
+  ];
+  if (day.scheduledKnownEstimateMinutes > 0) parts.push(`оцінено ${formatTaskEstimate(day.scheduledKnownEstimateMinutes)}`);
+  if (day.calendarEventCount > 0) parts.push(`календар ${day.calendarEventCount}`);
+  if (day.worklogCount > 0) parts.push(`контекст ${day.worklogCount}`);
+  if (day.scheduledMissingEstimateCount > 0) parts.push(`без оцінки ${day.scheduledMissingEstimateCount}`);
+  return parts.join(" · ");
 }
 
 function worklogSourceLabel(value: string): string {
@@ -217,14 +274,31 @@ function needsPlanningTouch(task: TaskItem): boolean {
   return !task.due_at || !task.estimated_minutes;
 }
 
+type CalendarNotice = {
+  tone: "success" | "error" | "info";
+  message: string;
+};
+
+function calendarLinkHint(task: TaskItem): string | null {
+  if (task.calendar_sync_error) return "Google Calendar: \u043f\u043e\u0442\u0440\u0456\u0431\u043d\u0430 \u0443\u0432\u0430\u0433\u0430";
+  if (task.calendar_sync_mode === "app_managed" && task.linked_calendar_event) return "Google Calendar: \u0441\u0438\u043d\u0445\u0440\u043e\u043d\u0456\u0437\u043e\u0432\u0430\u043d\u043e";
+  if (task.calendar_sync_mode === "manual" && task.linked_calendar_event) return "Google Calendar: \u0440\u0443\u0447\u043d\u0438\u0439 \u0437\u0432\u2019\u044f\u0437\u043e\u043a";
+  return null;
+}
+
 export function TodayPage() {
   const [items, setItems] = useState<TaskItem[]>([]);
   const [projects, setProjects] = useState<ProjectItem[]>([]);
   const [planning, setPlanning] = useState<PlanningSummary | null>(null);
+  const [weekPlanning, setWeekPlanning] = useState<PlanningSummary | null>(null);
   const [aiAdvisor, setAiAdvisor] = useState<AiAdvisorSummary | null>(null);
+  const [weekAiAdvisor, setWeekAiAdvisor] = useState<AiAdvisorSummary | null>(null);
   const [calendarStatus, setCalendarStatus] = useState<GoogleCalendarStatus | null>(null);
   const [calendarUpcoming, setCalendarUpcoming] = useState<GoogleCalendarEventItem[]>([]);
   const [activeTask, setActiveTask] = useState<TaskItem | null>(null);
+  const [taskModalMode, setTaskModalMode] = useState<"edit" | "create">("edit");
+  const [noteCreateOpen, setNoteCreateOpen] = useState(false);
+  const [noteCreating, setNoteCreating] = useState(false);
   const [planningConversationOpen, setPlanningConversationOpen] = useState(false);
   const [planningConversation, setPlanningConversation] = useState<PlanningConversationState | null>(null);
   const [planningConversationBusy, setPlanningConversationBusy] = useState(false);
@@ -234,6 +308,7 @@ export function TodayPage() {
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
   const [workingTaskId, setWorkingTaskId] = useState<string | null>(null);
+  const [calendarNotice, setCalendarNotice] = useState<CalendarNotice | null>(null);
   const diagnostics = useDiagnostics();
 
   const sessionToken = localStorage.getItem(SESSION_KEY) ?? "";
@@ -243,7 +318,9 @@ export function TodayPage() {
       setItems([]);
       setProjects([]);
       setPlanning(null);
+      setWeekPlanning(null);
       setAiAdvisor(null);
+      setWeekAiAdvisor(null);
       setCalendarStatus(null);
       setCalendarUpcoming([]);
       return;
@@ -254,11 +331,13 @@ export function TodayPage() {
     diagnostics.trackAction("load_today", { route: "/today" });
     const errors: string[] = [];
 
-    const [tasksResult, projectsResult, planningResult, aiResult, calendarStatusResult, calendarUpcomingResult] = await Promise.allSettled([
+    const [tasksResult, projectsResult, planningResult, weekPlanningResult, aiResult, weekAiResult, calendarStatusResult, calendarUpcomingResult] = await Promise.allSettled([
       getTasks(sessionToken),
       getProjects(sessionToken),
-      getPlanningAssistant(sessionToken, selectedScopeDate),
-      getAiAdvisor(sessionToken, selectedScopeDate),
+      getPlanningAssistant(sessionToken, selectedScopeDate, "day"),
+      getPlanningAssistant(sessionToken, selectedWeekScopeDate, "week"),
+      getAiAdvisor(sessionToken, selectedScopeDate, "day"),
+      getAiAdvisor(sessionToken, selectedWeekScopeDate, "week"),
       getGoogleCalendarStatus(sessionToken),
       getGoogleCalendarUpcoming(sessionToken)
     ]);
@@ -306,6 +385,13 @@ export function TodayPage() {
       setPlanning(null);
     }
 
+    if (weekPlanningResult.status === "fulfilled") {
+      setWeekPlanning(weekPlanningResult.value);
+    } else {
+      setWeekPlanning(null);
+      errors.push("Не вдалося завантажити тижневий план.");
+    }
+
     if (aiResult.status === "fulfilled") {
       setAiAdvisor(aiResult.value);
       diagnostics.setScreenDataSource(
@@ -323,6 +409,12 @@ export function TodayPage() {
         });
       }
       setAiAdvisor(null);
+    }
+
+    if (weekAiResult.status === "fulfilled") {
+      setWeekAiAdvisor(weekAiResult.value);
+    } else {
+      setWeekAiAdvisor(null);
     }
 
     if (calendarStatusResult.status === "fulfilled") {
@@ -351,6 +443,7 @@ export function TodayPage() {
   const selectedDayEnd = useMemo(() => endOfToday(selectedDayStart), [selectedDayStart]);
   const selectedDayLabel = useMemo(() => formatScopeDateLabel(selectedScopeDate), [selectedScopeDate]);
   const selectedWeekScopeDate = useMemo(() => toWeekScopeDate(selectedDayStart), [selectedDayStart]);
+  const selectedWeekLabel = useMemo(() => formatWeekRangeLabel(selectedWeekScopeDate), [selectedWeekScopeDate]);
   const isSelectedToday = selectedScopeDate === todayScopeDate;
   const scopeDate = selectedScopeDate;
 
@@ -434,6 +527,101 @@ export function TodayPage() {
     });
   }, [calendarUpcoming, selectedDayEnd]);
 
+  const todayTaskCreateDefaults = useMemo(
+    () => ({
+      scheduledFor: defaultScheduledForForSelectedDay({
+        scopeDate: selectedScopeDate,
+        isSelectedToday
+      })
+    }),
+    [selectedScopeDate, isSelectedToday]
+  );
+
+  async function createTaskFromToday(payload: {
+    title: string;
+    details: string;
+    projectId: string | null;
+    taskType: TaskType;
+    dueAt: string | null;
+    scheduledFor: string | null;
+    estimatedMinutes: number | null;
+    planningFlexibility: TaskItem["planning_flexibility"];
+  }): Promise<boolean> {
+    if (!sessionToken) {
+      setError("Спочатку авторизуйся в Інбоксі.");
+      return false;
+    }
+
+    setWorkingTaskId("today_create_task");
+    setError(null);
+    diagnostics.trackAction("create_task_from_today", { scopeDate: selectedScopeDate });
+
+    try {
+      await createTask({
+        sessionToken,
+        title: payload.title,
+        details: payload.details,
+        projectId: payload.projectId,
+        taskType: payload.taskType,
+        dueAt: payload.dueAt,
+        scheduledFor: payload.scheduledFor,
+        estimatedMinutes: payload.estimatedMinutes,
+        planningFlexibility: payload.planningFlexibility
+      });
+      await loadToday();
+      return true;
+    } catch (saveError) {
+      if (saveError instanceof ApiError) {
+        diagnostics.trackFailure({
+          path: saveError.path,
+          status: saveError.status,
+          code: saveError.code,
+          message: saveError.message,
+          details: saveError.details
+        });
+      }
+      setError(saveError instanceof Error ? saveError.message : "Не вдалося створити задачу");
+      return false;
+    } finally {
+      setWorkingTaskId(null);
+    }
+  }
+
+  async function createNoteFromToday(payload: { title: string; body: string; projectId: string | null }): Promise<boolean> {
+    if (!sessionToken) {
+      setError("Спочатку авторизуйся в Інбоксі.");
+      return false;
+    }
+
+    setNoteCreating(true);
+    setError(null);
+    diagnostics.trackAction("create_note_from_today", { scopeDate: selectedScopeDate });
+
+    try {
+      await createNote({
+        sessionToken,
+        title: payload.title || null,
+        body: payload.body,
+        projectId: payload.projectId
+      });
+      await loadToday();
+      return true;
+    } catch (saveError) {
+      if (saveError instanceof ApiError) {
+        diagnostics.trackFailure({
+          path: saveError.path,
+          status: saveError.status,
+          code: saveError.code,
+          message: saveError.message,
+          details: saveError.details
+        });
+      }
+      setError(saveError instanceof Error ? saveError.message : "Не вдалося створити нотатку");
+      return false;
+    } finally {
+      setNoteCreating(false);
+    }
+  }
   async function saveTaskUpdate(task: TaskItem, patch: {
     scheduledFor?: string | null;
     dueAt?: string | null;
@@ -481,6 +669,70 @@ export function TodayPage() {
       }
       setError(saveError instanceof Error ? saveError.message : "Не вдалося оновити задачу");
       return false;
+    } finally {
+      setWorkingTaskId(null);
+    }
+  }
+
+  async function retryActiveTaskCalendarSync(task: TaskItem) {
+    if (!sessionToken) return;
+
+    setWorkingTaskId(task.id);
+    setError(null);
+    diagnostics.trackAction("retry_task_calendar_sync", { taskId: task.id, route: "/today" });
+
+    try {
+      await retryTaskCalendarSyncRequest({ sessionToken, taskId: task.id });
+      setCalendarNotice({
+        tone: "success",
+        message: task.calendar_sync_error || !task.linked_calendar_event || !task.calendar_event_id ? "\u041f\u043e\u0434\u0456\u044e \u0432 Google Calendar \u0432\u0456\u0434\u043d\u043e\u0432\u043b\u0435\u043d\u043e." : "\u0421\u0438\u043d\u0445\u0440\u043e\u043d\u0456\u0437\u0430\u0446\u0456\u044e \u0437 \u043a\u0430\u043b\u0435\u043d\u0434\u0430\u0440\u0435\u043c \u043e\u043d\u043e\u0432\u043b\u0435\u043d\u043e."
+      });
+      await loadToday();
+    } catch (retryError) {
+      if (retryError instanceof ApiError) {
+        diagnostics.trackFailure({
+          path: retryError.path,
+          status: retryError.status,
+          code: retryError.code,
+          message: retryError.message,
+          details: retryError.details
+        });
+      }
+      setError(retryError instanceof Error ? retryError.message : "Не вдалося пересинхронізувати задачу");
+    } finally {
+      setWorkingTaskId(null);
+    }
+  }
+
+  async function detachActiveTaskCalendarLink(task: TaskItem) {
+    if (!sessionToken) {
+      setError("???????? ??????????? ? ???????.");
+      return;
+    }
+
+    setWorkingTaskId(task.id);
+    setError(null);
+    diagnostics.trackAction("detach_task_calendar_link", { taskId: task.id, route: "/today" });
+
+    try {
+      await detachTaskCalendarLinkRequest({ sessionToken, taskId: task.id });
+      setCalendarNotice({
+        tone: "success",
+        message: task.calendar_sync_mode === "app_managed" ? "\u0417\u0432\u2019\u044f\u0437\u043e\u043a \u0456\u0437 Google Calendar \u043f\u0440\u0438\u0431\u0440\u0430\u043d\u043e." : "\u041f\u043e\u0434\u0456\u044e \u0432\u0456\u0434\u2019\u0454\u0434\u043d\u0430\u043d\u043e \u0432\u0456\u0434 \u0437\u0430\u0434\u0430\u0447\u0456."
+      });
+      await loadToday();
+    } catch (detachError) {
+      if (detachError instanceof ApiError) {
+        diagnostics.trackFailure({
+          path: detachError.path,
+          status: detachError.status,
+          code: detachError.code,
+          message: detachError.message,
+          details: detachError.details
+        });
+      }
+      setCalendarNotice({ tone: "error", message: "\u041d\u0435 \u0432\u0434\u0430\u043b\u043e\u0441\u044f \u0432\u0456\u0434\u2019\u0454\u0434\u043d\u0430\u0442\u0438 \u043f\u043e\u0434\u0456\u044e." });
+      setError(detachError instanceof Error ? detachError.message : "\u041d\u0435 \u0432\u0434\u0430\u043b\u043e\u0441\u044f \u0432\u0456\u0434\u2019\u0454\u0434\u043d\u0430\u0442\u0438 \u043f\u043e\u0434\u0456\u044e.");
     } finally {
       setWorkingTaskId(null);
     }
@@ -724,6 +976,7 @@ export function TodayPage() {
                   {projectName(task)} · {taskTypeLabel(task.task_type)} · {task.status === "blocked" ? "Заблоковано" : task.status === "in_progress" ? "В роботі" : "Заплановано"}
                 </p>
                 <p className="inbox-meta">{formatTaskTimingSummary(task)}</p>
+                {calendarLinkHint(task) ? <p className="inbox-meta">{calendarLinkHint(task)}</p> : null}
                 {renderActions(task, actionMode)}
               </li>
             ))}
@@ -752,6 +1005,24 @@ export function TodayPage() {
           ) : null}
           <button type="button" className="ghost" onClick={() => setSelectedScopeDate((current) => shiftScopeDate(current, 1))}>
             {"\u041d\u0430\u0441\u0442\u0443\u043f\u043d\u0438\u0439 \u0434\u0435\u043d\u044c"}
+          </button>
+          <button
+            type="button"
+            onClick={() => {
+              setTaskModalMode("create");
+              setActiveTask(null);
+            }}
+            disabled={!sessionToken || workingTaskId !== null || noteCreating}
+          >
+            Створити задачу
+          </button>
+          <button
+            type="button"
+            className="ghost"
+            onClick={() => setNoteCreateOpen(true)}
+            disabled={!sessionToken || noteCreating || workingTaskId !== null}
+          >
+            Створити нотатку
           </button>
           <button type="button" onClick={() => void openPlanningConversation("day")} disabled={!sessionToken || planningConversationBusy}>
             {"\u041e\u0431\u0433\u043e\u0432\u043e\u0440\u0438\u0442\u0438 \u0434\u0435\u043d\u044c"}
@@ -922,6 +1193,112 @@ export function TodayPage() {
         </section>
       ) : null}
 
+
+      {weekPlanning ? (
+        <section className="assistant-block deterministic-block">
+          <h3>План тижня</h3>
+          <p className="inbox-meta">Тиждень: {selectedWeekLabel}</p>
+          {diagnostics.debugEnabled ? (
+            <p className="inbox-meta">
+              Правила: {weekPlanning.rulesVersion} · Таймзона: {weekPlanning.timezone}
+            </p>
+          ) : null}
+          <p className="inbox-meta">
+            У плані тижня: {weekPlanning.overload.plannedTodayCount} · Дедлайни без плану: {weekPlanning.overload.dueTodayWithoutPlannedStartCount} · Беклог: {weekPlanning.overload.backlogCount}
+          </p>
+          <p className="inbox-meta">
+            {weekLoadCoverageLine({
+              knownMinutes: weekPlanning.overload.scheduledKnownEstimateMinutes,
+              missingCount: weekPlanning.overload.scheduledMissingEstimateCount,
+              plannedCount: weekPlanning.overload.plannedTodayCount
+            })}
+          </p>
+          {weekPlanning.whatNow.primary ? (
+            <div className="assistant-primary">
+              <p className="assistant-title">Фокус тижня: {weekPlanning.whatNow.primary.title}</p>
+              <p className="inbox-meta">{normalizePlanningCopy(weekPlanning.whatNow.primary.reason)}</p>
+            </div>
+          ) : (
+            <p className="empty-note">Явної головної точки тиску по тижню зараз немає.</p>
+          )}
+          {weekPlanning.whatNow.secondary.length > 0 ? (
+            <ul className="assistant-secondary">
+              {weekPlanning.whatNow.secondary.map((item, index) => (
+                <li key={`${item.title}-${index}`}>
+                  <strong>{item.title}</strong>
+                  <span> - {normalizePlanningCopy(item.reason)}</span>
+                </li>
+              ))}
+            </ul>
+          ) : null}
+          {weekPlanning.weekDays.length > 0 ? (
+            <>
+              <h3>Картина тижня</h3>
+              <ul className="assistant-secondary">
+                {weekPlanning.weekDays.map((day) => (
+                  <li key={day.scopeDate}>{formatWeekDaySummary(day)}</li>
+                ))}
+              </ul>
+            </>
+          ) : null}
+          {weekPlanning.notableDeadlines.length > 0 ? (
+            <>
+              <h3>Помітні дедлайни тижня</h3>
+              <ul className="assistant-secondary">
+                {weekPlanning.notableDeadlines.slice(0, 5).map((item) => (
+                  <li key={item.taskId}>
+                    {item.title} · {formatTaskDateTime(new Date(item.dueAt))}
+                  </li>
+                ))}
+              </ul>
+            </>
+          ) : null}
+          <p className="inbox-meta">{formatWorklogSummary(weekPlanning.dailyReview.worklogs)}</p>
+        </section>
+      ) : null}
+
+      {weekAiAdvisor ? (
+        <section className="assistant-block ai-block">
+          <h3>Порада AI на тиждень</h3>
+          <p className="inbox-meta">Тиждень: {selectedWeekLabel}</p>
+          {diagnostics.debugEnabled ? (
+            <p className="inbox-meta">
+              Джерело: {weekAiAdvisor.source === "ai" ? `OpenAI (${weekAiAdvisor.model ?? "невідома модель"})` : "Резервні правила"} ·
+              Згенеровано: {new Date(weekAiAdvisor.generatedAt).toLocaleTimeString()}
+            </p>
+          ) : null}
+          <p className="assistant-title">{normalizePlanningCopy(weekAiAdvisor.advisor.whatMattersMostNow)}</p>
+          <p className="inbox-meta">
+            У плані тижня: {weekAiAdvisor.contextSnapshot.plannedTodayCount} · Дедлайни без плану: {weekAiAdvisor.contextSnapshot.dueTodayWithoutPlannedStartCount} · Беклог: {weekAiAdvisor.contextSnapshot.backlogCount}
+          </p>
+          <p className="inbox-meta">
+            {weekLoadCoverageLine({
+              knownMinutes: weekAiAdvisor.contextSnapshot.scheduledKnownEstimateMinutes,
+              missingCount: weekAiAdvisor.contextSnapshot.scheduledMissingEstimateCount,
+              plannedCount: weekAiAdvisor.contextSnapshot.plannedTodayCount
+            })}
+          </p>
+          <div className="assistant-primary">
+            <p className="assistant-title">На що подивитись першим: {weekAiAdvisor.advisor.suggestedNextAction.title}</p>
+            <p className="inbox-meta">{normalizePlanningCopy(weekAiAdvisor.advisor.suggestedNextAction.reason)}</p>
+          </div>
+          <div className="assistant-primary">
+            <p className="assistant-title">Що можна тримати гнучкіше: {weekAiAdvisor.advisor.suggestedDefer.title}</p>
+            <p className="inbox-meta">{normalizePlanningCopy(weekAiAdvisor.advisor.suggestedDefer.reason)}</p>
+          </div>
+          <p className={weekAiAdvisor.advisor.protectedEssentialsWarning.hasWarning ? "error-note" : "inbox-meta"}>
+            {normalizePlanningCopy(weekAiAdvisor.advisor.protectedEssentialsWarning.message)}
+          </p>
+          <p className="inbox-meta">{normalizePlanningCopy(weekAiAdvisor.advisor.explanation)}</p>
+          {weekAiAdvisor.contextSnapshot.weekDays.length > 0 ? (
+            <ul className="assistant-secondary">
+              {weekAiAdvisor.contextSnapshot.weekDays.map((day) => (
+                <li key={day.scopeDate}>{formatWeekDaySummary(day)}</li>
+              ))}
+            </ul>
+          ) : null}
+        </section>
+      ) : null}
       {!loading ? (
         <>
           {!isSelectedToday ? (
@@ -967,7 +1344,7 @@ export function TodayPage() {
             <p className="inbox-meta">{"\u041f\u043b\u0430\u043d\u0443\u0432\u0430\u043d\u043d\u044f \u0434\u043b\u044f \u0432\u0438\u0431\u0440\u0430\u043d\u043e\u0433\u043e \u0434\u043d\u044f \u0437\u043e\u0441\u0435\u0440\u0435\u0434\u0436\u0435\u043d\u0435 \u043d\u0430 \u0437\u0430\u0434\u0430\u0447\u0430\u0445 \u0456\u0437 \u043f\u043b\u0430\u043d\u043e\u0432\u0430\u043d\u0438\u043c \u0441\u0442\u0430\u0440\u0442\u043e\u043c. \u0411\u0435\u043a\u043b\u043e\u0433 \u043d\u0435 \u043f\u0456\u0434\u0442\u044f\u0433\u0443\u0454\u0442\u044c\u0441\u044f \u0432 \u0434\u0435\u043d\u044c \u0430\u0432\u0442\u043e\u043c\u0430\u0442\u0438\u0447\u043d\u043e."}</p>
           </section>
           {renderSection(isSelectedToday ? "\u0417\u0430\u043f\u043b\u0430\u043d\u043e\u0432\u0430\u043d\u043e \u043d\u0430 \u0441\u044c\u043e\u0433\u043e\u0434\u043d\u0456" : "\u0417\u0430\u043f\u043b\u0430\u043d\u043e\u0432\u0430\u043d\u043e \u043d\u0430 \u0432\u0438\u0431\u0440\u0430\u043d\u0438\u0439 \u0434\u0435\u043d\u044c", "\u041e\u0441\u043d\u043e\u0432\u043d\u0438\u0439 \u0441\u043f\u0438\u0441\u043e\u043a \u0434\u043d\u044f: \u0442\u0456\u043b\u044c\u043a\u0438 \u0437\u0430\u0434\u0430\u0447\u0456 \u0437 \u043f\u043b\u0430\u043d\u043e\u0432\u0430\u043d\u0438\u043c \u0441\u0442\u0430\u0440\u0442\u043e\u043c \u043d\u0430 \u0446\u044e \u0434\u0430\u0442\u0443.", scheduledToday, "scheduled")}
-          {renderSection(isSelectedToday ? "??????????? ???????????" : "??????????? ?????? ????????? ???", isSelectedToday ? "??????, ? ???? ?????????? ????? ??? ??????? ? ????????." : "??????, ??? ?????????? ????? ??????? ?????? ???????? ???? ? ???? ?? ????????.", overdueScheduled, "neutral")}
+          {renderSection(isSelectedToday ? "??????????? ? ?????" : "??????????? ?? ????????? ???", isSelectedToday ? "??????, ??? ???? ??? ????? ?????????? ????? ??? ???????, ??? ???? ??? ?? ????????? ? ?????." : "??????, ??? ???? ?????????? ????? ??? ??????? ??? ????? ?? ????????? ???.", overdueScheduled, "neutral")}
           {renderSection(isSelectedToday ? "\u0414\u0435\u0434\u043b\u0430\u0439\u043d\u0438 \u0441\u044c\u043e\u0433\u043e\u0434\u043d\u0456 \u0431\u0435\u0437 \u043f\u043b\u0430\u043d\u0443" : "\u0414\u0435\u0434\u043b\u0430\u0439\u043d\u0438 \u0446\u044c\u043e\u0433\u043e \u0434\u043d\u044f \u0431\u0435\u0437 \u043f\u043b\u0430\u043d\u0443", "\u041e\u043a\u0440\u0435\u043c\u043e \u043f\u043e\u043a\u0430\u0437\u0430\u043d\u0456 \u0437\u0430\u0434\u0430\u0447\u0456 \u0437 \u0434\u0435\u0434\u043b\u0430\u0439\u043d\u043e\u043c \u043d\u0430 \u0432\u0438\u0431\u0440\u0430\u043d\u0438\u0439 \u0434\u0435\u043d\u044c, \u0430\u043b\u0435 \u0431\u0435\u0437 \u043f\u043b\u0430\u043d\u043e\u0432\u0430\u043d\u043e\u0433\u043e \u0441\u0442\u0430\u0440\u0442\u0443.", dueTodayWithoutSchedule, "unscheduled")}
           {renderSection("\u0411\u0435\u043a\u043b\u043e\u0433", isSelectedToday ? "\u0422\u0443\u0442 \u0437\u0430\u0434\u0430\u0447\u0456 \u0431\u0435\u0437 \u043f\u043b\u0430\u043d\u043e\u0432\u0430\u043d\u043e\u0433\u043e \u0441\u0442\u0430\u0440\u0442\u0443. \u0417\u0432\u0456\u0434\u0441\u0438 \u0457\u0445 \u043c\u043e\u0436\u043d\u0430 \u0448\u0432\u0438\u0434\u043a\u043e \u043f\u043e\u0441\u0442\u0430\u0432\u0438\u0442\u0438 \u0432 \u043f\u043b\u0430\u043d \u0434\u043d\u044f." : "\u0422\u0443\u0442 \u0437\u0430\u0434\u0430\u0447\u0456 \u0431\u0435\u0437 \u043f\u043b\u0430\u043d\u043e\u0432\u0430\u043d\u043e\u0433\u043e \u0441\u0442\u0430\u0440\u0442\u0443. \u0417\u0432\u0456\u0434\u0441\u0438 \u0457\u0445 \u043c\u043e\u0436\u043d\u0430 \u0448\u0432\u0438\u0434\u043a\u043e \u043f\u043e\u0441\u0442\u0430\u0432\u0438\u0442\u0438 \u0432 \u043f\u043b\u0430\u043d \u043d\u0430 \u0432\u0438\u0431\u0440\u0430\u043d\u0438\u0439 \u0434\u0435\u043d\u044c.", pureBacklogItems, "unscheduled")}
           {renderSection("Захищені / регулярні важливі", "Огляд важливих регулярних і захищених задач без автопланування.", protectedEssentials, "neutral")}
@@ -975,16 +1352,39 @@ export function TodayPage() {
       ) : null}
 
       <TaskDetailModal
-        open={!!activeTask}
+        open={taskModalMode === "create" || !!activeTask}
         task={activeTask}
         projects={projects}
         busy={workingTaskId !== null}
-        initialMode="edit"
+        calendarSyncNotice={activeTask ? calendarNotice : null}
+        initialMode={taskModalMode === "create" ? "create" : "edit"}
+        createDefaults={todayTaskCreateDefaults}
         showWorkflowActions={false}
-        onClose={() => setActiveTask(null)}
+        onClose={() => {
+          setActiveTask(null);
+          setTaskModalMode("edit");
+        }}
         onSave={(payload) => {
-          if (!activeTask) return;
           void (async () => {
+            if (taskModalMode === "create") {
+              const created = await createTaskFromToday({
+                title: payload.title,
+                details: payload.details,
+                projectId: payload.projectId,
+                taskType: payload.taskType,
+                dueAt: payload.dueAt,
+                scheduledFor: payload.scheduledFor,
+                estimatedMinutes: payload.estimatedMinutes,
+                planningFlexibility: payload.planningFlexibility
+              });
+              if (created) {
+                setActiveTask(null);
+                setTaskModalMode("edit");
+              }
+              return;
+            }
+
+            if (!activeTask) return;
             const saved = await saveTaskUpdate(activeTask, {
               title: payload.title,
               details: payload.details,
@@ -1000,9 +1400,35 @@ export function TodayPage() {
         }}
         onAction={() => {}}
         onCreateCalendarEvent={() => {}}
+        onRetryCalendarSync={() => {
+          if (!activeTask) return;
+          void retryActiveTaskCalendarSync(activeTask);
+        }}
+        onDetachCalendarLink={() => {
+          if (!activeTask) return;
+          void detachActiveTaskCalendarLink(activeTask);
+        }}
         onOpenLinkedCalendarEvent={() => {}}
       />
 
+      <NoteDetailModal
+        open={noteCreateOpen}
+        mode="create"
+        note={null}
+        projects={projects}
+        busy={noteCreating}
+        onClose={() => setNoteCreateOpen(false)}
+        onSave={(payload) => {
+          void (async () => {
+            const created = await createNoteFromToday({
+              title: payload.title,
+              body: payload.body,
+              projectId: payload.projectId
+            });
+            if (created) setNoteCreateOpen(false);
+          })();
+        }}
+      />
       <PlanningConversationModal
         open={planningConversationOpen}
         scopeType={planningConversation?.session.scopeType ?? planningConversationScopeType}
@@ -1040,6 +1466,28 @@ export function TodayPage() {
     </section>
   );
 }
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 
 

@@ -1,6 +1,7 @@
 import { createAdminClient } from "../_shared/db.ts";
 import { handleOptions, jsonResponse, safeJson } from "../_shared/http.ts";
 import { resolveSessionUser } from "../_shared/session.ts";
+import { syncTaskCalendarAfterMutation } from "../_shared/task-calendar-sync.ts";
 
 type TaskStatus = "planned" | "in_progress" | "blocked" | "done" | "cancelled";
 
@@ -85,5 +86,8 @@ Deno.serve(async (req) => {
     return jsonResponse({ ok: false, error: mapped.error, message: error.message }, mapped.status);
   }
 
+  await syncTaskCalendarAfterMutation(supabase, sessionUser.userId, body.taskId);
+
   return jsonResponse({ ok: true, result: data });
 });
+

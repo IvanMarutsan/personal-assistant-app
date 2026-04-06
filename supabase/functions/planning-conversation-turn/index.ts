@@ -314,8 +314,8 @@ async function generateAiTurn(input: {
     assistantText:
       parsed.assistant_text?.trim() ||
       (input.scopeType === "week"
-        ? "Я не бачу достатньо підстав для конкретних змін у плані цього тижня."
-        : "Я не бачу достатньо підстав для конкретних змін у плані цього дня."),
+        ? "Поки не бачу достатньо підстав для конкретних змін у плані цього тижня."
+        : "Поки не бачу достатньо підстав для конкретних змін у плані цього дня."),
     proposals: normalizeAiProposals(parsed.proposals ?? [], allowedTaskIds)
   };
 }

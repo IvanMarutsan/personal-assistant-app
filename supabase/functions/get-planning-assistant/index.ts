@@ -1,8 +1,8 @@
-import { DateTime } from "npm:luxon@3.6.1";
+﻿import { DateTime } from "npm:luxon@3.6.1";
 import { createAdminClient } from "../_shared/db.ts";
 import { handleOptions, jsonResponse } from "../_shared/http.ts";
 import { planningThresholds } from "../_shared/planning-config.ts";
-import { validateScopeDate } from "../_shared/planning-conversation.ts";
+import { buildPlanningContext, validateScopeDate } from "../_shared/planning-conversation.ts";
 import { resolveSessionUser } from "../_shared/session.ts";
 
 type TaskRow = {
@@ -246,7 +246,169 @@ Deno.serve(async (req) => {
   const now = DateTime.now().setZone(timezone);
   const url = new URL(req.url);
   const todayStart = now.startOf("day");
+  const scopeType = url.searchParams.get("scopeType") === "week" ? "week" : "day";
   const scopeDate = validateScopeDate(url.searchParams.get("scopeDate")) ?? todayStart.toFormat("yyyy-MM-dd");
+
+  if (scopeType === "week") {
+    const context = await buildPlanningContext(supabase, sessionUser.userId, "week", scopeDate);
+    if (context.scopeType !== "week") {
+      return jsonResponse({ ok: false, error: "invalid_scope_context" }, 500);
+    }
+
+    const weekDays = context.weekDays;
+    const formatDayLabel = (value: string) => DateTime.fromISO(value, { zone: timezone }).setLocale("uk").toFormat("ccc d LLL");
+    const overloadedDays = weekDays.filter(
+      (day) =>
+        day.dueWithoutPlannedStartCount > 0 ||
+        day.plannedCount >= planningThresholds.plannedTodayOverload ||
+        ((day.scheduledKnownEstimateMinutes + (day.calendarBusyMinutes ?? 0)) >= 480) ||
+        (day.scheduledMissingEstimateCount >= 2 && day.plannedCount >= 2)
+    );
+    const lighterDays = weekDays.filter(
+      (day) =>
+        day.plannedCount === 0 &&
+        day.dueWithoutPlannedStartCount === 0 &&
+        (day.calendarBusyMinutes ?? 0) < 180 &&
+        day.calendarEventCount <= 2
+    );
+    const topPressureDay = [...weekDays].sort((a, b) => {
+      const aScore = a.dueWithoutPlannedStartCount * 5 + a.plannedCount * 2 + a.scheduledMissingEstimateCount + ((a.calendarBusyMinutes ?? 0) / 120);
+      const bScore = b.dueWithoutPlannedStartCount * 5 + b.plannedCount * 2 + b.scheduledMissingEstimateCount + ((b.calendarBusyMinutes ?? 0) / 120);
+      return bScore - aScore;
+    })[0] ?? null;
+    const primaryRecommendation = context.notableDeadlines[0]
+      ? {
+          taskId: context.notableDeadlines[0].taskId,
+          title: context.notableDeadlines[0].title,
+          reason: `У тижні є помітний дедлайн, тож цю задачу варто явно втримати в полі уваги до ${DateTime.fromISO(context.notableDeadlines[0].dueAt, { zone: "utc" }).setZone(timezone).setLocale("uk").toFormat("d LLL")}.`,
+          tier: "due_today_unscheduled" as const
+        }
+      : topPressureDay
+        ? {
+            title: `Перевір ${formatDayLabel(topPressureDay.scopeDate)}`,
+            reason: `На цей день уже сходяться план, дедлайни без плану або помітне навантаження. Краще вручну розвантажити саме його першим.`,
+            tier: "high_importance" as const
+          }
+        : context.relevantBacklog[0]
+          ? {
+              taskId: context.relevantBacklog[0].id,
+              title: context.relevantBacklog[0].title,
+              reason: `У тижня ще є простір для ручного планування, а ця задача лишається в беклозі без явного дня.`,
+              tier: "protected_essential" as const
+            }
+          : null;
+    const secondaryRecommendations = [
+      overloadedDays[0]
+        ? {
+            title: `Напружений день: ${formatDayLabel(overloadedDays[0].scopeDate)}`,
+            reason: `Тут уже є тиск від плану, дедлайнів або календаря. Варто переглянути цей день обережно, без автоматичних рішень.`,
+            tier: "overdue" as const
+          }
+        : null,
+      lighterDays[0]
+        ? {
+            title: `Легший день: ${formatDayLabel(lighterDays[0].scopeDate)}`,
+            reason: `У цьому дні менше фіксованого навантаження, тож його можна тримати як резерв для ручного перерозподілу.`,
+            tier: "quick_comm_batch" as const
+          }
+        : null,
+      context.backlogCount > 0
+        ? {
+            title: `Беклог тижня: ${context.backlogCount}`,
+            reason: `Частина задач ще не прив'язана до днів тижня, тому тиск беклогу варто тримати окремо від уже запланованих днів.`,
+            tier: "high_importance" as const
+          }
+        : null
+    ].filter((item): item is NonNullable<typeof item> => !!item);
+
+    const protectedEssentialRisk = context.scheduledInWeek
+      .filter((task) => task.isProtectedEssential)
+      .slice(0, 3)
+      .map((task) => ({
+        taskId: task.id,
+        title: task.title,
+        project: task.projectName,
+        postponeCount: 0,
+        reason: "Важливу задачу вже поставлено в тиждень, тож її краще не зрушувати без явної потреби."
+      }));
+    const recurringEssentialRisk = context.scheduledInWeek
+      .filter((task) => task.taskType === "recurring_essential")
+      .slice(0, 3)
+      .map((task) => ({
+        taskId: task.id,
+        title: task.title,
+        project: task.projectName,
+        postponeCount: 0,
+        reason: "Регулярна важлива задача вже входить у план тижня і потребує помітного слоту."
+      }));
+    const squeezedOutRisk = context.relevantBacklog
+      .filter((task) => task.isProtectedEssential || task.planningFlexibility === "essential")
+      .slice(0, 3)
+      .map((task) => ({
+        taskId: task.id,
+        title: task.title,
+        project: task.projectName,
+        postponeCount: 0,
+        reason: "У беклозі лишається задача, яку небажано довго тримати без дня в межах цього тижня."
+      }));
+    const overloadFlags = [
+      overloadedDays.length > 0
+        ? { code: "week_overload_days", message: `У тижні є ${overloadedDays.length} напружених днів, які варто переглянути вручну.` }
+        : null,
+      context.dueWithoutPlannedStartCount > 0
+        ? { code: "week_due_without_plan", message: `У межах тижня є ${context.dueWithoutPlannedStartCount} задач із дедлайном без планованого старту.` }
+        : null,
+      context.scheduledMissingEstimateCount > 0
+        ? { code: "week_missing_estimates", message: `Для тижня бракує оцінок у ${context.scheduledMissingEstimateCount} уже запланованих задач.` }
+        : null,
+      context.backlogCount >= planningThresholds.plannedTodayOverload
+        ? { code: "week_backlog_pressure", message: `Беклог тижня вже помітний: ${context.backlogCount} задач без призначеного дня.` }
+        : null
+    ].filter((item): item is NonNullable<typeof item> => !!item);
+
+    return jsonResponse({
+      ok: true,
+      generatedAt: DateTime.utc().toISO(),
+      timezone,
+      scopeType: "week",
+      scopeDate: context.scopeDate,
+      rulesVersion: "v1-deterministic-week",
+      whatNow: {
+        primary: primaryRecommendation,
+        secondary: secondaryRecommendations
+      },
+      overload: {
+        hasOverload: overloadFlags.length > 0,
+        plannedTodayCount: context.plannedCount,
+        dueTodayWithoutPlannedStartCount: context.dueWithoutPlannedStartCount,
+        backlogCount: context.backlogCount,
+        overduePlannedCount: overloadedDays.length,
+        quickCommunicationOpenCount: 0,
+        quickCommunicationBatchingRecommended: false,
+        protectedPendingCount: weekDays.reduce((sum, day) => sum + day.essentialScheduledCount, 0),
+        scheduledKnownEstimateMinutes: context.scheduledKnownEstimateMinutes,
+        scheduledMissingEstimateCount: context.scheduledMissingEstimateCount,
+        flags: overloadFlags
+      },
+      essentialRisk: {
+        protectedEssentialRisk,
+        recurringEssentialRisk,
+        squeezedOutRisk
+      },
+      dailyReview: {
+        completedTodayCount: 0,
+        movedTodayCount: 0,
+        cancelledTodayCount: 0,
+        protectedEssentialsMissedToday: 0,
+        topMovedReasons: [],
+        worklogs: context.worklogs
+      },
+      weekDays: context.weekDays,
+      notableDeadlines: context.notableDeadlines,
+      appliedThresholds: planningThresholds
+    });
+  }
+
   const dayStart = DateTime.fromISO(scopeDate, { zone: timezone }).startOf("day");
   const dayEnd = dayStart.endOf("day");
   const overdueReference = dayStart < todayStart ? dayEnd : dayStart > todayStart ? dayStart : now;
@@ -332,23 +494,23 @@ Deno.serve(async (req) => {
 
   const tiered = uniqRecommendations([
     topTask(overduePlanned, timezone, "Прострочену заплановану задачу варто підтягнути першою.", "overdue"),
-    topTask(hardToday, timezone, "??????? ?????'?????? ? ????? ????? ??? ???????? ???????.", "hard_today"),
+    topTask(hardToday, timezone, "Жорстке зобов’язання на цей день краще не стискати без потреби.", "hard_today"),
     topTask(
       dueTodayWithoutPlannedStart,
       timezone,
-      "? ?????? ? ????????? ?? ??? ???? ??? ??????????? ??????. ?? ????? ??????? ???????? ? ???? ??? ??? ???????.",
+      "Є задача з дедлайном на цей день без запланованого старту. Її треба окремо вирішити в плані цього дня.",
       "due_today_unscheduled"
     ),
     topTask(
       protectedPending,
       timezone,
-      "???????? ??????? ?????? ?? ?? ??????? ? ?? ??????? ???????? ? ????? ????? ???.",
+      "Захищену важливу задачу ще не закрито й не варто непомітно витісняти з плану дня.",
       "protected_essential"
     ),
     topTask(
       highImportanceToday,
       timezone,
-      "? ????? ????? ??? ??? ? ?????? ? ??????? ??????????.",
+      "На цей день уже є задача з високою важливістю.",
       "high_importance"
     ),
     quickBatchRecommendation
@@ -470,6 +632,8 @@ Deno.serve(async (req) => {
     ok: true,
     generatedAt: DateTime.utc().toISO(),
     timezone,
+    scopeType: "day",
+    scopeDate,
     rulesVersion: "v1-deterministic",
     whatNow: {
       primary: primaryRecommendation,
@@ -502,9 +666,16 @@ Deno.serve(async (req) => {
       topMovedReasons,
       worklogs: worklogSummary
     },
+    weekDays: [],
+    notableDeadlines: [],
     appliedThresholds: planningThresholds
   });
 });
+
+
+
+
+
 
 
 

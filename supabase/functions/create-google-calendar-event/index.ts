@@ -152,7 +152,9 @@ Deno.serve(async (req) => {
         .from("tasks")
         .update({
           calendar_provider: "google",
-          calendar_event_id: payload.id
+          calendar_event_id: payload.id,
+          calendar_sync_mode: "manual",
+          calendar_sync_error: null
         })
         .eq("id", body.sourceTaskId)
         .eq("user_id", sessionUser.userId);
@@ -182,3 +184,4 @@ Deno.serve(async (req) => {
     return jsonResponse({ ok: false, error: "calendar_event_create_failed" }, 500);
   }
 });
+

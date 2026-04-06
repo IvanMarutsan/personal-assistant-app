@@ -8,7 +8,9 @@ import {
   createGoogleCalendarEvent,
   createTask,
   deleteTask,
+  detachTaskCalendarLink as detachTaskCalendarLinkRequest,
   getGoogleCalendarStatus,
+  retryTaskCalendarSync as retryTaskCalendarSyncRequest,
   getProjects,
   getTasks,
   updateTask,
@@ -36,6 +38,18 @@ type PendingAction = {
   task: TaskItem;
   action: TaskActionKind;
 };
+
+type CalendarNotice = {
+  tone: "success" | "error" | "info";
+  message: string;
+};
+
+function calendarLinkHint(task: TaskItem): string | null {
+  if (task.calendar_sync_error) return "Google Calendar: \u043f\u043e\u0442\u0440\u0456\u0431\u043d\u0430 \u0443\u0432\u0430\u0433\u0430";
+  if (task.calendar_sync_mode === "app_managed" && task.linked_calendar_event) return "Google Calendar: \u0441\u0438\u043d\u0445\u0440\u043e\u043d\u0456\u0437\u043e\u0432\u0430\u043d\u043e";
+  if (task.calendar_sync_mode === "manual" && task.linked_calendar_event) return "Google Calendar: \u0440\u0443\u0447\u043d\u0438\u0439 \u0437\u0432\u2019\u044f\u0437\u043e\u043a";
+  return null;
+}
 
 function projectName(task: TaskItem): string {
   if (!task.projects) return "Без проєкту";
@@ -115,6 +129,7 @@ export function TasksPage() {
   const [pendingCalendarTask, setPendingCalendarTask] = useState<TaskItem | null>(null);
   const [calendarCreating, setCalendarCreating] = useState(false);
   const [calendarError, setCalendarError] = useState<string | null>(null);
+  const [calendarNotice, setCalendarNotice] = useState<CalendarNotice | null>(null);
   const diagnostics = useDiagnostics();
 
   const sessionToken = localStorage.getItem(SESSION_KEY) ?? "";
@@ -396,7 +411,9 @@ export function TasksPage() {
     if (!sessionToken || !activeTask) return;
 
     const calendarWarning = activeTask.linked_calendar_event
-      ? " Задача пов'язана з подією Google Calendar, але сама подія не буде видалена."
+      ? activeTask.calendar_sync_mode === "app_managed"
+        ? " Задача синхронізована з Google Calendar, тому пов'язану подію теж буде видалено."
+        : " Задача пов'язана з подією Google Calendar, але сама подія не буде видалена."
       : "";
     const confirmed = window.confirm(`Видалити задачу "${activeTask.title}"?${calendarWarning}`);
     if (!confirmed) return;
@@ -409,6 +426,8 @@ export function TasksPage() {
       await deleteTask({ sessionToken, taskId: activeTask.id });
       setActiveTask(null);
       setTaskModalMode("view");
+      setCalendarNotice(null);
+      setCalendarNotice(null);
       await loadTasks();
     } catch (deleteError) {
       if (deleteError instanceof ApiError) {
@@ -493,9 +512,76 @@ export function TasksPage() {
     }
   }
 
+  async function retryCalendarSync(task: TaskItem) {
+    if (!sessionToken) {
+      setError("Спочатку авторизуйся в Інбоксі.");
+      return;
+    }
+
+    setWorkingTaskId(task.id);
+    setError(null);
+    diagnostics.trackAction("retry_task_calendar_sync", { taskId: task.id });
+
+    try {
+      await retryTaskCalendarSyncRequest({ sessionToken, taskId: task.id });
+      setCalendarNotice({
+        tone: "success",
+        message: task.calendar_sync_error || !task.linked_calendar_event || !task.calendar_event_id ? "\u041f\u043e\u0434\u0456\u044e \u0432 Google Calendar \u0432\u0456\u0434\u043d\u043e\u0432\u043b\u0435\u043d\u043e." : "\u0421\u0438\u043d\u0445\u0440\u043e\u043d\u0456\u0437\u0430\u0446\u0456\u044e \u0437 \u043a\u0430\u043b\u0435\u043d\u0434\u0430\u0440\u0435\u043c \u043e\u043d\u043e\u0432\u043b\u0435\u043d\u043e."
+      });
+      await loadTasks();
+    } catch (retryError) {
+      if (retryError instanceof ApiError) {
+        diagnostics.trackFailure({
+          path: retryError.path,
+          status: retryError.status,
+          code: retryError.code,
+          message: retryError.message,
+          details: retryError.details
+        });
+      }
+      setError(retryError instanceof Error ? retryError.message : "Не вдалося пересинхронізувати задачу");
+    } finally {
+      setWorkingTaskId(null);
+    }
+  }
+  async function detachCalendarLink(task: TaskItem) {
+    if (!sessionToken) {
+      setError("???????? ??????????? ? ???????.");
+      return;
+    }
+
+    setWorkingTaskId(task.id);
+    setError(null);
+    diagnostics.trackAction("detach_task_calendar_link", { taskId: task.id });
+
+    try {
+      await detachTaskCalendarLinkRequest({ sessionToken, taskId: task.id });
+      setCalendarNotice({
+        tone: "success",
+        message: task.calendar_sync_mode === "app_managed" ? "\u0417\u0432\u2019\u044f\u0437\u043e\u043a \u0456\u0437 Google Calendar \u043f\u0440\u0438\u0431\u0440\u0430\u043d\u043e." : "\u041f\u043e\u0434\u0456\u044e \u0432\u0456\u0434\u2019\u0454\u0434\u043d\u0430\u043d\u043e \u0432\u0456\u0434 \u0437\u0430\u0434\u0430\u0447\u0456."
+      });
+      await loadTasks();
+    } catch (detachError) {
+      if (detachError instanceof ApiError) {
+        diagnostics.trackFailure({
+          path: detachError.path,
+          status: detachError.status,
+          code: detachError.code,
+          message: detachError.message,
+          details: detachError.details
+        });
+      }
+      setCalendarNotice({ tone: "error", message: "\u041d\u0435 \u0432\u0434\u0430\u043b\u043e\u0441\u044f \u0432\u0456\u0434\u2019\u0454\u0434\u043d\u0430\u0442\u0438 \u043f\u043e\u0434\u0456\u044e." });
+      setError(detachError instanceof Error ? detachError.message : "\u041d\u0435 \u0432\u0434\u0430\u043b\u043e\u0441\u044f \u0432\u0456\u0434\u2019\u0454\u0434\u043d\u0430\u0442\u0438 \u043f\u043e\u0434\u0456\u044e.");
+    } finally {
+      setWorkingTaskId(null);
+    }
+  }
+
   function openCreateTask() {
     setTaskModalMode("create");
     setActiveTask(null);
+    setCalendarNotice(null);
     setError(null);
   }
 
@@ -527,7 +613,7 @@ export function TasksPage() {
                   </p>
                 ) : null}
                 <p className={timing.tone === "warn" ? "error-note" : "inbox-meta"}>{timing.label}</p>
-                {task.linked_calendar_event ? <p className="inbox-meta">Пов'язано з Google Calendar</p> : null}
+                {calendarLinkHint(task) ? <p className="inbox-meta">{calendarLinkHint(task)}</p> : task.linked_calendar_event ? <p className="inbox-meta">Пов'язано з Google Calendar</p> : null}
                 <div className="inbox-actions">
                   {task.status !== "done" ? (
                     <button onClick={() => void runDone(task)} disabled={workingTaskId === task.id}>
@@ -664,6 +750,7 @@ export function TasksPage() {
         task={activeTask}
         projects={projects}
         busy={workingTaskId !== null}
+        calendarSyncNotice={activeTask ? calendarNotice : null}
         onClose={() => {
           setActiveTask(null);
           setTaskModalMode("view");
@@ -692,6 +779,14 @@ export function TasksPage() {
           }
           setPendingCalendarTask(activeTask);
           setCalendarError(null);
+        }}
+        onRetryCalendarSync={() => {
+          if (!activeTask) return;
+          void retryCalendarSync(activeTask);
+        }}
+        onDetachCalendarLink={() => {
+          if (!activeTask) return;
+          void detachCalendarLink(activeTask);
         }}
         onOpenLinkedCalendarEvent={(url) => {
           diagnostics.trackAction("open_task_linked_calendar_event", { taskId: activeTask?.id });
@@ -727,3 +822,11 @@ export function TasksPage() {
     </section>
   );
 }
+
+
+
+
+
+
+
+

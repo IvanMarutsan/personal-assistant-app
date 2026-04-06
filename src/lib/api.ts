@@ -1,4 +1,4 @@
-﻿import { appEnv } from "./env";
+import { appEnv } from "./env";
 import type {
   AiAdvisorSummary,
   AppSession,
@@ -509,6 +509,28 @@ export async function deleteTask(input: {
   });
 }
 
+export async function retryTaskCalendarSync(input: {
+  sessionToken: string;
+  taskId: string;
+}): Promise<void> {
+  await request<{ ok: true }>("retry-task-calendar-sync", {
+    method: "POST",
+    headers: sessionHeaders(input.sessionToken),
+    body: JSON.stringify({ taskId: input.taskId })
+  });
+}
+
+export async function detachTaskCalendarLink(input: {
+  sessionToken: string;
+  taskId: string;
+}): Promise<void> {
+  await request<{ ok: true }>("detach-task-calendar-link", {
+    method: "POST",
+    headers: sessionHeaders(input.sessionToken),
+    body: JSON.stringify({ taskId: input.taskId })
+  });
+}
+
 export async function getWorklogs(sessionToken: string): Promise<WorklogItem[]> {
   const result = await request<{
     ok: true;
@@ -616,20 +638,29 @@ export async function updateNote(input: {
   return { createdTaskId: result.createdTaskId };
 }
 
-export async function getPlanningAssistant(sessionToken: string, scopeDate?: string): Promise<PlanningSummary> {
-  const path = scopeDate
-    ? `get-planning-assistant?scopeDate=${encodeURIComponent(scopeDate)}`
-    : "get-planning-assistant";
+export async function getPlanningAssistant(
+  sessionToken: string,
+  scopeDate?: string,
+  scopeType: "day" | "week" = "day"
+): Promise<PlanningSummary> {
+  const params = new URLSearchParams();
+  if (scopeDate) params.set("scopeDate", scopeDate);
+  if (scopeType !== "day") params.set("scopeType", scopeType);
+  const path = params.size > 0 ? `get-planning-assistant?${params.toString()}` : "get-planning-assistant";
 
   const result = await request<{
     ok: true;
     generatedAt: string;
     timezone: string;
+    scopeType: PlanningSummary["scopeType"];
+    scopeDate: string;
     rulesVersion: string;
     whatNow: PlanningSummary["whatNow"];
     overload: PlanningSummary["overload"];
     essentialRisk: PlanningSummary["essentialRisk"];
     dailyReview: PlanningSummary["dailyReview"];
+    weekDays: PlanningSummary["weekDays"];
+    notableDeadlines: PlanningSummary["notableDeadlines"];
     appliedThresholds: PlanningSummary["appliedThresholds"];
   }>(path, {
     method: "GET",
@@ -639,24 +670,34 @@ export async function getPlanningAssistant(sessionToken: string, scopeDate?: str
   return {
     generatedAt: result.generatedAt,
     timezone: result.timezone,
+    scopeType: result.scopeType,
+    scopeDate: result.scopeDate,
     rulesVersion: result.rulesVersion,
     whatNow: result.whatNow,
     overload: result.overload,
     essentialRisk: result.essentialRisk,
     dailyReview: result.dailyReview,
+    weekDays: result.weekDays,
+    notableDeadlines: result.notableDeadlines,
     appliedThresholds: result.appliedThresholds
   };
 }
 
-export async function getAiAdvisor(sessionToken: string, scopeDate?: string): Promise<AiAdvisorSummary> {
-  const path = scopeDate
-    ? `get-ai-advisor?scopeDate=${encodeURIComponent(scopeDate)}`
-    : "get-ai-advisor";
+export async function getAiAdvisor(
+  sessionToken: string,
+  scopeDate?: string,
+  scopeType: "day" | "week" = "day"
+): Promise<AiAdvisorSummary> {
+  const params = new URLSearchParams();
+  if (scopeDate) params.set("scopeDate", scopeDate);
+  if (scopeType !== "day") params.set("scopeType", scopeType);
+  const path = params.size > 0 ? `get-ai-advisor?${params.toString()}` : "get-ai-advisor";
 
   const result = await request<{
     ok: true;
     generatedAt: string;
     timezone: string;
+    scopeType: AiAdvisorSummary["scopeType"];
     model: string | null;
     source: AiAdvisorSummary["source"];
     fallbackReason: string | null;
@@ -670,6 +711,7 @@ export async function getAiAdvisor(sessionToken: string, scopeDate?: string): Pr
   return {
     generatedAt: result.generatedAt,
     timezone: result.timezone,
+    scopeType: result.scopeType,
     model: result.model,
     source: result.source,
     fallbackReason: result.fallbackReason,
@@ -783,6 +825,9 @@ export async function updatePlanningProposal(input: {
     })
   });
 }
+
+
+
 
 
 
