@@ -32,6 +32,39 @@ type GoogleEventResult = {
   htmlLink: string | null;
 };
 
+type GoogleEventSnapshot = {
+  id: string;
+  htmlLink: string | null;
+  summary: string | null;
+  timezone: string | null;
+  startAt: string;
+  endAt: string;
+};
+
+export type TaskCalendarInboundState =
+  | {
+      status: "manual" | "not_linked" | "healthy";
+      message: string | null;
+    }
+  | {
+      status: "changed";
+      message: string;
+      remoteScheduledFor: string;
+      remoteEstimatedMinutes: number;
+    }
+  | {
+      status: "missing";
+      message: string;
+    }
+  | {
+      status: "unsupported";
+      message: string;
+    };
+
+type TaskCalendarSyncOptions = {
+  ignoreInboundConflict?: boolean;
+};
+
 function normalizeTimezone(value: string | null | undefined): string {
   const candidate = value?.trim();
   if (!candidate) return "UTC";
@@ -127,6 +160,45 @@ async function googleUpdateEvent(userId: string, eventId: string, payload: Googl
   return { id: body.id, htmlLink: body.htmlLink ?? null };
 }
 
+async function googleGetEvent(userId: string, eventId: string): Promise<GoogleEventSnapshot> {
+  const auth = await getGoogleAccessTokenForUser(userId);
+  const response = await fetch(googleEventUrl(auth.calendarId, eventId), {
+    method: "GET",
+    headers: {
+      authorization: `Bearer ${auth.accessToken}`
+    }
+  });
+
+  const body = (await response.json().catch(() => null)) as
+    | {
+        id?: string;
+        htmlLink?: string | null;
+        summary?: string | null;
+        start?: { dateTime?: string; timeZone?: string | null };
+        end?: { dateTime?: string; timeZone?: string | null };
+      }
+    | null;
+
+  if (!response.ok || !body?.id) {
+    throw new Error(response.status === 404 ? "calendar_event_not_found" : `calendar_event_fetch_failed_${response.status}`);
+  }
+
+  const startAt = body.start?.dateTime ?? null;
+  const endAt = body.end?.dateTime ?? null;
+  if (!startAt || !endAt) {
+    throw new Error("calendar_event_unsupported_time");
+  }
+
+  return {
+    id: body.id,
+    htmlLink: body.htmlLink ?? null,
+    summary: body.summary ?? null,
+    timezone: body.start?.timeZone ?? body.end?.timeZone ?? null,
+    startAt,
+    endAt
+  };
+}
+
 async function googleDeleteEvent(userId: string, eventId: string): Promise<void> {
   const auth = await getGoogleAccessTokenForUser(userId);
   const response = await fetch(googleEventUrl(auth.calendarId, eventId), {
@@ -170,6 +242,43 @@ async function upsertCalendarEventLink(input: {
   if (error) throw error;
 }
 
+function deriveEstimatedMinutesFromRemoteEvent(event: GoogleEventSnapshot): number | null {
+  const startMs = new Date(event.startAt).getTime();
+  const endMs = new Date(event.endAt).getTime();
+  if (!Number.isFinite(startMs) || !Number.isFinite(endMs) || endMs <= startMs) return null;
+  const minutes = Math.round((endMs - startMs) / 60_000);
+  return minutes > 0 ? minutes : null;
+}
+
+function sameInstant(a: string | null | undefined, b: string | null | undefined): boolean {
+  if (!a && !b) return true;
+  if (!a || !b) return false;
+  const aMs = new Date(a).getTime();
+  const bMs = new Date(b).getTime();
+  if (!Number.isFinite(aMs) || !Number.isFinite(bMs)) return a === b;
+  return aMs === bMs;
+}
+
+function normalizeEstimatedMinutes(value: number | null | undefined): number {
+  return value && value > 0 ? value : 30;
+}
+
+async function syncCalendarLinkFromRemoteEvent(input: {
+  supabase: SupabaseAdminClient;
+  task: TaskCalendarSyncRow;
+  event: GoogleEventSnapshot;
+}): Promise<void> {
+  await upsertCalendarEventLink({
+    supabase: input.supabase,
+    task: input.task,
+    providerEventId: input.event.id,
+    providerEventUrl: input.event.htmlLink,
+    timezone: normalizeTimezone(input.event.timezone),
+    startsAt: new Date(input.event.startAt).toISOString(),
+    endsAt: new Date(input.event.endAt).toISOString()
+  });
+}
+
 async function clearCalendarLinksForTask(
   supabase: SupabaseAdminClient,
   taskId: string,
@@ -209,10 +318,87 @@ export async function loadTaskForCalendarSync(
   return (data as TaskCalendarSyncRow | null) ?? null;
 }
 
+async function inspectTaskInboundCalendarChangeFromTask(
+  supabase: SupabaseAdminClient,
+  task: TaskCalendarSyncRow
+): Promise<TaskCalendarInboundState> {
+  const hasGoogleLink = task.calendar_provider === "google" && !!task.calendar_event_id;
+  if (!hasGoogleLink) {
+    return {
+      status: "not_linked",
+      message: null
+    };
+  }
+
+  const manualProtected =
+    task.calendar_sync_mode === "manual" || (!!task.calendar_event_id && task.calendar_sync_mode !== "app_managed");
+
+  if (manualProtected) {
+    return {
+      status: "manual",
+      message: "Подію прив’язано вручну."
+    };
+  }
+
+  if (task.calendar_sync_mode !== "app_managed") {
+    return {
+      status: "not_linked",
+      message: null
+    };
+  }
+
+  let remoteEvent: GoogleEventSnapshot;
+  try {
+    remoteEvent = await googleGetEvent(task.user_id, task.calendar_event_id!);
+  } catch (error) {
+    const message = error instanceof Error ? error.message : "calendar_event_fetch_failed";
+    if (message === "calendar_event_not_found") {
+      return {
+        status: "missing",
+        message: "Подію більше не знайдено в Google Calendar."
+      };
+    }
+    if (message === "calendar_event_unsupported_time") {
+      return {
+        status: "unsupported",
+        message: "Формат часу події в Google Calendar не підтримується."
+      };
+    }
+    throw error;
+  }
+
+  await syncCalendarLinkFromRemoteEvent({ supabase, task, event: remoteEvent });
+  const remoteEstimatedMinutes = deriveEstimatedMinutesFromRemoteEvent(remoteEvent);
+  if (!remoteEstimatedMinutes) {
+    return {
+      status: "unsupported",
+      message: "Формат тривалості події в Google Calendar не підтримується."
+    };
+  }
+
+  const scheduledChanged = !sameInstant(task.scheduled_for, remoteEvent.startAt);
+  const durationChanged = normalizeEstimatedMinutes(task.estimated_minutes) !== remoteEstimatedMinutes;
+
+  if (!scheduledChanged && !durationChanged) {
+    return {
+      status: "healthy",
+      message: null
+    };
+  }
+
+  return {
+    status: "changed",
+    message: "Подію змінено в Google Calendar.",
+    remoteScheduledFor: new Date(remoteEvent.startAt).toISOString(),
+    remoteEstimatedMinutes
+  };
+}
+
 export async function syncTaskCalendarAfterMutation(
   supabase: SupabaseAdminClient,
   userId: string,
-  taskId: string
+  taskId: string,
+  options: TaskCalendarSyncOptions = {}
 ): Promise<void> {
   try {
     const task = await loadTaskForCalendarSync(supabase, userId, taskId);
@@ -251,14 +437,21 @@ export async function syncTaskCalendarAfterMutation(
         }
       }
 
-      await updateTaskCalendarFields(supabase, task.id, userId, deleteError ? {
-        calendar_sync_error: deleteError
-      } : {
-        calendar_provider: null,
-        calendar_event_id: null,
-        calendar_sync_mode: null,
-        calendar_sync_error: null
-      });
+      await updateTaskCalendarFields(
+        supabase,
+        task.id,
+        userId,
+        deleteError
+          ? {
+              calendar_sync_error: deleteError
+            }
+          : {
+              calendar_provider: null,
+              calendar_event_id: null,
+              calendar_sync_mode: null,
+              calendar_sync_error: null
+            }
+      );
       return;
     }
 
@@ -282,13 +475,41 @@ export async function syncTaskCalendarAfterMutation(
     let staleEventId: string | null = null;
 
     if (task.calendar_sync_mode === "app_managed" && task.calendar_provider === "google" && task.calendar_event_id) {
-      try {
-        eventResult = await googleUpdateEvent(userId, task.calendar_event_id, eventPayload);
-      } catch (error) {
-        const message = error instanceof Error ? error.message : "calendar_event_update_failed";
-        if (message !== "calendar_event_not_found") throw error;
-        staleEventId = task.calendar_event_id;
-        eventResult = await googleCreateEvent(userId, eventPayload);
+      if (!options.ignoreInboundConflict) {
+        const inboundState = await inspectTaskInboundCalendarChangeFromTask(supabase, task);
+        if (inboundState.status === "changed") {
+          await updateTaskCalendarFields(supabase, task.id, userId, {
+            calendar_sync_error: "calendar_inbound_change_pending"
+          });
+          return;
+        }
+        if (inboundState.status === "missing") {
+          staleEventId = task.calendar_event_id;
+          eventResult = await googleCreateEvent(userId, eventPayload);
+        } else if (inboundState.status === "unsupported") {
+          await updateTaskCalendarFields(supabase, task.id, userId, {
+            calendar_sync_error: "calendar_inbound_change_unsupported"
+          });
+          return;
+        } else {
+          try {
+            eventResult = await googleUpdateEvent(userId, task.calendar_event_id, eventPayload);
+          } catch (error) {
+            const message = error instanceof Error ? error.message : "calendar_event_update_failed";
+            if (message !== "calendar_event_not_found") throw error;
+            staleEventId = task.calendar_event_id;
+            eventResult = await googleCreateEvent(userId, eventPayload);
+          }
+        }
+      } else {
+        try {
+          eventResult = await googleUpdateEvent(userId, task.calendar_event_id, eventPayload);
+        } catch (error) {
+          const message = error instanceof Error ? error.message : "calendar_event_update_failed";
+          if (message !== "calendar_event_not_found") throw error;
+          staleEventId = task.calendar_event_id;
+          eventResult = await googleCreateEvent(userId, eventPayload);
+        }
       }
     } else if (!task.calendar_event_id) {
       eventResult = await googleCreateEvent(userId, eventPayload);
@@ -330,6 +551,81 @@ export async function syncTaskCalendarAfterMutation(
       // Keep task mutation successful even if sync diagnostics also fail.
     }
   }
+}
+
+export async function inspectTaskInboundCalendarChange(
+  supabase: SupabaseAdminClient,
+  userId: string,
+  taskId: string
+): Promise<TaskCalendarInboundState> {
+  const task = await loadTaskForCalendarSync(supabase, userId, taskId);
+  if (!task) {
+    throw new Error("task_not_found");
+  }
+
+  return await inspectTaskInboundCalendarChangeFromTask(supabase, task);
+}
+
+export async function applyTaskInboundCalendarChange(
+  supabase: SupabaseAdminClient,
+  userId: string,
+  taskId: string
+): Promise<TaskCalendarInboundState> {
+  const task = await loadTaskForCalendarSync(supabase, userId, taskId);
+  if (!task) {
+    throw new Error("task_not_found");
+  }
+
+  const state = await inspectTaskInboundCalendarChangeFromTask(supabase, task);
+  if (state.status !== "changed") {
+    return state;
+  }
+
+  await updateTaskCalendarFields(supabase, task.id, userId, {
+    scheduled_for: state.remoteScheduledFor,
+    estimated_minutes: state.remoteEstimatedMinutes,
+    calendar_sync_error: null
+  });
+
+  return {
+    status: "healthy",
+    message: "Зміни з Google Calendar застосовано."
+  };
+}
+
+export async function keepTaskLocalCalendarVersion(
+  supabase: SupabaseAdminClient,
+  userId: string,
+  taskId: string
+): Promise<TaskCalendarInboundState> {
+  const task = await loadTaskForCalendarSync(supabase, userId, taskId);
+  if (!task) {
+    throw new Error("task_not_found");
+  }
+
+  const hasGoogleLink = task.calendar_provider === "google" && !!task.calendar_event_id;
+  if (!hasGoogleLink) {
+    return {
+      status: "not_linked",
+      message: null
+    };
+  }
+
+  const manualProtected =
+    task.calendar_sync_mode === "manual" || (!!task.calendar_event_id && task.calendar_sync_mode !== "app_managed");
+  if (manualProtected) {
+    return {
+      status: "manual",
+      message: "Подію прив’язано вручну."
+    };
+  }
+
+  await syncTaskCalendarAfterMutation(supabase, userId, taskId, { ignoreInboundConflict: true });
+
+  return {
+    status: "healthy",
+    message: "Версію з додатку збережено в Google Calendar."
+  };
 }
 
 export async function detachTaskCalendarLink(
@@ -390,7 +686,3 @@ export async function cleanupDeletedTaskCalendarSync(
     // Ignore local link cleanup failure for V1 delete path.
   }
 }
-
-
-
-

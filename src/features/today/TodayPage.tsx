@@ -1,4 +1,4 @@
-﻿import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { NoteDetailModal } from "../../components/NoteDetailModal";
 import { PlanningConversationModal } from "../../components/PlanningConversationModal";
 import { TaskDetailModal } from "../../components/TaskDetailModal";
@@ -17,12 +17,15 @@ import {
 } from "../../lib/taskTiming";
 import {
   ApiError,
+  applyTaskCalendarInbound,
+  keepTaskCalendarLocalVersion,
   createNote,
   createTask,
   detachTaskCalendarLink as detachTaskCalendarLinkRequest,
   getAiAdvisor,
   getGoogleCalendarStatus,
   getGoogleCalendarUpcoming,
+  inspectTaskCalendarInbound,
   getPlanningAssistant,
   getPlanningConversation,
   getProjects,
@@ -41,6 +44,7 @@ import type {
   PlanningConversationState,
   PlanningSummary,
   ProjectItem,
+  TaskCalendarInboundState,
   TaskItem,
   TaskType
 } from "../../types/api";
@@ -309,6 +313,7 @@ export function TodayPage() {
   const [loading, setLoading] = useState(false);
   const [workingTaskId, setWorkingTaskId] = useState<string | null>(null);
   const [calendarNotice, setCalendarNotice] = useState<CalendarNotice | null>(null);
+  const [calendarInboundState, setCalendarInboundState] = useState<TaskCalendarInboundState | null>(null);
   const diagnostics = useDiagnostics();
 
   const sessionToken = localStorage.getItem(SESSION_KEY) ?? "";
@@ -451,6 +456,27 @@ export function TodayPage() {
     void loadToday();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [sessionToken, selectedScopeDate]);
+
+  useEffect(() => {
+    if (!sessionToken || !activeTask || activeTask.calendar_sync_mode !== "app_managed" || !activeTask.calendar_event_id) {
+      setCalendarInboundState(null);
+      return;
+    }
+
+    let cancelled = false;
+    void (async () => {
+      try {
+        const state = await inspectTaskCalendarInbound({ sessionToken, taskId: activeTask.id });
+        if (!cancelled) setCalendarInboundState(state);
+      } catch {
+        if (!cancelled) setCalendarInboundState(null);
+      }
+    })();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [activeTask?.id, activeTask?.calendar_event_id, activeTask?.calendar_sync_mode, sessionToken]);
 
   const scheduledToday = useMemo(() => {
     const relevant = items.filter((task) => {
@@ -704,6 +730,72 @@ export function TodayPage() {
     }
   }
 
+  async function applyInboundCalendarChange(task: TaskItem) {
+    if (!sessionToken) {
+      setError("Спочатку авторизуйся в Інбоксі.");
+      return;
+    }
+
+    setWorkingTaskId(task.id);
+    setError(null);
+    diagnostics.trackAction("apply_task_calendar_inbound", { taskId: task.id, route: "/today" });
+
+    try {
+      const state = await applyTaskCalendarInbound({ sessionToken, taskId: task.id });
+      setCalendarNotice({
+        tone: "success",
+        message: state.message ?? "Зміни з Google Calendar застосовано."
+      });
+      await loadToday();
+    } catch (applyError) {
+      if (applyError instanceof ApiError) {
+        diagnostics.trackFailure({
+          path: applyError.path,
+          status: applyError.status,
+          code: applyError.code,
+          message: applyError.message,
+          details: applyError.details
+        });
+      }
+      setCalendarNotice({ tone: "error", message: "Не вдалося застосувати зміни з Google Calendar." });
+      setError(applyError instanceof Error ? applyError.message : "Не вдалося застосувати зміни з Google Calendar.");
+    } finally {
+      setWorkingTaskId(null);
+    }
+  }
+  async function keepCalendarAppVersion(task: TaskItem) {
+    if (!sessionToken) {
+      setError("Спочатку авторизуйся в Інбоксі.");
+      return;
+    }
+
+    setWorkingTaskId(task.id);
+    setError(null);
+    diagnostics.trackAction("keep_task_calendar_app_version", { taskId: task.id, route: "/today" });
+
+    try {
+      const state = await keepTaskCalendarLocalVersion({ sessionToken, taskId: task.id });
+      setCalendarNotice({
+        tone: "success",
+        message: state.message ?? "Версію з додатку збережено в Google Calendar."
+      });
+      await loadToday();
+    } catch (keepError) {
+      if (keepError instanceof ApiError) {
+        diagnostics.trackFailure({
+          path: keepError.path,
+          status: keepError.status,
+          code: keepError.code,
+          message: keepError.message,
+          details: keepError.details
+        });
+      }
+      setCalendarNotice({ tone: "error", message: "Не вдалося залишити версію з додатку." });
+      setError(keepError instanceof Error ? keepError.message : "Не вдалося залишити версію з додатку.");
+    } finally {
+      setWorkingTaskId(null);
+    }
+  }
   async function detachActiveTaskCalendarLink(task: TaskItem) {
     if (!sessionToken) {
       setError("???????? ??????????? ? ???????.");
@@ -1357,6 +1449,7 @@ export function TodayPage() {
         projects={projects}
         busy={workingTaskId !== null}
         calendarSyncNotice={activeTask ? calendarNotice : null}
+        calendarInboundState={activeTask ? calendarInboundState : null}
         initialMode={taskModalMode === "create" ? "create" : "edit"}
         createDefaults={todayTaskCreateDefaults}
         showWorkflowActions={false}
@@ -1407,6 +1500,14 @@ export function TodayPage() {
         onDetachCalendarLink={() => {
           if (!activeTask) return;
           void detachActiveTaskCalendarLink(activeTask);
+        }}
+        onApplyCalendarInbound={() => {
+          if (!activeTask) return;
+          void applyInboundCalendarChange(activeTask);
+        }}
+        onKeepCalendarAppVersion={() => {
+          if (!activeTask) return;
+          void keepCalendarAppVersion(activeTask);
         }}
         onOpenLinkedCalendarEvent={() => {}}
       />
@@ -1466,6 +1567,13 @@ export function TodayPage() {
     </section>
   );
 }
+
+
+
+
+
+
+
 
 
 

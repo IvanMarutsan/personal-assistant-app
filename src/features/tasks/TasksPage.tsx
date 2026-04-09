@@ -1,15 +1,18 @@
-﻿import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { CalendarEventModal } from "../../components/CalendarEventModal";
 import { TaskActionModal } from "../../components/TaskActionModal";
 import { TaskDetailModal } from "../../components/TaskDetailModal";
 import { useDiagnostics } from "../../lib/diagnostics";
 import {
   ApiError,
+  applyTaskCalendarInbound,
   createGoogleCalendarEvent,
   createTask,
   deleteTask,
   detachTaskCalendarLink as detachTaskCalendarLinkRequest,
   getGoogleCalendarStatus,
+  inspectTaskCalendarInbound,
+  keepTaskCalendarLocalVersion,
   retryTaskCalendarSync as retryTaskCalendarSyncRequest,
   getProjects,
   getTasks,
@@ -18,7 +21,7 @@ import {
 } from "../../lib/api";
 import { moveReasonLabel } from "../../lib/reasons";
 import { formatTaskTimingTone, isBacklogTask, parseTaskDate, planningFlexibilityLabel } from "../../lib/taskTiming";
-import type { GoogleCalendarStatus, MoveReasonCode, ProjectItem, TaskItem, TaskType } from "../../types/api";
+import type { GoogleCalendarStatus, MoveReasonCode, ProjectItem, TaskCalendarInboundState, TaskItem, TaskType } from "../../types/api";
 
 const SESSION_KEY = "personal_assistant_app_session_token";
 const TASK_TYPE_FILTERS: Array<{ label: string; value: TaskType }> = [
@@ -130,6 +133,7 @@ export function TasksPage() {
   const [calendarCreating, setCalendarCreating] = useState(false);
   const [calendarError, setCalendarError] = useState<string | null>(null);
   const [calendarNotice, setCalendarNotice] = useState<CalendarNotice | null>(null);
+  const [calendarInboundState, setCalendarInboundState] = useState<TaskCalendarInboundState | null>(null);
   const diagnostics = useDiagnostics();
 
   const sessionToken = localStorage.getItem(SESSION_KEY) ?? "";
@@ -195,6 +199,26 @@ export function TasksPage() {
     void Promise.all([loadTasks(), loadProjects(), loadCalendarStatus()]);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+  useEffect(() => {
+    if (!sessionToken || !activeTask || activeTask.calendar_sync_mode !== "app_managed" || !activeTask.calendar_event_id) {
+      setCalendarInboundState(null);
+      return;
+    }
+
+    let cancelled = false;
+    void (async () => {
+      try {
+        const state = await inspectTaskCalendarInbound({ sessionToken, taskId: activeTask.id });
+        if (!cancelled) setCalendarInboundState(state);
+      } catch {
+        if (!cancelled) setCalendarInboundState(null);
+      }
+    })();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [activeTask?.id, activeTask?.calendar_event_id, activeTask?.calendar_sync_mode, sessionToken]);
 
   async function createCalendarFromTask(payload: {
     title: string;
@@ -544,6 +568,72 @@ export function TasksPage() {
       setWorkingTaskId(null);
     }
   }
+  async function applyInboundCalendarChange(task: TaskItem) {
+    if (!sessionToken) {
+      setError("Спочатку авторизуйся в Інбоксі.");
+      return;
+    }
+
+    setWorkingTaskId(task.id);
+    setError(null);
+    diagnostics.trackAction("apply_task_calendar_inbound", { taskId: task.id });
+
+    try {
+      const state = await applyTaskCalendarInbound({ sessionToken, taskId: task.id });
+      setCalendarNotice({
+        tone: "success",
+        message: state.message ?? "Зміни з Google Calendar застосовано."
+      });
+      await loadTasks();
+    } catch (applyError) {
+      if (applyError instanceof ApiError) {
+        diagnostics.trackFailure({
+          path: applyError.path,
+          status: applyError.status,
+          code: applyError.code,
+          message: applyError.message,
+          details: applyError.details
+        });
+      }
+      setCalendarNotice({ tone: "error", message: "Не вдалося застосувати зміни з Google Calendar." });
+      setError(applyError instanceof Error ? applyError.message : "Не вдалося застосувати зміни з Google Calendar.");
+    } finally {
+      setWorkingTaskId(null);
+    }
+  }
+  async function keepCalendarAppVersion(task: TaskItem) {
+    if (!sessionToken) {
+      setError("Спочатку авторизуйся в Інбоксі.");
+      return;
+    }
+
+    setWorkingTaskId(task.id);
+    setError(null);
+    diagnostics.trackAction("keep_task_calendar_app_version", { taskId: task.id });
+
+    try {
+      const state = await keepTaskCalendarLocalVersion({ sessionToken, taskId: task.id });
+      setCalendarNotice({
+        tone: "success",
+        message: state.message ?? "Версію з додатку збережено в Google Calendar."
+      });
+      await loadTasks();
+    } catch (keepError) {
+      if (keepError instanceof ApiError) {
+        diagnostics.trackFailure({
+          path: keepError.path,
+          status: keepError.status,
+          code: keepError.code,
+          message: keepError.message,
+          details: keepError.details
+        });
+      }
+      setCalendarNotice({ tone: "error", message: "Не вдалося залишити версію з додатку." });
+      setError(keepError instanceof Error ? keepError.message : "Не вдалося залишити версію з додатку.");
+    } finally {
+      setWorkingTaskId(null);
+    }
+  }
   async function detachCalendarLink(task: TaskItem) {
     if (!sessionToken) {
       setError("???????? ??????????? ? ???????.");
@@ -751,6 +841,7 @@ export function TasksPage() {
         projects={projects}
         busy={workingTaskId !== null}
         calendarSyncNotice={activeTask ? calendarNotice : null}
+        calendarInboundState={activeTask ? calendarInboundState : null}
         onClose={() => {
           setActiveTask(null);
           setTaskModalMode("view");
@@ -788,6 +879,10 @@ export function TasksPage() {
           if (!activeTask) return;
           void detachCalendarLink(activeTask);
         }}
+        onApplyCalendarInbound={() => {
+          if (!activeTask) return;
+          void applyInboundCalendarChange(activeTask);
+        }}
         onOpenLinkedCalendarEvent={(url) => {
           diagnostics.trackAction("open_task_linked_calendar_event", { taskId: activeTask?.id });
           try {
@@ -822,6 +917,16 @@ export function TasksPage() {
     </section>
   );
 }
+
+
+
+
+
+
+
+
+
+
 
 
 

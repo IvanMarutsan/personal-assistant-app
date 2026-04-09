@@ -170,6 +170,33 @@ export type WorklogContextSummary = {
   topProjects: Array<{ name: string; count: number }>;
   sourceCounts: Array<{ source: string; count: number }>;
 };
+export type WeeklyReviewItem = {
+  taskId: string | null;
+  title: string;
+  reason: string;
+};
+export type WeeklyReviewSummary = {
+  done: WeeklyReviewItem[];
+  notDone: WeeklyReviewItem[];
+  moved: WeeklyReviewItem[];
+  shouldMove: WeeklyReviewItem[];
+  shouldKill: WeeklyReviewItem[];
+};
+export type TaskCalendarInboundState =
+  | {
+      status: "manual" | "not_linked" | "healthy";
+      message: string | null;
+    }
+  | {
+      status: "changed";
+      message: string;
+      remoteScheduledFor: string;
+      remoteEstimatedMinutes: number;
+    }
+  | {
+      status: "missing" | "unsupported";
+      message: string;
+    };
 export type PlanningSummary = {
   generatedAt: string;
   timezone: string;
@@ -224,6 +251,7 @@ export type PlanningSummary = {
     topMovedReasons: Array<{ reason: string; count: number }>;
     worklogs: WorklogContextSummary;
   };
+  weeklyReview: WeeklyReviewSummary | null;
   weekDays: PlanningConversationScopeDaySummary[];
   notableDeadlines: PlanningConversationDeadlineSummary[];
   appliedThresholds: {
@@ -432,6 +460,12 @@ export type PlanningConversationState = {
     notableDeadlines: PlanningConversationDeadlineSummary[];
   };
 };
+
+
+
+
+
+
 
 
 

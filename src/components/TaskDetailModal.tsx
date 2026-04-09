@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import type { MouseEvent } from "react";
-import type { PlanningFlexibility, ProjectItem, TaskItem, TaskStatus, TaskType } from "../types/api";
+import type { PlanningFlexibility, ProjectItem, TaskCalendarInboundState, TaskItem, TaskStatus, TaskType } from "../types/api";
 import { moveReasonLabel } from "../lib/reasons";
 
 type TaskActionKind = "done" | "reschedule" | "block" | "unblock" | "cancel";
@@ -39,7 +39,10 @@ type TaskDetailModalProps = {
   onOpenLinkedCalendarEvent: (url: string) => void;
   onRetryCalendarSync?: () => void;
   onDetachCalendarLink?: () => void;
+  onApplyCalendarInbound?: () => void;
+  onKeepCalendarAppVersion?: () => void;
   calendarSyncNotice?: { tone: "success" | "error" | "info"; message: string } | null;
+  calendarInboundState?: TaskCalendarInboundState | null;
   initialMode?: TaskModalMode;
   showWorkflowActions?: boolean;
 };
@@ -123,14 +126,6 @@ function formatEstimate(value: number | null | undefined): string {
   return `${value} хв`;
 }
 
-function calendarSyncLabel(task: TaskItem): string | null {
-  if (task.calendar_sync_error) return "??????? ?? Google Calendar ???????? ?????.";
-  if (task.calendar_sync_mode === "app_managed" && task.linked_calendar_event) return "?????????????? ? Google Calendar.";
-  if (task.calendar_sync_mode === "manual" && task.linked_calendar_event) return "????? ?????????? ??????.";
-  if (task.scheduled_for) return "??????? ? Google Calendar ????? ?????.";
-  return null;
-}
-
 function deleteCalendarBehaviorLabel(task: TaskItem): string | null {
   if (!task.linked_calendar_event) return null;
   if (task.calendar_sync_mode === "app_managed") {
@@ -192,6 +187,10 @@ function calendarSyncActionHint(task: TaskItem): string | null {
   return null;
 }
 
+function calendarInboundMessage(state: TaskCalendarInboundState | null | undefined): string | null {
+  if (!state || state.status === "healthy" || state.status === "manual" || state.status === "not_linked") return null;
+  return state.message;
+}
 function timingLabel(task: TaskItem): string {
   const scheduled = task.scheduled_for ? formatLocalDateTime(new Date(task.scheduled_for)) : null;
   const due = task.due_at ? formatLocalDateTime(new Date(task.due_at)) : null;
@@ -375,9 +374,21 @@ export function TaskDetailModal(props: TaskDetailModalProps) {
               {calendarSyncActionHint(task) ? <p className="inbox-meta">{calendarSyncActionHint(task)}</p> : null}
               {task.calendar_sync_mode === "app_managed" ? (
                 <>
-                  <p className="inbox-meta">?????????? ????? ? Google Calendar ???????? ? ?????? ??????.</p>
-                  <p className="inbox-meta">????? ?????????? ?? ???????? ?????????????? ????? ???????????? ? Google Calendar.</p>
+                  <p className="inbox-meta">{"\u0422\u0440\u0438\u0432\u0430\u043b\u0456\u0441\u0442\u044c \u043f\u043e\u0434\u0456\u0457 \u0431\u0435\u0440\u0435\u0442\u044c\u0441\u044f \u0437 \u043e\u0446\u0456\u043d\u043a\u0438 \u0437\u0430\u0434\u0430\u0447\u0456."}</p>
+                  <p className="inbox-meta">{"\u041f\u0456\u0441\u043b\u044f \"\u0412\u0438\u043a\u043e\u043d\u0430\u043d\u043e\u201d \u0441\u0438\u043d\u0445\u0440\u043e\u043d\u0456\u0437\u043e\u0432\u0430\u043d\u0430 \u043f\u043e\u0434\u0456\u044f \u043f\u0440\u0438\u0431\u0438\u0440\u0430\u0454\u0442\u044c\u0441\u044f \u0437 \u043a\u0430\u043b\u0435\u043d\u0434\u0430\u0440\u044f."}</p>
                 </>
+              ) : null}
+              {calendarInboundMessage(props.calendarInboundState) ? (
+                <p className={props.calendarInboundState?.status === "changed" ? "error-note" : "inbox-meta"}>
+                  {calendarInboundMessage(props.calendarInboundState)}
+                </p>
+              ) : null}
+              {props.calendarInboundState?.status === "changed" && props.onApplyCalendarInbound ? (
+                <div className="inbox-actions">
+                  <button type="button" className="ghost" onClick={props.onApplyCalendarInbound} disabled={props.busy}>
+                    Застосувати зміни з календаря
+                  </button>
+                </div>
               ) : null}
               {props.calendarSyncNotice ? (
                 <p className={props.calendarSyncNotice.tone === "error" ? "error-note" : "inbox-meta"}>
@@ -395,9 +406,9 @@ export function TaskDetailModal(props: TaskDetailModalProps) {
               ) : null}
               {task.linked_calendar_event ? (
                 <div className="project-group">
-                  <p className="inbox-meta">????????? ? Google Calendar: ???</p>
+                  <p className="inbox-meta">{"\u041f\u043e\u0434\u0456\u044f \u0432 Google Calendar"}</p>
                   <p className="inbox-meta">
-                    ?????: {task.linked_calendar_event.title} ? {" "}
+                    {"\u041d\u0430\u0437\u0432\u0430:"} {task.linked_calendar_event.title} - {" "}
                     {formatLocalDateTime(new Date(task.linked_calendar_event.starts_at))}
                   </p>
                   <p className="inbox-meta">{deleteCalendarBehaviorLabel(task)}</p>
@@ -409,7 +420,7 @@ export function TaskDetailModal(props: TaskDetailModalProps) {
                         onClick={() => props.onOpenLinkedCalendarEvent(task.linked_calendar_event!.provider_event_url!)}
                         disabled={props.busy}
                       >
-                        ??????????? ? Google Calendar
+                        {"\u0412\u0456\u0434\u043a\u0440\u0438\u0442\u0438 \u0432 Google Calendar"}
                       </button>
                     ) : null}
                     {props.onRetryCalendarSync && canRetryCalendarSync(task) ? (
@@ -650,6 +661,11 @@ export function TaskDetailModal(props: TaskDetailModalProps) {
     </div>
   );
 }
+
+
+
+
+
 
 
 

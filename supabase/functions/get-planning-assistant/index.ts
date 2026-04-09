@@ -1,4 +1,4 @@
-﻿import { DateTime } from "npm:luxon@3.6.1";
+import { DateTime } from "npm:luxon@3.6.1";
 import { createAdminClient } from "../_shared/db.ts";
 import { handleOptions, jsonResponse } from "../_shared/http.ts";
 import { planningThresholds } from "../_shared/planning-config.ts";
@@ -271,6 +271,143 @@ Deno.serve(async (req) => {
         (day.calendarBusyMinutes ?? 0) < 180 &&
         day.calendarEventCount <= 2
     );
+
+    const { data: reviewTasksData, error: reviewTasksError } = await supabase
+      .from("tasks")
+      .select(
+        "id, title, task_type, status, importance, commitment_type, is_recurring, is_protected_essential, postpone_count, due_at, scheduled_for, estimated_minutes, planning_flexibility, projects(name)"
+      )
+      .eq("user_id", sessionUser.userId)
+      .neq("status", "cancelled")
+      .limit(500);
+
+    if (reviewTasksError) {
+      return jsonResponse({ ok: false, error: "tasks_fetch_failed" }, 500);
+    }
+
+    const { data: weekEventsData, error: weekEventsError } = await supabase
+      .from("task_events")
+      .select("task_id, event_type, reason_code, new_status, created_at")
+      .eq("user_id", sessionUser.userId)
+      .gte("created_at", context.scopeStartIso)
+      .lte("created_at", context.scopeEndIso)
+      .limit(1000);
+
+    if (weekEventsError) {
+      return jsonResponse({ ok: false, error: "events_fetch_failed" }, 500);
+    }
+
+    const reviewTasks = (reviewTasksData ?? []) as TaskRow[];
+    const weekEvents = (weekEventsData ?? []) as TaskEventRow[];
+    const taskById = new Map(reviewTasks.map((task) => [task.id, task]));
+    const moveReasonLabels: Record<string, string> = {
+      reprioritized: "переплановувалась через зміну пріоритетів",
+      blocked_dependency: "зависала через блокер",
+      urgent_interrupt: "зсувалась через термінові переривання",
+      calendar_conflict: "зсувалась через календарний конфлікт",
+      underestimated: "виявилась більшою, ніж очікувалось",
+      low_energy: "не зайшла в тиждень через нестачу ресурсу",
+      waiting_on_external: "чекала зовнішнього кроку",
+      waiting_response: "чекала відповіді",
+      personal_issue: "зсунулась через особисті обставини",
+      other: "зсувалась упродовж тижня"
+    };
+    const overloadedDayKeys = new Set(overloadedDays.map((day) => day.scopeDate));
+    const completedTaskIds = new Set<string>();
+    const done = weekEvents
+      .filter((event) => event.task_id && (event.event_type === "completed" || event.new_status === "done"))
+      .sort((a, b) => new Date(b.created_at ?? 0).getTime() - new Date(a.created_at ?? 0).getTime())
+      .flatMap((event) => {
+        const taskId = event.task_id ?? null;
+        if (!taskId || completedTaskIds.has(taskId)) return [];
+        completedTaskIds.add(taskId);
+        const task = taskById.get(taskId);
+        if (!task) return [];
+        return [{
+          taskId,
+          title: task.title,
+          reason: taskProjectName(task)
+            ? `Закрито цього тижня в проєкті ${taskProjectName(task)}.`
+            : "Закрито цього тижня."
+        }];
+      })
+      .slice(0, 5);
+
+    const notDone = context.scheduledInWeek
+      .filter((task) => task.status !== "done" && task.status !== "cancelled")
+      .slice(0, 5)
+      .map((task) => ({
+        taskId: task.id,
+        title: task.title,
+        reason: task.scheduledFor
+          ? `Була в плані на ${DateTime.fromISO(task.scheduledFor, { zone: "utc" }).setZone(timezone).setLocale("uk").toFormat("ccc d LLL")}, але тиждень закінчується без закриття.`
+          : "Була в активному плані тижня, але не закрита."
+      }));
+
+    const movedByTask = new Map<string, TaskEventRow[]>();
+    for (const event of weekEvents) {
+      if (!event.task_id) continue;
+      if (event.event_type !== "rescheduled" && event.event_type !== "postponed" && event.event_type !== "missed") continue;
+      const list = movedByTask.get(event.task_id) ?? [];
+      list.push(event);
+      movedByTask.set(event.task_id, list);
+    }
+    const moved = [...movedByTask.entries()]
+      .map(([taskId, events]) => {
+        const task = taskById.get(taskId);
+        if (!task) return null;
+        const latestEvent = [...events].sort((a, b) => new Date(b.created_at ?? 0).getTime() - new Date(a.created_at ?? 0).getTime())[0] ?? null;
+        const count = events.length;
+        const reasonLabel = latestEvent?.reason_code ? moveReasonLabels[latestEvent.reason_code] ?? moveReasonLabels.other : moveReasonLabels.other;
+        return {
+          taskId,
+          title: task.title,
+          sortKey: latestEvent?.created_at ?? "",
+          reason: count > 1
+            ? `За тиждень зсувалась ${count} рази і ${reasonLabel}.`
+            : `За тиждень зсунулась і ${reasonLabel}.`
+        };
+      })
+      .filter((item): item is NonNullable<typeof item> => !!item)
+      .sort((a, b) => new Date(b.sortKey || 0).getTime() - new Date(a.sortKey || 0).getTime())
+      .slice(0, 5)
+      .map(({ taskId, title, reason }) => ({ taskId, title, reason }));
+
+    const shouldMove = [
+      ...context.dueInWeekWithoutPlannedStart.map((task) => ({
+        taskId: task.id,
+        title: task.title,
+        reason: "Дедлайн уже був у межах тижня, але для задачі так і не з'явився явний слот. Її варто або пересунути свідомо, або перепланувати окремо."
+      })),
+      ...context.scheduledInWeek
+        .filter((task) => task.scheduledFor && task.planningFlexibility === "flexible")
+        .filter((task) => {
+          const dayKey = DateTime.fromISO(task.scheduledFor ?? "", { zone: "utc" }).setZone(timezone).toISODate();
+          return dayKey ? overloadedDayKeys.has(dayKey) : false;
+        })
+        .map((task) => ({
+          taskId: task.id,
+          title: task.title,
+          reason: "Стоїть у напруженому дні тижня й виглядає кандидатом на ручне перенесення."
+        }))
+    ]
+      .filter((item, index, list) => list.findIndex((candidate) => candidate.taskId === item.taskId) === index)
+      .slice(0, 5);
+
+    const shouldKill = context.relevantBacklog
+      .filter(
+        (task) =>
+          !task.isProtectedEssential &&
+          !task.dueAt &&
+          (task.taskType === "someday" || task.planningFlexibility === "flexible")
+      )
+      .slice(0, 4)
+      .map((task) => ({
+        taskId: task.id,
+        title: task.title,
+        reason: "Висить у беклозі без дедлайну і без явного слоту. Якщо цінність не зросла, її можна сміливо переглянути на видалення."
+      }));
+
     const topPressureDay = [...weekDays].sort((a, b) => {
       const aScore = a.dueWithoutPlannedStartCount * 5 + a.plannedCount * 2 + a.scheduledMissingEstimateCount + ((a.calendarBusyMinutes ?? 0) / 120);
       const bScore = b.dueWithoutPlannedStartCount * 5 + b.plannedCount * 2 + b.scheduledMissingEstimateCount + ((b.calendarBusyMinutes ?? 0) / 120);
@@ -402,6 +539,13 @@ Deno.serve(async (req) => {
         protectedEssentialsMissedToday: 0,
         topMovedReasons: [],
         worklogs: context.worklogs
+      },
+      weeklyReview: {
+        done,
+        notDone,
+        moved,
+        shouldMove,
+        shouldKill
       },
       weekDays: context.weekDays,
       notableDeadlines: context.notableDeadlines,
@@ -666,11 +810,15 @@ Deno.serve(async (req) => {
       topMovedReasons,
       worklogs: worklogSummary
     },
+    weeklyReview: null,
     weekDays: [],
     notableDeadlines: [],
     appliedThresholds: planningThresholds
   });
 });
+
+
+
 
 
 

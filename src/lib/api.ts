@@ -13,6 +13,7 @@ import type {
   WorklogItem,
   PlanningSummary,
   ProjectItem,
+  TaskCalendarInboundState,
   TaskItem,
   TaskType,
   TaskStatus,
@@ -530,6 +531,55 @@ export async function detachTaskCalendarLink(input: {
     body: JSON.stringify({ taskId: input.taskId })
   });
 }
+export async function inspectTaskCalendarInbound(input: {
+  sessionToken: string;
+  taskId: string;
+}): Promise<TaskCalendarInboundState> {
+  const result = await request<{
+    ok: true;
+    taskId: string;
+    state: TaskCalendarInboundState;
+  }>("sync-task-calendar-inbound", {
+    method: "POST",
+    headers: sessionHeaders(input.sessionToken),
+    body: JSON.stringify({ taskId: input.taskId, action: "inspect" })
+  });
+
+  return result.state;
+}
+
+export async function applyTaskCalendarInbound(input: {
+  sessionToken: string;
+  taskId: string;
+}): Promise<TaskCalendarInboundState> {
+  const result = await request<{
+    ok: true;
+    taskId: string;
+    state: TaskCalendarInboundState;
+  }>("sync-task-calendar-inbound", {
+    method: "POST",
+    headers: sessionHeaders(input.sessionToken),
+    body: JSON.stringify({ taskId: input.taskId, action: "apply" })
+  });
+
+  return result.state;
+}
+export async function keepTaskCalendarLocalVersion(input: {
+  sessionToken: string;
+  taskId: string;
+}): Promise<TaskCalendarInboundState> {
+  const result = await request<{
+    ok: true;
+    taskId: string;
+    state: TaskCalendarInboundState;
+  }>("sync-task-calendar-inbound", {
+    method: "POST",
+    headers: sessionHeaders(input.sessionToken),
+    body: JSON.stringify({ taskId: input.taskId, action: "keep_local" })
+  });
+
+  return result.state;
+}
 
 export async function getWorklogs(sessionToken: string): Promise<WorklogItem[]> {
   const result = await request<{
@@ -659,6 +709,7 @@ export async function getPlanningAssistant(
     overload: PlanningSummary["overload"];
     essentialRisk: PlanningSummary["essentialRisk"];
     dailyReview: PlanningSummary["dailyReview"];
+    weeklyReview: PlanningSummary["weeklyReview"];
     weekDays: PlanningSummary["weekDays"];
     notableDeadlines: PlanningSummary["notableDeadlines"];
     appliedThresholds: PlanningSummary["appliedThresholds"];
@@ -677,6 +728,7 @@ export async function getPlanningAssistant(
     overload: result.overload,
     essentialRisk: result.essentialRisk,
     dailyReview: result.dailyReview,
+    weeklyReview: result.weeklyReview,
     weekDays: result.weekDays,
     notableDeadlines: result.notableDeadlines,
     appliedThresholds: result.appliedThresholds
@@ -825,6 +877,10 @@ export async function updatePlanningProposal(input: {
     })
   });
 }
+
+
+
+
 
 
 
