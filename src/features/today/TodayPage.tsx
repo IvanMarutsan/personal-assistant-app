@@ -274,6 +274,20 @@ function formatWorklogSources(items: Array<{ source: string; count: number }>): 
     .map((item) => `${worklogSourceLabel(item.source)}: ${item.count}`)
     .join(" · ");
 }
+function weeklyReviewEmptyLabel(section: keyof NonNullable<PlanningSummary["weeklyReview"]>): string {
+  switch (section) {
+    case "done":
+      return "Явно закритих задач за цей тиждень не видно.";
+    case "notDone":
+      return "Незакритих задач із плану тижня зараз не видно.";
+    case "moved":
+      return "Помітних зсувів у межах тижня не видно.";
+    case "shouldMove":
+      return "Явних кандидатів на ручне перенесення зараз немає.";
+    case "shouldKill":
+      return "Слабких кандидатів на прибирання поки не видно.";
+  }
+}
 function needsPlanningTouch(task: TaskItem): boolean {
   return !task.due_at || !task.estimated_minutes;
 }
@@ -864,6 +878,70 @@ export function TodayPage() {
     } finally {
       setPlanningConversationBusy(false);
     }
+  }
+
+  function openTaskFromWeeklyReview(taskId: string | null) {
+    if (!taskId) return;
+    const task = items.find((item) => item.id === taskId);
+    if (!task) return;
+    setTaskModalMode("edit");
+    setActiveTask(task);
+    setError(null);
+  }
+
+  function renderWeeklyReviewSection(
+    label: string,
+    sectionKey: keyof NonNullable<PlanningSummary["weeklyReview"]>,
+    options?: { showWeekConversationAction?: boolean; taskActionLabel?: string }
+  ) {
+    const review = weekPlanning?.weeklyReview;
+    if (!review) return null;
+
+    const itemsForSection = review[sectionKey];
+    return (
+      <div key={sectionKey}>
+        <p className="assistant-title">{label}</p>
+        {itemsForSection.length > 0 ? (
+          <ul className="assistant-secondary">
+            {itemsForSection.map((item, index) => {
+              const taskExists = item.taskId ? items.some((task) => task.id === item.taskId) : false;
+              return (
+                <li key={`${sectionKey}-${item.taskId ?? item.title}-${index}`}>
+                  <strong>{item.title}</strong>
+                  <span> - {normalizePlanningCopy(item.reason)}</span>
+                  {(taskExists || options?.showWeekConversationAction) ? (
+                    <div className="inbox-actions">
+                      {taskExists ? (
+                        <button
+                          type="button"
+                          className="ghost"
+                          onClick={() => openTaskFromWeeklyReview(item.taskId)}
+                          disabled={workingTaskId !== null}
+                        >
+                          {options?.taskActionLabel ?? "Відкрити задачу"}
+                        </button>
+                      ) : null}
+                      {options?.showWeekConversationAction ? (
+                        <button
+                          type="button"
+                          className="ghost"
+                          onClick={() => void openPlanningConversation("week")}
+                          disabled={!sessionToken || planningConversationBusy}
+                        >
+                          Обговорити тиждень
+                        </button>
+                      ) : null}
+                    </div>
+                  ) : null}
+                </li>
+              );
+            })}
+          </ul>
+        ) : (
+          <p className="empty-note">{weeklyReviewEmptyLabel(sectionKey)}</p>
+        )}
+      </div>
+    );
   }
 
   async function sendPlanningMessage(message: string) {
@@ -1567,6 +1645,9 @@ export function TodayPage() {
     </section>
   );
 }
+
+
+
 
 
 
