@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
+import { useNavigate } from "react-router-dom";
 import { NoteDetailModal } from "../../components/NoteDetailModal";
 import { PlanningConversationModal } from "../../components/PlanningConversationModal";
 import { TaskDetailModal } from "../../components/TaskDetailModal";
@@ -304,6 +305,27 @@ function calendarLinkHint(task: TaskItem): string | null {
   return null;
 }
 
+function shouldShowDayReviewPrompt(input: {
+  isSelectedToday: boolean;
+  openPlannedCount: number;
+  dueWithoutScheduleCount: number;
+  worklogCount: number;
+}): boolean {
+  if (!input.isSelectedToday) return false;
+  return input.openPlannedCount > 0 || input.dueWithoutScheduleCount > 0 || input.worklogCount === 0;
+}
+
+function shouldShowWeekReviewPrompt(input: {
+  isCurrentWeek: boolean;
+  hasWeeklyReview: boolean;
+  weeklyWorklogCount: number;
+  plannedCount: number;
+  backlogCount: number;
+}): boolean {
+  if (!input.isCurrentWeek) return false;
+  if (!input.hasWeeklyReview) return false;
+  return input.plannedCount > 0 || input.backlogCount > 0 || input.weeklyWorklogCount === 0;
+}
 export function TodayPage() {
   const [items, setItems] = useState<TaskItem[]>([]);
   const [projects, setProjects] = useState<ProjectItem[]>([]);
@@ -329,6 +351,7 @@ export function TodayPage() {
   const [calendarNotice, setCalendarNotice] = useState<CalendarNotice | null>(null);
   const [calendarInboundState, setCalendarInboundState] = useState<TaskCalendarInboundState | null>(null);
   const diagnostics = useDiagnostics();
+  const navigate = useNavigate();
 
   const sessionToken = localStorage.getItem(SESSION_KEY) ?? "";
 
@@ -463,6 +486,7 @@ export function TodayPage() {
   const selectedDayLabel = useMemo(() => formatScopeDateLabel(selectedScopeDate), [selectedScopeDate]);
   const selectedWeekScopeDate = useMemo(() => toWeekScopeDate(selectedDayStart), [selectedDayStart]);
   const selectedWeekLabel = useMemo(() => formatWeekRangeLabel(selectedWeekScopeDate), [selectedWeekScopeDate]);
+  const currentWeekScopeDate = useMemo(() => toWeekScopeDate(startOfToday(new Date())), []);
   const isSelectedToday = selectedScopeDate === todayScopeDate;
   const scopeDate = selectedScopeDate;
 
@@ -531,6 +555,19 @@ export function TodayPage() {
   }, [backlogItems, selectedDayEnd, selectedDayStart]);
 
   const todayKnownEstimateMinutes = useMemo(() => sumKnownEstimateMinutes(scheduledToday), [scheduledToday]);
+  const showDayReviewPrompt = shouldShowDayReviewPrompt({
+    isSelectedToday,
+    openPlannedCount: scheduledToday.length,
+    dueWithoutScheduleCount: dueTodayWithoutSchedule.length,
+    worklogCount: planning?.dailyReview.worklogs.count ?? 0
+  });
+  const showWeekReviewPrompt = shouldShowWeekReviewPrompt({
+    isCurrentWeek: selectedWeekScopeDate === currentWeekScopeDate,
+    hasWeeklyReview: !!weekPlanning?.weeklyReview,
+    weeklyWorklogCount: weekPlanning?.dailyReview.worklogs.count ?? 0,
+    plannedCount: weekPlanning?.overload.plannedTodayCount ?? 0,
+    backlogCount: weekPlanning?.overload.backlogCount ?? 0
+  });
   const todayMissingEstimateCount = useMemo(() => countMissingEstimates(scheduledToday), [scheduledToday]);
 
   const protectedEssentials = useMemo(() => {
@@ -892,7 +929,11 @@ export function TodayPage() {
   function renderWeeklyReviewSection(
     label: string,
     sectionKey: keyof NonNullable<PlanningSummary["weeklyReview"]>,
-    options?: { showWeekConversationAction?: boolean; taskActionLabel?: string }
+    options?: {
+      showWeekConversationAction?: boolean;
+      taskActionLabel?: string;
+      decisionHint?: string;
+    }
   ) {
     const review = weekPlanning?.weeklyReview;
     if (!review) return null;
@@ -909,6 +950,7 @@ export function TodayPage() {
                 <li key={`${sectionKey}-${item.taskId ?? item.title}-${index}`}>
                   <strong>{item.title}</strong>
                   <span> - {normalizePlanningCopy(item.reason)}</span>
+                  {options?.decisionHint ? <p className="inbox-meta">{options.decisionHint}</p> : null}
                   {(taskExists || options?.showWeekConversationAction) ? (
                     <div className="inbox-actions">
                       {taskExists ? (
@@ -1424,6 +1466,30 @@ export function TodayPage() {
             </>
           ) : null}
           <p className="inbox-meta">{formatWorklogSummary(weekPlanning.dailyReview.worklogs)}</p>
+          {weekPlanning.weeklyReview ? (
+            <>
+              <h3>Чернетка огляду тижня</h3>
+              {renderWeeklyReviewSection("Зроблено", "done", { taskActionLabel: "Відкрити" })}
+              {renderWeeklyReviewSection("Не закрито", "notDone", {
+                taskActionLabel: "Підготувати рішення",
+                showWeekConversationAction: true,
+                decisionHint: "Це ще не вирок. Тут варто або свідомо перенести, або прибрати тиск із задачі вручну."
+              })}
+              {renderWeeklyReviewSection("Зсунулось", "moved", {
+                showWeekConversationAction: true,
+                taskActionLabel: "Переглянути задачу"
+              })}
+              {renderWeeklyReviewSection("Ймовірно варто перенести", "shouldMove", {
+                showWeekConversationAction: true,
+                taskActionLabel: "Підготувати перенесення"
+              })}
+              {renderWeeklyReviewSection("Ймовірно варто прибрати", "shouldKill", {
+                taskActionLabel: "Підготувати прибирання",
+                showWeekConversationAction: true,
+                decisionHint: "Це лише підказка на cleanup. Остаточне рішення про видалення, скасування чи зміну задачі лишається за тобою."
+              })}
+            </>
+          ) : null}
         </section>
       ) : null}
 
@@ -1645,6 +1711,11 @@ export function TodayPage() {
     </section>
   );
 }
+
+
+
+
+
 
 
 
