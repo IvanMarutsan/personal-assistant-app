@@ -1,4 +1,4 @@
-import { createAdminClient } from "../_shared/db.ts";
+﻿import { createAdminClient } from "../_shared/db.ts";
 import { handleOptions, jsonResponse, safeJson } from "../_shared/http.ts";
 import { resolveSessionUser } from "../_shared/session.ts";
 
@@ -74,9 +74,12 @@ Deno.serve(async (req) => {
         project_id: nextProjectId,
         title: taskTitle.slice(0, 120),
         details: nextBody,
-        task_type: "admin_operational",
+        task_type: "admin",
         status: "planned",
-        importance: 3,`r`n        scheduled_for: null,`r`n        due_at: null,`r`n        estimated_minutes: null
+        importance: 3,
+        scheduled_for: null,
+        due_at: null,
+        estimated_minutes: null
       })
       .select("id")
       .single();
@@ -100,4 +103,5 @@ Deno.serve(async (req) => {
 
   return jsonResponse({ ok: true, noteId: note.id, createdTaskId });
 });
+
 

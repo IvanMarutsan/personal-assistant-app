@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+﻿import { useEffect, useMemo, useState } from "react";
 import { CalendarEventModal } from "../../components/CalendarEventModal";
 import { TaskActionModal } from "../../components/TaskActionModal";
 import { TaskDetailModal } from "../../components/TaskDetailModal";
@@ -21,18 +21,10 @@ import {
 } from "../../lib/api";
 import { moveReasonLabel } from "../../lib/reasons";
 import { formatTaskTimingTone, isBacklogTask, parseTaskDate, planningFlexibilityLabel } from "../../lib/taskTiming";
+import { isCommunicationTaskType, TASK_TYPE_FILTER_OPTIONS, taskTypeLabel } from "../../lib/taskTypes";
 import type { GoogleCalendarStatus, MoveReasonCode, ProjectItem, TaskCalendarInboundState, TaskItem, TaskType } from "../../types/api";
 
 const SESSION_KEY = "personal_assistant_app_session_token";
-const TASK_TYPE_FILTERS: Array<{ label: string; value: TaskType }> = [
-  { label: "Глибока робота", value: "deep_work" },
-  { label: "Швидка комунікація", value: "quick_communication" },
-  { label: "Адміністративне", value: "admin_operational" },
-  { label: "Регулярне важливе", value: "recurring_essential" },
-  { label: "Особисто важливе", value: "personal_essential" },
-  { label: "Колись", value: "someday" }
-];
-
 type TaskStatusScope = "active" | "completed" | "blocked" | "cancelled";
 type TaskActionKind = "postpone" | "reschedule" | "block" | "unblock" | "cancel";
 type TaskModalMode = "view" | "create";
@@ -60,22 +52,6 @@ function projectName(task: TaskItem): string {
   return task.projects.name ?? "Без проєкту";
 }
 
-function taskTypeLabel(value: TaskType): string {
-  switch (value) {
-    case "deep_work":
-      return "Глибока робота";
-    case "quick_communication":
-      return "Швидка комунікація";
-    case "admin_operational":
-      return "Адміністративне";
-    case "recurring_essential":
-      return "Регулярне важливе";
-    case "personal_essential":
-      return "Особисто важливе";
-    case "someday":
-      return "Колись";
-  }
-}
 
 function statusLabel(status: TaskItem["status"]): string {
   switch (status) {
@@ -312,7 +288,7 @@ export function TasksPage() {
     () =>
       items.filter(
         (task) =>
-          task.task_type === "quick_communication" &&
+          isCommunicationTaskType(task.task_type) &&
           (task.status === "planned" || task.status === "in_progress")
       ).length,
     [items]
@@ -782,7 +758,7 @@ export function TasksPage() {
         <details className="filter-dropdown">
           <summary>Тип ({selectedTypes.length || "всі"})</summary>
           <div className="filter-dropdown-body">
-            {TASK_TYPE_FILTERS.map((filter) => (
+            {TASK_TYPE_FILTER_OPTIONS.map((filter) => (
               <label key={filter.value}>
                 <input
                   type="checkbox"
@@ -917,6 +893,9 @@ export function TasksPage() {
     </section>
   );
 }
+
+
+
 
 
 

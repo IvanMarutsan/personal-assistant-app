@@ -4,11 +4,20 @@ import { handleOptions, jsonResponse } from "../_shared/http.ts";
 import { planningThresholds } from "../_shared/planning-config.ts";
 import { buildCalendarDayContext, buildPlanningContext, validateScopeDate } from "../_shared/planning-conversation.ts";
 import { resolveSessionUser } from "../_shared/session.ts";
+import { summarizeTaskTypeSignals } from "../_shared/task-type-signals.ts";
 
 type TaskRow = {
   id: string;
   title: string;
   task_type:
+    | "communication"
+    | "publishing"
+    | "admin"
+    | "planning"
+    | "tech"
+    | "content"
+    | "meeting"
+    | "review"
     | "deep_work"
     | "quick_communication"
     | "admin_operational"
@@ -169,6 +178,7 @@ type AdvisorResponse = {
       flexibleScheduledCount: number;
     }>;
     notableDeadlines: Array<{ taskId: string; title: string; projectName: string | null; dueAt: string }>;
+    taskTypeSignals: string[];
   };
   advisor: AiAdvisorPayload;
 };
@@ -333,7 +343,10 @@ function pickDeferCandidate(actionableTasks: TaskRow[], zone: string, dayStart: 
       !task.is_protected_essential &&
       task.planning_flexibility !== "essential" &&
       (task.task_type === "quick_communication" ||
+        task.task_type === "communication" ||
         task.task_type === "admin_operational" ||
+        task.task_type === "admin" ||
+        task.task_type === "meeting" ||
         task.task_type === "someday" ||
         task.planning_flexibility === "flexible")
   );
@@ -373,6 +386,7 @@ function fallbackAdvisor(input: {
   nextAction: TaskRow | null;
   deferCandidate: TaskRow | null;
   worklogs: ReturnType<typeof summarizeWorklogs>;
+  taskTypeSignals: string[];
 }): AiAdvisorPayload {
   const warningActive = input.protectedPendingCount > 0 || input.recurringAtRiskCount > 0;
   const loadLine =
@@ -392,6 +406,7 @@ function fallbackAdvisor(input: {
         ? ` У цей день є ${input.worklogs.count} контекстних записи(ів), тож частина часу пішла на реактивні дрібні дії або перемикання контексту.`
         : ` У цей день є ${input.worklogs.count} контекстних записи(ів).`
       : "";
+  const taskTypeLine = input.taskTypeSignals.length > 0 ? ` ${input.taskTypeSignals.slice(0, 2).join(" ")}` : "";
   return {
     whatMattersMostNow: input.nextAction
       ? input.dueTodayWithoutPlannedStartCount > 0
@@ -429,15 +444,16 @@ function fallbackAdvisor(input: {
         : "Ознак негайного витіснення захищених важливих справ зараз немає."
     },
     explanation: input.isTodayScope
-      ? `Станом на ${input.now.toFormat("HH:mm")} (${input.timezone}) у плані ${input.plannedTodayCount} задач, дедлайнів без плану ${input.dueTodayWithoutPlannedStartCount}, беклогу ${input.backlogCount}. ${loadLine}${estimateGapLine}`
-      : `Для ${input.scopeLabel} у плані ${input.plannedTodayCount} задач, дедлайнів без плану ${input.dueTodayWithoutPlannedStartCount}, беклогу ${input.backlogCount}. ${loadLine}${estimateGapLine}${worklogLine}`,
+      ? `Станом на ${input.now.toFormat("HH:mm")} (${input.timezone}) у плані ${input.plannedTodayCount} задач, дедлайнів без плану ${input.dueTodayWithoutPlannedStartCount}, беклогу ${input.backlogCount}. ${loadLine}${estimateGapLine}${taskTypeLine}`
+      : `Для ${input.scopeLabel} у плані ${input.plannedTodayCount} задач, дедлайнів без плану ${input.dueTodayWithoutPlannedStartCount}, беклогу ${input.backlogCount}. ${loadLine}${estimateGapLine}${taskTypeLine}${worklogLine}`,
     evidence: [
       `planned_today=${input.plannedTodayCount}`,
       `due_today_without_planned_start=${input.dueTodayWithoutPlannedStartCount}`,
       `backlog_count=${input.backlogCount}`,
       `scheduled_known_estimate_minutes=${input.scheduledKnownEstimateMinutes}`,
       `scheduled_missing_estimates=${input.scheduledMissingEstimateCount}`,
-      `overdue_planned=${input.overduePlannedCount}`
+      `overdue_planned=${input.overduePlannedCount}`,
+      `task_type_signals=${input.taskTypeSignals.length}`
     ]
   };
 }
@@ -613,6 +629,13 @@ Deno.serve(async (req) => {
     const lighterDays = context.weekDays.filter(
       (day) => day.plannedCount === 0 && day.dueWithoutPlannedStartCount === 0 && (day.calendarBusyMinutes ?? 0) < 180
     );
+    const weekTaskTypeSignals = summarizeTaskTypeSignals(
+      [
+        ...context.scheduledInWeek.map((task) => ({ task_type: task.taskType })),
+        ...context.dueInWeekWithoutPlannedStart.map((task) => ({ task_type: task.taskType }))
+      ],
+      "week"
+    );
     const nextAction = context.notableDeadlines[0]
       ? context.dueInWeekWithoutPlannedStart.find((task) => task.id === context.notableDeadlines[0].taskId) ?? null
       : context.scheduledInWeek.find((task) => task.isProtectedEssential || task.planningFlexibility === "essential") ?? context.scheduledInWeek[0] ?? null;
@@ -692,6 +715,8 @@ Deno.serve(async (req) => {
       },
       calendarWeek,
       worklogs: context.worklogs,
+      taskTypeSignals: weekTaskTypeSignals.signals,
+      taskTypeMix: weekTaskTypeSignals,
       weekDays: context.weekDays,
       notableDeadlines: context.notableDeadlines.slice(0, 8),
       tasks: {
@@ -757,6 +782,7 @@ Deno.serve(async (req) => {
           protectedEssentialsMissedToday: 0
         },
         worklogs: context.worklogs,
+        taskTypeSignals: weekTaskTypeSignals.signals,
         weekDays: context.weekDays,
         notableDeadlines: context.notableDeadlines
       },
@@ -831,10 +857,14 @@ Deno.serve(async (req) => {
       task.postpone_count >= planningThresholds.recurringRiskPostponeCount
   );
   const quickCommunicationOpen = actionableTasks.filter(
-    (task) => task.task_type === "quick_communication"
+    (task) => task.task_type === "quick_communication" || task.task_type === "communication"
   );
   const scheduledKnownEstimateMinutes = sumKnownEstimateMinutes(scheduledToday);
   const scheduledMissingEstimateCount = countMissingEstimates(scheduledToday);
+  const dayTaskTypeSignals = summarizeTaskTypeSignals(
+    [...scheduledToday, ...dueTodayWithoutPlannedStart],
+    "day"
+  );
 
   const movedToday = todayEvents.filter((event) =>
     event.event_type === "postponed" ||
@@ -916,6 +946,8 @@ Deno.serve(async (req) => {
     },
     dailyReview,
     worklogs: worklogSummary,
+    taskTypeSignals: dayTaskTypeSignals.signals,
+    taskTypeMix: dayTaskTypeSignals,
     quickCommunicationLoad: {
       openCount: quickCommunicationOpen.length,
       batchingRecommended: quickCommunicationOpen.length >= planningThresholds.quickCommunicationBatching
@@ -1016,7 +1048,8 @@ Deno.serve(async (req) => {
     dailyReview,
     nextAction,
     deferCandidate,
-    worklogs: worklogSummary
+    worklogs: worklogSummary,
+    taskTypeSignals: dayTaskTypeSignals.signals
   });
   const taskLookup = new Map(tasks.map((task) => [task.id, task]));
 
@@ -1079,12 +1112,15 @@ Deno.serve(async (req) => {
       topMovedReasonsToday,
       dailyReview,
       worklogs: worklogSummary,
+      taskTypeSignals: dayTaskTypeSignals.signals,
       weekDays: [],
       notableDeadlines: []
     },
     advisor
   } satisfies AdvisorResponse);
 });
+
+
 
 
 

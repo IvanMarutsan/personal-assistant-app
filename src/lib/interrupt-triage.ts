@@ -1,4 +1,4 @@
-import type { VoiceAiSuggestion, VoiceConfirmTargetKind } from "../types/api";
+﻿import type { VoiceAiSuggestion, VoiceConfirmTargetKind } from "../types/api";
 
 export type InterruptTriageRecommendationCode = "do_now" | "later_today" | "backlog" | "worklog" | "dismiss";
 
@@ -125,12 +125,13 @@ export function recommendInterruptTriage(input: {
 
   const backlogSignals =
     taskType === "someday" ||
+    taskType === "review" ||
     hasAny(text, ["на потім", "пізніше", "коли буде час", "не терміново", "someday", "later", "backlog"]);
   if (backlogSignals) return recommendation("backlog");
 
   const urgentSignals =
     hasAny(text, ["терміново", "зараз", "негайно", "asap", "urgent", "палає", "горить", "сьогодні треба", "до дзвінка"]) ||
-    ((taskType === "quick_communication" || taskType === "admin_operational") && (input.suggestion?.importanceGuess ?? 0) >= 4);
+    ((taskType === "quick_communication" || taskType === "communication" || taskType === "admin_operational" || taskType === "admin") && (input.suggestion?.importanceGuess ?? 0) >= 4);
   if (urgentSignals) return recommendation("do_now");
 
   const todaySignals =
@@ -152,3 +153,5 @@ export function recommendationDefaultKind(rec: InterruptTriageRecommendation): V
   if (rec.suggestedTarget === "calendar_event") return "calendar_event";
   return "task";
 }
+
+

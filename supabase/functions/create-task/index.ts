@@ -1,9 +1,17 @@
-import { createAdminClient } from "../_shared/db.ts";
+﻿import { createAdminClient } from "../_shared/db.ts";
 import { handleOptions, jsonResponse, safeJson } from "../_shared/http.ts";
 import { resolveSessionUser } from "../_shared/session.ts";
 import { syncTaskCalendarAfterMutation } from "../_shared/task-calendar-sync.ts";
 
 type TaskType =
+  | "communication"
+  | "publishing"
+  | "admin"
+  | "planning"
+  | "tech"
+  | "content"
+  | "meeting"
+  | "review"
   | "deep_work"
   | "quick_communication"
   | "admin_operational"
@@ -99,7 +107,7 @@ Deno.serve(async (req) => {
       project_id: projectId,
       title: title.slice(0, 120),
       details: body?.details?.trim() || null,
-      task_type: body?.taskType ?? "admin_operational",
+      task_type: body?.taskType ?? "admin",
       status: "planned",
       importance: 3,
       due_at: dueAt,
@@ -118,3 +126,5 @@ Deno.serve(async (req) => {
 
   return jsonResponse({ ok: true, taskId: data.id });
 });
+
+

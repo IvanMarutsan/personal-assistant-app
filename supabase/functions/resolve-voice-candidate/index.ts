@@ -1,4 +1,4 @@
-import { createAdminClient } from "../_shared/db.ts";
+﻿import { createAdminClient } from "../_shared/db.ts";
 import { getGoogleAccessTokenForUser } from "../_shared/google-calendar.ts";
 import { handleOptions, jsonResponse, safeJson } from "../_shared/http.ts";
 import { resolveSessionUser } from "../_shared/session.ts";
@@ -231,7 +231,7 @@ Deno.serve(async (req) => {
         ? Math.max(1, Math.min(5, Math.round(candidate.importanceGuess)))
         : 3;
 
-    const taskType = body.taskType ?? candidate.taskTypeGuess ?? "admin_operational";
+    const taskType = body.taskType ?? candidate.taskTypeGuess ?? "admin";
 
     const { data: createdTask, error: taskError } = await supabase
       .from("tasks")
@@ -442,6 +442,8 @@ Deno.serve(async (req) => {
     candidate: updatedCandidates[candidateIndex]
   });
 });
+
+
 
 
 

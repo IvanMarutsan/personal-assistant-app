@@ -1,4 +1,4 @@
-export type TelegramAuthPayload = {
+﻿export type TelegramAuthPayload = {
   initDataRaw: string;
 };
 
@@ -30,6 +30,14 @@ export type VoiceAiSuggestion = {
   details: string;
   projectGuess: string | null;
   taskTypeGuess:
+    | "communication"
+    | "publishing"
+    | "admin"
+    | "planning"
+    | "tech"
+    | "content"
+    | "meeting"
+    | "review"
     | "deep_work"
     | "quick_communication"
     | "admin_operational"
@@ -106,6 +114,14 @@ export type TriageAction = "task" | "note" | "worklog" | "discard";
 export type TaskStatus = "planned" | "in_progress" | "blocked" | "done" | "cancelled";
 
 export type TaskType =
+  | "communication"
+  | "publishing"
+  | "admin"
+  | "planning"
+  | "tech"
+  | "content"
+  | "meeting"
+  | "review"
   | "deep_work"
   | "quick_communication"
   | "admin_operational"
@@ -218,6 +234,7 @@ export type PlanningSummary = {
     protectedPendingCount: number;
     scheduledKnownEstimateMinutes: number;
     scheduledMissingEstimateCount: number;
+    taskTypeSignals: string[];
     flags: Array<{ code: string; message: string }>;
   };
   essentialRisk: {
@@ -301,6 +318,7 @@ export type AiAdvisorSummary = {
       protectedEssentialsMissedToday: number;
     };
     worklogs: WorklogContextSummary;
+    taskTypeSignals: string[];
     weekDays: PlanningConversationScopeDaySummary[];
     notableDeadlines: PlanningConversationDeadlineSummary[];
   };
@@ -460,6 +478,10 @@ export type PlanningConversationState = {
     notableDeadlines: PlanningConversationDeadlineSummary[];
   };
 };
+
+
+
+
 
 
 

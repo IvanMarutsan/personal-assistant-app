@@ -1,9 +1,10 @@
-import { useEffect, useMemo, useState } from "react";
+﻿import { useEffect, useMemo, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { NoteDetailModal } from "../../components/NoteDetailModal";
 import { PlanningConversationModal } from "../../components/PlanningConversationModal";
 import { TaskDetailModal } from "../../components/TaskDetailModal";
 import { useDiagnostics } from "../../lib/diagnostics";
+import { taskTypeLabel } from "../../lib/taskTypes";
 import {
   countMissingEstimates,
   formatTaskDateTime,
@@ -58,22 +59,6 @@ function projectName(task: TaskItem): string {
   return task.projects.name ?? "Без проєкту";
 }
 
-function taskTypeLabel(value: TaskType): string {
-  switch (value) {
-    case "deep_work":
-      return "Глибока робота";
-    case "quick_communication":
-      return "Швидка комунікація";
-    case "admin_operational":
-      return "Адміністративне";
-    case "recurring_essential":
-      return "Регулярне важливе";
-    case "personal_essential":
-      return "Особисто важливе";
-    case "someday":
-      return "Колись";
-  }
-}
 
 function reasonLabel(reason: string): string {
   const map: Record<string, string> = {
@@ -1276,6 +1261,9 @@ export function TodayPage() {
               plannedCount: planning.overload.plannedTodayCount
             })}
           </p>
+          {planning.overload.taskTypeSignals.length > 0 ? (
+            <p className="inbox-meta">{normalizePlanningCopy(planning.overload.taskTypeSignals.slice(0, 2).join(" "))}</p>
+          ) : null}
 
           <h3>Що робити зараз?</h3>
           {planning.whatNow.primary ? (
@@ -1383,6 +1371,9 @@ export function TodayPage() {
               plannedCount: aiAdvisor.contextSnapshot.plannedTodayCount
             })}
           </p>
+          {aiAdvisor.contextSnapshot.taskTypeSignals.length > 0 ? (
+            <p className="inbox-meta">{normalizePlanningCopy(aiAdvisor.contextSnapshot.taskTypeSignals.slice(0, 2).join(" "))}</p>
+          ) : null}
 
           <div className="assistant-primary">
             <p className="assistant-title">Рекомендована наступна дія: {aiAdvisor.advisor.suggestedNextAction.title}</p>
@@ -1425,6 +1416,9 @@ export function TodayPage() {
               plannedCount: weekPlanning.overload.plannedTodayCount
             })}
           </p>
+          {weekPlanning.overload.taskTypeSignals.length > 0 ? (
+            <p className="inbox-meta">{normalizePlanningCopy(weekPlanning.overload.taskTypeSignals.slice(0, 2).join(" "))}</p>
+          ) : null}
           {weekPlanning.whatNow.primary ? (
             <div className="assistant-primary">
               <p className="assistant-title">Фокус тижня: {weekPlanning.whatNow.primary.title}</p>
@@ -1514,6 +1508,9 @@ export function TodayPage() {
               plannedCount: weekAiAdvisor.contextSnapshot.plannedTodayCount
             })}
           </p>
+          {weekAiAdvisor.contextSnapshot.taskTypeSignals.length > 0 ? (
+            <p className="inbox-meta">{normalizePlanningCopy(weekAiAdvisor.contextSnapshot.taskTypeSignals.slice(0, 2).join(" "))}</p>
+          ) : null}
           <div className="assistant-primary">
             <p className="assistant-title">На що подивитись першим: {weekAiAdvisor.advisor.suggestedNextAction.title}</p>
             <p className="inbox-meta">{normalizePlanningCopy(weekAiAdvisor.advisor.suggestedNextAction.reason)}</p>
@@ -1711,6 +1708,9 @@ export function TodayPage() {
     </section>
   );
 }
+
+
+
 
 
 

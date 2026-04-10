@@ -115,3 +115,4 @@ Deno.serve(async (req) => {
 
   return jsonResponse({ ok: true, result: data });
 });
+

@@ -1,14 +1,23 @@
-import { DateTime } from "npm:luxon@3.6.1";
+﻿import { DateTime } from "npm:luxon@3.6.1";
 import { createAdminClient } from "../_shared/db.ts";
 import { handleOptions, jsonResponse } from "../_shared/http.ts";
 import { planningThresholds } from "../_shared/planning-config.ts";
 import { buildPlanningContext, validateScopeDate } from "../_shared/planning-conversation.ts";
 import { resolveSessionUser } from "../_shared/session.ts";
+import { summarizeTaskTypeSignals } from "../_shared/task-type-signals.ts";
 
 type TaskRow = {
   id: string;
   title: string;
   task_type:
+    | "communication"
+    | "publishing"
+    | "admin"
+    | "planning"
+    | "tech"
+    | "content"
+    | "meeting"
+    | "review"
     | "deep_work"
     | "quick_communication"
     | "admin_operational"
@@ -271,6 +280,13 @@ Deno.serve(async (req) => {
         (day.calendarBusyMinutes ?? 0) < 180 &&
         day.calendarEventCount <= 2
     );
+    const weekTaskTypeSignals = summarizeTaskTypeSignals(
+      [
+        ...context.scheduledInWeek.map((task) => ({ task_type: task.taskType })),
+        ...context.dueInWeekWithoutPlannedStart.map((task) => ({ task_type: task.taskType }))
+      ],
+      "week"
+    );
 
     const { data: reviewTasksData, error: reviewTasksError } = await supabase
       .from("tasks")
@@ -399,7 +415,7 @@ Deno.serve(async (req) => {
         (task) =>
           !task.isProtectedEssential &&
           !task.dueAt &&
-          (task.taskType === "someday" || task.planningFlexibility === "flexible")
+          (task.taskType === "someday" || task.taskType === "review" || task.planningFlexibility === "flexible")
       )
       .slice(0, 4)
       .map((task) => ({
@@ -502,6 +518,9 @@ Deno.serve(async (req) => {
         ? { code: "week_backlog_pressure", message: `Беклог тижня вже помітний: ${context.backlogCount} задач без призначеного дня.` }
         : null
     ].filter((item): item is NonNullable<typeof item> => !!item);
+    weekTaskTypeSignals.signals.slice(0, 2).forEach((message, index) => {
+      overloadFlags.push({ code: `week_task_type_${index}`, message });
+    });
 
     return jsonResponse({
       ok: true,
@@ -525,6 +544,7 @@ Deno.serve(async (req) => {
         protectedPendingCount: weekDays.reduce((sum, day) => sum + day.essentialScheduledCount, 0),
         scheduledKnownEstimateMinutes: context.scheduledKnownEstimateMinutes,
         scheduledMissingEstimateCount: context.scheduledMissingEstimateCount,
+        taskTypeSignals: weekTaskTypeSignals.signals,
         flags: overloadFlags
       },
       essentialRisk: {
@@ -622,9 +642,13 @@ Deno.serve(async (req) => {
   const backlogCount = actionableTasks.filter((task) => isBacklogTask(task)).length;
   const scheduledKnownEstimateMinutes = sumKnownEstimateMinutes(scheduledToday);
   const scheduledMissingEstimateCount = countMissingEstimates(scheduledToday);
+  const dayTaskTypeSignals = summarizeTaskTypeSignals(
+    [...scheduledToday, ...dueTodayWithoutPlannedStart],
+    "day"
+  );
 
   const quickCommunicationOpen = actionableTasks.filter(
-    (task) => task.task_type === "quick_communication"
+    (task) => task.task_type === "quick_communication" || task.task_type === "communication"
   );
 
   const quickBatchRecommendation: Recommendation | null =
@@ -705,6 +729,9 @@ Deno.serve(async (req) => {
       message: "У цей день уже є кілька контекстних записів. Частина часу пішла на реактивні дрібні дії або перемикання контексту."
     });
   }
+  dayTaskTypeSignals.signals.slice(0, 2).forEach((message, index) => {
+    overloadFlags.push({ code: `day_task_type_${index}`, message });
+  });
 
   const protectedEssentialRisk = activeTasks
     .filter(
@@ -795,6 +822,7 @@ Deno.serve(async (req) => {
       protectedPendingCount: protectedPending.length,
       scheduledKnownEstimateMinutes,
       scheduledMissingEstimateCount,
+      taskTypeSignals: dayTaskTypeSignals.signals,
       flags: overloadFlags
     },
     essentialRisk: {
@@ -816,6 +844,8 @@ Deno.serve(async (req) => {
     appliedThresholds: planningThresholds
   });
 });
+
+
 
 
 

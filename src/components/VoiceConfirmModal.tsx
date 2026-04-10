@@ -1,5 +1,6 @@
 ﻿import { useEffect, useMemo, useRef, useState } from "react";
 import type { InterruptTriageRecommendation } from "../lib/interrupt-triage";
+import { TASK_TYPE_FILTER_OPTIONS } from "../lib/taskTypes";
 import type { ProjectItem, TaskType, VoiceAiSuggestion, VoiceConfirmTargetKind } from "../types/api";
 
 type VoiceConfirmModalProps = {
@@ -33,15 +34,6 @@ type VoiceConfirmModalProps = {
     timezone: string;
   }) => void;
 };
-
-const TASK_TYPE_OPTIONS: Array<{ value: TaskType; label: string }> = [
-  { value: "deep_work", label: "Глибока робота" },
-  { value: "quick_communication", label: "Швидка комунікація" },
-  { value: "admin_operational", label: "Операційне" },
-  { value: "recurring_essential", label: "Регулярне важливе" },
-  { value: "personal_essential", label: "Особисто важливе" },
-  { value: "someday", label: "Колись" }
-];
 
 function toLocalInputFromDate(value: Date): string {
   const offsetMs = value.getTimezoneOffset() * 60_000;
@@ -378,7 +370,7 @@ export function VoiceConfirmModal(props: VoiceConfirmModalProps) {
                 Тип задачі
                 <select value={taskType} onChange={(event) => setTaskType(event.target.value as TaskType | "")}>
                   <option value="">За замовчуванням</option>
-                  {TASK_TYPE_OPTIONS.map((option) => (
+                  {TASK_TYPE_FILTER_OPTIONS.map((option) => (
                     <option key={option.value} value={option.value}>
                       {option.label}
                     </option>
@@ -487,3 +479,4 @@ export function VoiceConfirmModal(props: VoiceConfirmModalProps) {
     </div>
   );
 }
+

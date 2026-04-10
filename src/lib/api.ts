@@ -1,4 +1,4 @@
-import { appEnv } from "./env";
+﻿import { appEnv } from "./env";
 import type {
   AiAdvisorSummary,
   AppSession,
@@ -407,7 +407,7 @@ export async function createTask(input: {
       title: input.title,
       details: input.details ?? null,
       projectId: input.projectId ?? null,
-      taskType: input.taskType ?? "admin_operational",
+      taskType: input.taskType ?? "admin",
       dueAt: input.dueAt ?? null,
       scheduledFor: input.scheduledFor ?? null,
       estimatedMinutes: input.estimatedMinutes ?? null,
@@ -877,6 +877,7 @@ export async function updatePlanningProposal(input: {
     })
   });
 }
+
 
 
 

@@ -1,8 +1,9 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+﻿import { useEffect, useMemo, useRef, useState } from "react";
 import { InboxTriageModal } from "../../components/InboxTriageModal";
 import { VoiceConfirmModal } from "../../components/VoiceConfirmModal";
 import { useDiagnostics } from "../../lib/diagnostics";
 import { recommendationDefaultKind, recommendInterruptTriage, type InterruptTriageRecommendation } from "../../lib/interrupt-triage";
+import { TASK_TYPE_FILTER_OPTIONS, taskTypeLabel } from "../../lib/taskTypes";
 import {
   ApiError,
   authTelegram,
@@ -95,14 +96,7 @@ function toNullableNumber(value: unknown): number | null {
 }
 
 function toTaskType(value: unknown): TaskType | null {
-  const allowed: TaskType[] = [
-    "deep_work",
-    "quick_communication",
-    "admin_operational",
-    "recurring_essential",
-    "personal_essential",
-    "someday"
-  ];
+  const allowed: TaskType[] = TASK_TYPE_FILTER_OPTIONS.map((option) => option.value);
   if (typeof value !== "string") return null;
   return allowed.includes(value as TaskType) ? (value as TaskType) : null;
 }
@@ -358,22 +352,6 @@ function intentLabel(intent: VoiceDetectedIntent): string {
   }
 }
 
-function taskTypeLabel(value: TaskType): string {
-  switch (value) {
-    case "deep_work":
-      return "Глибока робота";
-    case "quick_communication":
-      return "Швидка комунікація";
-    case "admin_operational":
-      return "Операційне";
-    case "recurring_essential":
-      return "Регулярне важливе";
-    case "personal_essential":
-      return "Особисто важливе";
-    case "someday":
-      return "Колись";
-  }
-}
 
 function candidateStatusLabel(status: VoiceCandidateStatus): string {
   if (status === "confirmed") return "Підтверджено";
@@ -1262,6 +1240,9 @@ export function InboxPage() {
     </section>
   );
 }
+
+
+
 
 
 

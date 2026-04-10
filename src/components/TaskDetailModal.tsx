@@ -1,7 +1,8 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+﻿import { useEffect, useMemo, useRef, useState } from "react";
 import type { MouseEvent } from "react";
 import type { PlanningFlexibility, ProjectItem, TaskCalendarInboundState, TaskItem, TaskStatus, TaskType } from "../types/api";
 import { moveReasonLabel } from "../lib/reasons";
+import { buildTaskTypeOptions, taskTypeLabel } from "../lib/taskTypes";
 
 type TaskActionKind = "done" | "reschedule" | "block" | "unblock" | "cancel";
 type TaskModalMode = "view" | "edit" | "create";
@@ -46,15 +47,6 @@ type TaskDetailModalProps = {
   initialMode?: TaskModalMode;
   showWorkflowActions?: boolean;
 };
-
-const TASK_TYPE_OPTIONS: Array<{ value: TaskType; label: string }> = [
-  { value: "deep_work", label: "Глибока робота" },
-  { value: "quick_communication", label: "Швидка комунікація" },
-  { value: "admin_operational", label: "Адміністративне" },
-  { value: "recurring_essential", label: "Регулярне важливе" },
-  { value: "personal_essential", label: "Особисто важливе" },
-  { value: "someday", label: "Колись" }
-];
 
 const FLEXIBILITY_OPTIONS: Array<{ value: PlanningFlexibility | ""; label: string }> = [
   { value: "", label: "Не вказано" },
@@ -103,9 +95,6 @@ function projectName(task: TaskItem): string {
   return task.projects.name ?? "Без проєкту";
 }
 
-function taskTypeLabel(taskType: TaskType): string {
-  return TASK_TYPE_OPTIONS.find((option) => option.value === taskType)?.label ?? taskType;
-}
 
 function planningFlexibilityLabel(value: PlanningFlexibility | null | undefined): string {
   if (value === "essential") return "Обов'язково";
@@ -208,7 +197,7 @@ export function TaskDetailModal(props: TaskDetailModalProps) {
   const [title, setTitle] = useState("");
   const [details, setDetails] = useState("");
   const [projectId, setProjectId] = useState("");
-  const [taskType, setTaskType] = useState<TaskType>("admin_operational");
+  const [taskType, setTaskType] = useState<TaskType>("admin");
   const [scheduledForInput, setScheduledForInput] = useState("");
   const [dueAtInput, setDueAtInput] = useState("");
   const [estimatedMinutesInput, setEstimatedMinutesInput] = useState("");
@@ -217,6 +206,7 @@ export function TaskDetailModal(props: TaskDetailModalProps) {
   const initialMode = props.initialMode ?? "view";
   const isCreateMode = initialMode === "create";
   const showWorkflowActions = props.showWorkflowActions ?? true;
+  const taskTypeOptions = useMemo(() => buildTaskTypeOptions(taskType), [taskType]);
 
   useEffect(() => {
     if (!props.open) return;
@@ -225,7 +215,7 @@ export function TaskDetailModal(props: TaskDetailModalProps) {
       setTitle(props.createDefaults?.title ?? "");
       setDetails(props.createDefaults?.details ?? "");
       setProjectId(props.createDefaults?.projectId ?? "");
-      setTaskType(props.createDefaults?.taskType ?? "admin_operational");
+      setTaskType(props.createDefaults?.taskType ?? "admin");
       setScheduledForInput(toLocalInput(props.createDefaults?.scheduledFor ?? null));
       setDueAtInput(toLocalInput(props.createDefaults?.dueAt ?? null));
       setEstimatedMinutesInput(props.createDefaults?.estimatedMinutes ? String(props.createDefaults.estimatedMinutes) : "");
@@ -270,7 +260,7 @@ export function TaskDetailModal(props: TaskDetailModalProps) {
         title.trim() ||
           details.trim() ||
           projectId ||
-          taskType !== "admin_operational" ||
+          taskType !== "admin" ||
           scheduledForInput ||
           dueAtInput ||
           estimatedMinutesInput.trim() ||
@@ -563,7 +553,7 @@ export function TaskDetailModal(props: TaskDetailModalProps) {
               <label>
                 Тип
                 <select value={taskType} onChange={(event) => setTaskType(event.target.value as TaskType)} disabled={props.busy}>
-                  {TASK_TYPE_OPTIONS.map((option) => (
+                  {taskTypeOptions.map((option) => (
                     <option key={option.value} value={option.value}>
                       {option.label}
                     </option>
@@ -661,6 +651,7 @@ export function TaskDetailModal(props: TaskDetailModalProps) {
     </div>
   );
 }
+
 
 
 
