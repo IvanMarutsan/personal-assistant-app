@@ -263,21 +263,28 @@ function formatWorklogSources(items: Array<{ source: string; count: number }>): 
 function weeklyReviewEmptyLabel(section: keyof NonNullable<PlanningSummary["weeklyReview"]>): string {
   switch (section) {
     case "done":
-      return "Явно закритих задач за цей тиждень не видно.";
+      return "\u042f\u0432\u043d\u043e \u0437\u0430\u043a\u0440\u0438\u0442\u0438\u0445 \u0437\u0430\u0434\u0430\u0447 \u0437\u0430 \u0446\u0435\u0439 \u0442\u0438\u0436\u0434\u0435\u043d\u044c \u043d\u0435 \u0432\u0438\u0434\u043d\u043e.";
     case "notDone":
-      return "Незакритих задач із плану тижня зараз не видно.";
+      return "\u041d\u0435\u0437\u0430\u043a\u0440\u0438\u0442\u0438\u0445 \u0437\u0430\u0434\u0430\u0447 \u0456\u0437 \u043f\u043b\u0430\u043d\u0443 \u0442\u0438\u0436\u043d\u044f \u0437\u0430\u0440\u0430\u0437 \u043d\u0435 \u0432\u0438\u0434\u043d\u043e.";
     case "moved":
-      return "Помітних зсувів у межах тижня не видно.";
+      return "\u041f\u043e\u043c\u0456\u0442\u043d\u0438\u0445 \u0437\u0441\u0443\u0432\u0456\u0432 \u0443 \u043c\u0435\u0436\u0430\u0445 \u0442\u0438\u0436\u043d\u044f \u043d\u0435 \u0432\u0438\u0434\u043d\u043e.";
     case "shouldMove":
-      return "Явних кандидатів на ручне перенесення зараз немає.";
+      return "\u042f\u0432\u043d\u0438\u0445 \u043a\u0430\u043d\u0434\u0438\u0434\u0430\u0442\u0456\u0432 \u043d\u0430 \u0440\u0443\u0447\u043d\u0435 \u043f\u0435\u0440\u0435\u043d\u0435\u0441\u0435\u043d\u043d\u044f \u0437\u0430\u0440\u0430\u0437 \u043d\u0435\u043c\u0430\u0454.";
     case "shouldKill":
-      return "Слабких кандидатів на прибирання поки не видно.";
+      return "\u0421\u043b\u0430\u0431\u043a\u0438\u0445 \u043a\u0430\u043d\u0434\u0438\u0434\u0430\u0442\u0456\u0432 \u043d\u0430 \u043f\u0440\u0438\u0431\u0438\u0440\u0430\u043d\u043d\u044f \u043f\u043e\u043a\u0438 \u043d\u0435 \u0432\u0438\u0434\u043d\u043e.";
   }
 }
+
+type WeekResolveAction = {
+  key: string;
+  title: string;
+  reason: string;
+  actionLabel: string;
+  onClick: () => void;
+};
 function needsPlanningTouch(task: TaskItem): boolean {
   return !task.due_at || !task.estimated_minutes;
 }
-
 type CalendarNotice = {
   tone: "success" | "error" | "info";
   message: string;
@@ -590,6 +597,91 @@ export function TodayPage({ surface = "day" }: TodayPageProps) {
   });
   const todayMissingEstimateCount = useMemo(() => countMissingEstimates(scheduledToday), [scheduledToday]);
 
+  const weekResolveActions = useMemo<WeekResolveAction[]>(() => {
+    const actions: WeekResolveAction[] = [];
+    const review = weekPlanning?.weeklyReview;
+
+    const pushReviewAction = (
+      key: string,
+      item: { taskId: string | null; title: string; reason: string } | undefined,
+      actionLabel: string
+    ) => {
+      if (!item || actions.some((existing) => existing.key === key)) return;
+      if (item.taskId) {
+        const task = items.find((candidate) => candidate.id === item.taskId);
+        if (task) {
+          actions.push({
+            key,
+            title: item.title,
+            reason: normalizePlanningCopy(item.reason),
+            actionLabel,
+            onClick: () => {
+              setTaskModalMode("edit");
+              setActiveTask(task);
+              setError(null);
+            }
+          });
+          return;
+        }
+      }
+
+      actions.push({
+        key,
+        title: item.title,
+        reason: normalizePlanningCopy(item.reason),
+        actionLabel: "\u041e\u0431\u0433\u043e\u0432\u043e\u0440\u0438\u0442\u0438 \u0442\u0438\u0436\u0434\u0435\u043d\u044c",
+        onClick: () => void openPlanningConversation("week")
+      });
+    };
+
+    pushReviewAction("not_done", review?.notDone?.[0], "\u041f\u0456\u0434\u0433\u043e\u0442\u0443\u0432\u0430\u0442\u0438 \u0440\u0456\u0448\u0435\u043d\u043d\u044f");
+    pushReviewAction("should_move", review?.shouldMove?.[0], "\u041f\u0456\u0434\u0433\u043e\u0442\u0443\u0432\u0430\u0442\u0438 \u043f\u0435\u0440\u0435\u043d\u0435\u0441\u0435\u043d\u043d\u044f");
+    pushReviewAction("should_kill", review?.shouldKill?.[0], "\u041f\u0456\u0434\u0433\u043e\u0442\u0443\u0432\u0430\u0442\u0438 \u043f\u0440\u0438\u0431\u0438\u0440\u0430\u043d\u043d\u044f");
+    pushReviewAction("moved", review?.moved?.[0], "\u041f\u0435\u0440\u0435\u0433\u043b\u044f\u043d\u0443\u0442\u0438 \u0437\u0430\u0434\u0430\u0447\u0443");
+
+    if (actions.length === 0 && (weekPlanning?.overload.dueTodayWithoutPlannedStartCount ?? 0) > 0) {
+      actions.push({
+        key: "due_without_plan",
+        title: "\u0404 \u0434\u0435\u0434\u043b\u0430\u0439\u043d\u0438 \u0431\u0435\u0437 \u043f\u043b\u0430\u043d\u0443",
+        reason: "\u0423 \u0442\u0438\u0436\u043d\u0456 \u043b\u0438\u0448\u0438\u043b\u0438\u0441\u044c \u0437\u0430\u0434\u0430\u0447\u0456 \u0437 \u0434\u0435\u0434\u043b\u0430\u0439\u043d\u043e\u043c, \u0430\u043b\u0435 \u0431\u0435\u0437 \u043f\u043b\u0430\u043d\u043e\u0432\u0430\u043d\u043e\u0433\u043e \u0441\u0442\u0430\u0440\u0442\u0443.",
+        actionLabel: "\u041e\u0431\u0433\u043e\u0432\u043e\u0440\u0438\u0442\u0438 \u0442\u0438\u0436\u0434\u0435\u043d\u044c",
+        onClick: () => void openPlanningConversation("week")
+      });
+    }
+
+    const notableDeadlineTaskId = weekPlanning?.notableDeadlines?.[0]?.taskId ?? null;
+    if (actions.length === 0 && notableDeadlineTaskId) {
+      const task = items.find((candidate) => candidate.id === notableDeadlineTaskId);
+      if (task) {
+        actions.push({
+          key: "deadline_focus",
+          title: task.title,
+          reason: "\u0423 \u0446\u044c\u043e\u0433\u043e \u0442\u0438\u0436\u043d\u044f \u0454 \u043f\u043e\u043c\u0456\u0442\u043d\u0438\u0439 \u0434\u0435\u0434\u043b\u0430\u0439\u043d, \u044f\u043a\u0438\u0439 \u0432\u0430\u0440\u0442\u043e \u043f\u0435\u0440\u0435\u0432\u0456\u0440\u0438\u0442\u0438 \u0432\u0440\u0443\u0447\u043d\u0443.",
+          actionLabel: "\u0412\u0456\u0434\u043a\u0440\u0438\u0442\u0438 \u0437\u0430\u0434\u0430\u0447\u0443",
+          onClick: () => {
+            setTaskModalMode("edit");
+            setActiveTask(task);
+            setError(null);
+          }
+        });
+      }
+    }
+
+    return actions.slice(0, 3);
+  }, [items, selectedScopeDate, selectedWeekScopeDate, sessionToken, weekPlanning]);
+
+  const isLightWeek = useMemo(() => {
+    const review = weekPlanning?.weeklyReview;
+    const reviewSignalCount = review
+      ? review.done.length + review.notDone.length + review.moved.length + review.shouldMove.length + review.shouldKill.length
+      : 0;
+    const plannedCount = weekPlanning?.overload.plannedTodayCount ?? weekAiAdvisor?.contextSnapshot.plannedTodayCount ?? 0;
+    const dueCount = weekPlanning?.overload.dueTodayWithoutPlannedStartCount ?? weekAiAdvisor?.contextSnapshot.dueTodayWithoutPlannedStartCount ?? 0;
+    const backlogCount = weekPlanning?.overload.backlogCount ?? weekAiAdvisor?.contextSnapshot.backlogCount ?? 0;
+    const notableDeadlineCount = weekPlanning?.notableDeadlines.length ?? weekAiAdvisor?.contextSnapshot.notableDeadlines.length ?? 0;
+
+    return plannedCount === 0 && dueCount === 0 && backlogCount === 0 && notableDeadlineCount === 0 && reviewSignalCount === 0;
+  }, [weekAiAdvisor, weekPlanning]);
   const protectedEssentials = useMemo(() => {
     return items.filter(
       (task) =>
@@ -1451,152 +1543,194 @@ export function TodayPage({ surface = "day" }: TodayPageProps) {
       ) : null}
 
 
-      {isWeekSurface && !loading && (weekPlanning || weekAiAdvisor || showWeekReviewPrompt) ? (
+      {isWeekSurface && !loading ? (
         <section className="today-disclosure">
           <div className="today-disclosure__header">
-            <strong>{selectedWeekLabel}</strong>
-            <p className="inbox-meta">Тижневий огляд і обговорення винесені окремо, щоб не змішувати їх із денним фокусом.</p>
+            <strong>{selectedWeekScopeDate === currentWeekScopeDate ? "\u041f\u043e\u0442\u043e\u0447\u043d\u0438\u0439 \u0442\u0438\u0436\u0434\u0435\u043d\u044c" : "\u0412\u0438\u0431\u0440\u0430\u043d\u0438\u0439 \u0442\u0438\u0436\u0434\u0435\u043d\u044c"}</strong>
+            <p className="inbox-meta">{selectedWeekLabel}. {"\u0422\u0443\u0442 \u0437\u0440\u0443\u0447\u043d\u0456\u0448\u0435 \u0432\u0438\u0440\u0456\u0448\u0443\u0432\u0430\u0442\u0438 \u0442\u0438\u0436\u043d\u0435\u0432\u0456 \u043f\u0435\u0440\u0435\u043d\u0435\u0441\u0435\u043d\u043d\u044f, \u0434\u0435\u0434\u043b\u0430\u0439\u043d\u0438 \u0431\u0435\u0437 \u043f\u043b\u0430\u043d\u0443 \u0456 cleanup, \u043d\u0435 \u0437\u043c\u0456\u0448\u0443\u044e\u0447\u0438 \u0446\u0435 \u0437 \u0434\u0435\u043d\u043d\u0438\u043c \u0444\u043e\u043a\u0443\u0441\u043e\u043c."}</p>
           </div>
           <div className="today-toolbar__actions today-toolbar__actions--secondary">
             <button type="button" className="ghost" onClick={() => void openPlanningConversation("week")} disabled={!sessionToken || planningConversationBusy}>
-              {"Обговорити тиждень"}
+              {"\u041e\u0431\u0433\u043e\u0432\u043e\u0440\u0438\u0442\u0438 \u0442\u0438\u0436\u0434\u0435\u043d\u044c"}
+            </button>
+            <button type="button" className="ghost" onClick={() => navigate("/tasks")}>
+              {"\u041f\u0435\u0440\u0435\u0433\u043b\u044f\u043d\u0443\u0442\u0438 \u0437\u0430\u0434\u0430\u0447\u0456"}
+            </button>
+            <button type="button" className="ghost" onClick={() => navigate("/worklogs")}>
+              {"\u0414\u043e\u0434\u0430\u0442\u0438 \u043a\u043e\u043d\u0442\u0435\u043a\u0441\u0442"}
             </button>
           </div>
-      {weekPlanning ? (
-        <section className="assistant-block deterministic-block">
-          <h3>План тижня</h3>
-          <p className="inbox-meta">Тиждень: {selectedWeekLabel}</p>
-          {diagnostics.debugEnabled ? (
-            <p className="inbox-meta">
-              Правила: {weekPlanning.rulesVersion} · Таймзона: {weekPlanning.timezone}
-            </p>
-          ) : null}
-          <p className="inbox-meta">
-            У плані тижня: {weekPlanning.overload.plannedTodayCount} · Дедлайни без плану: {weekPlanning.overload.dueTodayWithoutPlannedStartCount} · Беклог: {weekPlanning.overload.backlogCount}
-          </p>
-          <p className="inbox-meta">
-            {weekLoadCoverageLine({
-              knownMinutes: weekPlanning.overload.scheduledKnownEstimateMinutes,
-              missingCount: weekPlanning.overload.scheduledMissingEstimateCount,
-              plannedCount: weekPlanning.overload.plannedTodayCount
-            })}
-          </p>
-          {weekPlanning.overload.taskTypeSignals.length > 0 ? (
-            <p className="inbox-meta">{normalizePlanningCopy(weekPlanning.overload.taskTypeSignals.slice(0, 2).join(" "))}</p>
-          ) : null}
-          {weekPlanning.whatNow.primary ? (
-            <div className="assistant-primary">
-              <p className="assistant-title">Фокус тижня: {weekPlanning.whatNow.primary.title}</p>
-              <p className="inbox-meta">{normalizePlanningCopy(weekPlanning.whatNow.primary.reason)}</p>
-            </div>
-          ) : (
-            <p className="empty-note">Явної головної точки тиску по тижню зараз немає.</p>
-          )}
-          {weekPlanning.whatNow.secondary.length > 0 ? (
-            <ul className="assistant-secondary">
-              {weekPlanning.whatNow.secondary.map((item, index) => (
-                <li key={`${item.title}-${index}`}>
-                  <strong>{item.title}</strong>
-                  <span> - {normalizePlanningCopy(item.reason)}</span>
-                </li>
-              ))}
-            </ul>
-          ) : null}
-          {weekPlanning.weekDays.length > 0 ? (
-            <>
-              <h3>Картина тижня</h3>
+
+          <section className="assistant-block">
+            <h3>{"\u0429\u043e \u0432\u0430\u0440\u0442\u043e \u0432\u0438\u0440\u0456\u0448\u0438\u0442\u0438 \u0446\u044c\u043e\u0433\u043e \u0442\u0438\u0436\u043d\u044f"}</h3>
+            {weekResolveActions.length > 0 ? (
               <ul className="assistant-secondary">
-                {weekPlanning.weekDays.map((day) => (
-                  <li key={day.scopeDate}>{formatWeekDaySummary(day)}</li>
-                ))}
-              </ul>
-            </>
-          ) : null}
-          {weekPlanning.notableDeadlines.length > 0 ? (
-            <>
-              <h3>Помітні дедлайни тижня</h3>
-              <ul className="assistant-secondary">
-                {weekPlanning.notableDeadlines.slice(0, 5).map((item) => (
-                  <li key={item.taskId}>
-                    {item.title} · {formatTaskDateTime(new Date(item.dueAt))}
+                {weekResolveActions.map((item) => (
+                  <li key={item.key}>
+                    <strong>{item.title}</strong>
+                    <span> - {item.reason}</span>
+                    <div className="inbox-actions">
+                      <button type="button" className="ghost" onClick={item.onClick} disabled={workingTaskId !== null || planningConversationBusy}>
+                        {item.actionLabel}
+                      </button>
+                    </div>
                   </li>
                 ))}
               </ul>
-            </>
-          ) : null}
-          <p className="inbox-meta">{formatWorklogSummary(weekPlanning.dailyReview.worklogs)}</p>
-          {weekPlanning.weeklyReview ? (
-            <>
-              <h3>Чернетка огляду тижня</h3>
-              {renderWeeklyReviewSection("Зроблено", "done", { taskActionLabel: "Відкрити" })}
-              {renderWeeklyReviewSection("Не закрито", "notDone", {
-                taskActionLabel: "Підготувати рішення",
-                showWeekConversationAction: true,
-                decisionHint: "Це ще не вирок. Тут варто або свідомо перенести, або прибрати тиск із задачі вручну."
-              })}
-              {renderWeeklyReviewSection("Зсунулось", "moved", {
-                showWeekConversationAction: true,
-                taskActionLabel: "Переглянути задачу"
-              })}
-              {renderWeeklyReviewSection("Ймовірно варто перенести", "shouldMove", {
-                showWeekConversationAction: true,
-                taskActionLabel: "Підготувати перенесення"
-              })}
-              {renderWeeklyReviewSection("Ймовірно варто прибрати", "shouldKill", {
-                taskActionLabel: "Підготувати прибирання",
-                showWeekConversationAction: true,
-                decisionHint: "Це лише підказка на cleanup. Остаточне рішення про видалення, скасування чи зміну задачі лишається за тобою."
-              })}
-            </>
-          ) : null}
-        </section>
-      ) : null}
+            ) : isLightWeek ? (
+              <>
+                <p className="empty-note">{"\u0422\u0438\u0436\u0434\u0435\u043d\u044c \u043f\u043e\u043a\u0438 \u0432\u0438\u0433\u043b\u044f\u0434\u0430\u0454 \u043b\u0435\u0433\u043a\u0438\u043c: \u044f\u0432\u043d\u043e\u0433\u043e \u0442\u0438\u0441\u043a\u0443, \u0434\u0435\u0434\u043b\u0430\u0439\u043d\u0456\u0432 \u0431\u0435\u0437 \u043f\u043b\u0430\u043d\u0443 \u0447\u0438 \u0445\u0432\u043e\u0441\u0442\u0430 \u043f\u0435\u0440\u0435\u043d\u0435\u0441\u0435\u043d\u044c \u043d\u0435 \u0432\u0438\u0434\u043d\u043e."}</p>
+                <p className="inbox-meta">{"\u041d\u0430\u0439\u043a\u0440\u0430\u0449\u0438\u0439 \u0440\u0443\u0447\u043d\u0438\u0439 next step \u0442\u0443\u0442 - \u0430\u0431\u043e \u043a\u043e\u0440\u043e\u0442\u043a\u043e \u0437\u0432\u0456\u0440\u0438\u0442\u0438 \u0442\u0438\u0436\u0434\u0435\u043d\u044c \u0437 \u0431\u0435\u043a\u043b\u043e\u0433\u043e\u043c, \u0430\u0431\u043e \u0434\u043e\u0434\u0430\u0442\u0438 \u043a\u043e\u043d\u0442\u0435\u043a\u0441\u0442, \u043f\u043e\u043a\u0438 \u0432\u0456\u043d \u0449\u0435 \u0441\u0432\u0456\u0436\u0438\u0439."}</p>
+              </>
+            ) : (
+              <p className="empty-note">{"\u042f\u0432\u043d\u043e\u0457 \u043a\u0440\u0438\u0442\u0438\u0447\u043d\u043e\u0457 \u0442\u043e\u0447\u043a\u0438 \u0442\u0438\u0441\u043a\u0443 \u043f\u043e \u0442\u0438\u0436\u043d\u044e \u0437\u0430\u0440\u0430\u0437 \u043d\u0435 \u0432\u0438\u0434\u043d\u043e. \u041c\u043e\u0436\u043d\u0430 \u0448\u0432\u0438\u0434\u043a\u043e \u0437\u0432\u0456\u0440\u0438\u0442\u0438 \u043f\u043b\u0430\u043d \u0442\u0438\u0436\u043d\u044f \u0430\u0431\u043e \u043f\u0440\u043e\u0439\u0442\u0438\u0441\u044c \u043f\u043e \u043e\u0433\u043b\u044f\u0434\u0443 \u043d\u0438\u0436\u0447\u0435."}</p>
+            )}
+          </section>
 
-      {weekAiAdvisor ? (
-        <section className="assistant-block ai-block">
-          <h3>Порада AI на тиждень</h3>
-          <p className="inbox-meta">Тиждень: {selectedWeekLabel}</p>
-          {diagnostics.debugEnabled ? (
-            <p className="inbox-meta">
-              Джерело: {weekAiAdvisor.source === "ai" ? `OpenAI (${weekAiAdvisor.model ?? "невідома модель"})` : "Резервні правила"} ·
-              Згенеровано: {new Date(weekAiAdvisor.generatedAt).toLocaleTimeString()}
-            </p>
+          {weekPlanning ? (
+            <section className="assistant-block deterministic-block">
+              <h3>{"\u041f\u043b\u0430\u043d \u0442\u0438\u0436\u043d\u044f"}</h3>
+              <p className="inbox-meta">{"\u0422\u0438\u0436\u0434\u0435\u043d\u044c:"} {selectedWeekLabel}</p>
+              {diagnostics.debugEnabled ? (
+                <p className="inbox-meta">
+                  {"\u041f\u0440\u0430\u0432\u0438\u043b\u0430:"} {weekPlanning.rulesVersion} {" / "} {"\u0422\u0430\u0439\u043c\u0437\u043e\u043d\u0430:"} {weekPlanning.timezone}
+                </p>
+              ) : null}
+              <p className="inbox-meta">
+                {"\u0423 \u043f\u043b\u0430\u043d\u0456 \u0442\u0438\u0436\u043d\u044f:"} {weekPlanning.overload.plannedTodayCount} {" / "} {"\u0414\u0435\u0434\u043b\u0430\u0439\u043d\u0438 \u0431\u0435\u0437 \u043f\u043b\u0430\u043d\u0443:"} {weekPlanning.overload.dueTodayWithoutPlannedStartCount} {" / "} {"\u0411\u0435\u043a\u043b\u043e\u0433:"} {weekPlanning.overload.backlogCount}
+              </p>
+              <p className="inbox-meta">
+                {weekLoadCoverageLine({
+                  knownMinutes: weekPlanning.overload.scheduledKnownEstimateMinutes,
+                  missingCount: weekPlanning.overload.scheduledMissingEstimateCount,
+                  plannedCount: weekPlanning.overload.plannedTodayCount
+                })}
+              </p>
+              {weekPlanning.overload.taskTypeSignals.length > 0 ? (
+                <p className="inbox-meta">{normalizePlanningCopy(weekPlanning.overload.taskTypeSignals.slice(0, 2).join(" "))}</p>
+              ) : null}
+              {weekPlanning.whatNow.primary ? (
+                <div className="assistant-primary">
+                  <p className="assistant-title">{"\u0424\u043e\u043a\u0443\u0441 \u0442\u0438\u0436\u043d\u044f:"} {weekPlanning.whatNow.primary.title}</p>
+                  <p className="inbox-meta">{normalizePlanningCopy(weekPlanning.whatNow.primary.reason)}</p>
+                </div>
+              ) : (
+                <p className="empty-note">{"\u042f\u0432\u043d\u043e\u0457 \u0433\u043e\u043b\u043e\u0432\u043d\u043e\u0457 \u0442\u043e\u0447\u043a\u0438 \u0442\u0438\u0441\u043a\u0443 \u043f\u043e \u0442\u0438\u0436\u043d\u044e \u0437\u0430\u0440\u0430\u0437 \u043d\u0435\u043c\u0430\u0454."}</p>
+              )}
+              {weekPlanning.whatNow.secondary.length > 0 ? (
+                <ul className="assistant-secondary">
+                  {weekPlanning.whatNow.secondary.map((item, index) => (
+                    <li key={`${item.title}-${index}`}>
+                      <strong>{item.title}</strong>
+                      <span> - {normalizePlanningCopy(item.reason)}</span>
+                    </li>
+                  ))}
+                </ul>
+              ) : null}
+              {weekPlanning.weekDays.length > 0 ? (
+                <>
+                  <h3>{"\u041a\u0430\u0440\u0442\u0438\u043d\u0430 \u0442\u0438\u0436\u043d\u044f"}</h3>
+                  <ul className="assistant-secondary">
+                    {weekPlanning.weekDays.map((day) => (
+                      <li key={day.scopeDate}>{formatWeekDaySummary(day)}</li>
+                    ))}
+                  </ul>
+                </>
+              ) : null}
+              {weekPlanning.notableDeadlines.length > 0 ? (
+                <>
+                  <h3>{"\u041f\u043e\u043c\u0456\u0442\u043d\u0456 \u0434\u0435\u0434\u043b\u0430\u0439\u043d\u0438 \u0442\u0438\u0436\u043d\u044f"}</h3>
+                  <ul className="assistant-secondary">
+                    {weekPlanning.notableDeadlines.slice(0, 5).map((item) => (
+                      <li key={item.taskId}>
+                        {item.title} {" / "} {formatTaskDateTime(new Date(item.dueAt))}
+                      </li>
+                    ))}
+                  </ul>
+                </>
+              ) : null}
+              <p className="inbox-meta">{formatWorklogSummary(weekPlanning.dailyReview.worklogs)}</p>
+              {weekPlanning.weeklyReview ? (
+                <>
+                  <h3>{"\u0427\u0435\u0440\u043d\u0435\u0442\u043a\u0430 \u043e\u0433\u043b\u044f\u0434\u0443 \u0442\u0438\u0436\u043d\u044f"}</h3>
+                  {renderWeeklyReviewSection("\u0417\u0440\u043e\u0431\u043b\u0435\u043d\u043e", "done", { taskActionLabel: "\u0412\u0456\u0434\u043a\u0440\u0438\u0442\u0438" })}
+                  {renderWeeklyReviewSection("\u041d\u0435 \u0437\u0430\u043a\u0440\u0438\u0442\u043e", "notDone", {
+                    taskActionLabel: "\u041f\u0456\u0434\u0433\u043e\u0442\u0443\u0432\u0430\u0442\u0438 \u0440\u0456\u0448\u0435\u043d\u043d\u044f",
+                    showWeekConversationAction: true,
+                    decisionHint: "\u0426\u0435 \u0449\u0435 \u043d\u0435 \u0432\u0438\u0440\u043e\u043a. \u0422\u0443\u0442 \u0432\u0430\u0440\u0442\u043e \u0430\u0431\u043e \u0441\u0432\u0456\u0434\u043e\u043c\u043e \u043f\u0435\u0440\u0435\u043d\u0435\u0441\u0442\u0438, \u0430\u0431\u043e \u043f\u0440\u0438\u0431\u0440\u0430\u0442\u0438 \u0442\u0438\u0441\u043a \u0456\u0437 \u0437\u0430\u0434\u0430\u0447\u0456 \u0432\u0440\u0443\u0447\u043d\u0443."
+                  })}
+                  {renderWeeklyReviewSection("\u0417\u0441\u0443\u043d\u0443\u043b\u043e\u0441\u044c", "moved", {
+                    showWeekConversationAction: true,
+                    taskActionLabel: "\u041f\u0435\u0440\u0435\u0433\u043b\u044f\u043d\u0443\u0442\u0438 \u0437\u0430\u0434\u0430\u0447\u0443"
+                  })}
+                  {renderWeeklyReviewSection("\u0419\u043c\u043e\u0432\u0456\u0440\u043d\u043e \u0432\u0430\u0440\u0442\u043e \u043f\u0435\u0440\u0435\u043d\u0435\u0441\u0442\u0438", "shouldMove", {
+                    showWeekConversationAction: true,
+                    taskActionLabel: "\u041f\u0456\u0434\u0433\u043e\u0442\u0443\u0432\u0430\u0442\u0438 \u043f\u0435\u0440\u0435\u043d\u0435\u0441\u0435\u043d\u043d\u044f"
+                  })}
+                  {renderWeeklyReviewSection("\u0419\u043c\u043e\u0432\u0456\u0440\u043d\u043e \u0432\u0430\u0440\u0442\u043e \u043f\u0440\u0438\u0431\u0440\u0430\u0442\u0438", "shouldKill", {
+                    taskActionLabel: "\u041f\u0456\u0434\u0433\u043e\u0442\u0443\u0432\u0430\u0442\u0438 \u043f\u0440\u0438\u0431\u0438\u0440\u0430\u043d\u043d\u044f",
+                    showWeekConversationAction: true,
+                    decisionHint: "\u0426\u0435 \u043b\u0438\u0448\u0435 \u043f\u0456\u0434\u043a\u0430\u0437\u043a\u0430 \u043d\u0430 cleanup. \u041e\u0441\u0442\u0430\u0442\u043e\u0447\u043d\u0435 \u0440\u0456\u0448\u0435\u043d\u043d\u044f \u043f\u0440\u043e \u0432\u0438\u0434\u0430\u043b\u0435\u043d\u043d\u044f, \u0441\u043a\u0430\u0441\u0443\u0432\u0430\u043d\u043d\u044f \u0447\u0438 \u0437\u043c\u0456\u043d\u0443 \u0437\u0430\u0434\u0430\u0447\u0456 \u043b\u0438\u0448\u0430\u0454\u0442\u044c\u0441\u044f \u0437\u0430 \u0442\u043e\u0431\u043e\u044e."
+                  })}
+                </>
+              ) : null}
+            </section>
           ) : null}
-          <p className="assistant-title">{normalizePlanningCopy(weekAiAdvisor.advisor.whatMattersMostNow)}</p>
-          <p className="inbox-meta">
-            У плані тижня: {weekAiAdvisor.contextSnapshot.plannedTodayCount} · Дедлайни без плану: {weekAiAdvisor.contextSnapshot.dueTodayWithoutPlannedStartCount} · Беклог: {weekAiAdvisor.contextSnapshot.backlogCount}
-          </p>
-          <p className="inbox-meta">
-            {weekLoadCoverageLine({
-              knownMinutes: weekAiAdvisor.contextSnapshot.scheduledKnownEstimateMinutes,
-              missingCount: weekAiAdvisor.contextSnapshot.scheduledMissingEstimateCount,
-              plannedCount: weekAiAdvisor.contextSnapshot.plannedTodayCount
-            })}
-          </p>
-          {weekAiAdvisor.contextSnapshot.taskTypeSignals.length > 0 ? (
-            <p className="inbox-meta">{normalizePlanningCopy(weekAiAdvisor.contextSnapshot.taskTypeSignals.slice(0, 2).join(" "))}</p>
+
+          {weekAiAdvisor ? (
+            <section className="assistant-block ai-block">
+              <h3>{"\u041f\u043e\u0440\u0430\u0434\u0430 AI \u043d\u0430 \u0442\u0438\u0436\u0434\u0435\u043d\u044c"}</h3>
+              <p className="inbox-meta">{"\u0422\u0438\u0436\u0434\u0435\u043d\u044c:"} {selectedWeekLabel}</p>
+              {diagnostics.debugEnabled ? (
+                <p className="inbox-meta">
+                  {"\u0414\u0436\u0435\u0440\u0435\u043b\u043e:"} {weekAiAdvisor.source === "ai" ? `OpenAI (${weekAiAdvisor.model ?? "\u043d\u0435\u0432\u0456\u0434\u043e\u043c\u0430 \u043c\u043e\u0434\u0435\u043b\u044c"})` : "\u0420\u0435\u0437\u0435\u0440\u0432\u043d\u0456 \u043f\u0440\u0430\u0432\u0438\u043b\u0430"} {" / "}
+                  {"\u0417\u0433\u0435\u043d\u0435\u0440\u043e\u0432\u0430\u043d\u043e:"} {new Date(weekAiAdvisor.generatedAt).toLocaleTimeString()}
+                </p>
+              ) : null}
+              {isLightWeek ? (
+                <>
+                  <p className="assistant-title">{"\u0422\u0438\u0436\u0434\u0435\u043d\u044c \u0432\u0438\u0433\u043b\u044f\u0434\u0430\u0454 \u0432\u0456\u0434\u043d\u043e\u0441\u043d\u043e \u043b\u0435\u0433\u043a\u0438\u043c."}</p>
+                  <p className="inbox-meta">{"AI \u043d\u0435 \u0431\u0430\u0447\u0438\u0442\u044c \u044f\u0432\u043d\u043e\u0433\u043e \u043f\u0435\u0440\u0435\u0432\u0430\u043d\u0442\u0430\u0436\u0435\u043d\u043d\u044f. \u042f\u043a\u0449\u043e \u0445\u043e\u0447\u0435\u0448, \u0432\u0438\u043a\u043e\u0440\u0438\u0441\u0442\u0430\u0439 \u0446\u0435\u0439 \u043c\u043e\u043c\u0435\u043d\u0442 \u0434\u043b\u044f \u0440\u0443\u0447\u043d\u043e\u0433\u043e \u0437\u0432\u0456\u0440\u0435\u043d\u043d\u044f \u0431\u0435\u043a\u043b\u043e\u0433\u0443, \u043a\u043e\u043d\u0442\u0435\u043a\u0441\u0442\u0443 \u0430\u0431\u043e \u0442\u0438\u0436\u043d\u0435\u0432\u043e\u0433\u043e \u0444\u043e\u043a\u0443\u0441\u0443."}</p>
+                </>
+              ) : (
+                <>
+                  <p className="assistant-title">{normalizePlanningCopy(weekAiAdvisor.advisor.whatMattersMostNow)}</p>
+                  <p className="inbox-meta">
+                    {"\u0423 \u043f\u043b\u0430\u043d\u0456 \u0442\u0438\u0436\u043d\u044f:"} {weekAiAdvisor.contextSnapshot.plannedTodayCount} {" / "} {"\u0414\u0435\u0434\u043b\u0430\u0439\u043d\u0438 \u0431\u0435\u0437 \u043f\u043b\u0430\u043d\u0443:"} {weekAiAdvisor.contextSnapshot.dueTodayWithoutPlannedStartCount} {" / "} {"\u0411\u0435\u043a\u043b\u043e\u0433:"} {weekAiAdvisor.contextSnapshot.backlogCount}
+                  </p>
+                  <p className="inbox-meta">
+                    {weekLoadCoverageLine({
+                      knownMinutes: weekAiAdvisor.contextSnapshot.scheduledKnownEstimateMinutes,
+                      missingCount: weekAiAdvisor.contextSnapshot.scheduledMissingEstimateCount,
+                      plannedCount: weekAiAdvisor.contextSnapshot.plannedTodayCount
+                    })}
+                  </p>
+                  {weekAiAdvisor.contextSnapshot.taskTypeSignals.length > 0 ? (
+                    <p className="inbox-meta">{normalizePlanningCopy(weekAiAdvisor.contextSnapshot.taskTypeSignals.slice(0, 2).join(" "))}</p>
+                  ) : null}
+                  <div className="assistant-primary">
+                    <p className="assistant-title">{"\u041d\u0430 \u0449\u043e \u043f\u043e\u0434\u0438\u0432\u0438\u0442\u0438\u0441\u044c \u043f\u0435\u0440\u0448\u0438\u043c:"} {weekAiAdvisor.advisor.suggestedNextAction.title}</p>
+                    <p className="inbox-meta">{normalizePlanningCopy(weekAiAdvisor.advisor.suggestedNextAction.reason)}</p>
+                  </div>
+                  <div className="assistant-primary">
+                    <p className="assistant-title">{"\u0429\u043e \u043c\u043e\u0436\u043d\u0430 \u0442\u0440\u0438\u043c\u0430\u0442\u0438 \u0433\u043d\u0443\u0447\u043a\u0456\u0448\u0435:"} {weekAiAdvisor.advisor.suggestedDefer.title}</p>
+                    <p className="inbox-meta">{normalizePlanningCopy(weekAiAdvisor.advisor.suggestedDefer.reason)}</p>
+                  </div>
+                  <p className={weekAiAdvisor.advisor.protectedEssentialsWarning.hasWarning ? "error-note" : "inbox-meta"}>
+                    {normalizePlanningCopy(weekAiAdvisor.advisor.protectedEssentialsWarning.message)}
+                  </p>
+                  <p className="inbox-meta">{normalizePlanningCopy(weekAiAdvisor.advisor.explanation)}</p>
+                  {weekAiAdvisor.contextSnapshot.weekDays.length > 0 ? (
+                    <ul className="assistant-secondary">
+                      {weekAiAdvisor.contextSnapshot.weekDays.map((day) => (
+                        <li key={day.scopeDate}>{formatWeekDaySummary(day)}</li>
+                      ))}
+                    </ul>
+                  ) : null}
+                </>
+              )}
+            </section>
           ) : null}
-          <div className="assistant-primary">
-            <p className="assistant-title">На що подивитись першим: {weekAiAdvisor.advisor.suggestedNextAction.title}</p>
-            <p className="inbox-meta">{normalizePlanningCopy(weekAiAdvisor.advisor.suggestedNextAction.reason)}</p>
-          </div>
-          <div className="assistant-primary">
-            <p className="assistant-title">Що можна тримати гнучкіше: {weekAiAdvisor.advisor.suggestedDefer.title}</p>
-            <p className="inbox-meta">{normalizePlanningCopy(weekAiAdvisor.advisor.suggestedDefer.reason)}</p>
-          </div>
-          <p className={weekAiAdvisor.advisor.protectedEssentialsWarning.hasWarning ? "error-note" : "inbox-meta"}>
-            {normalizePlanningCopy(weekAiAdvisor.advisor.protectedEssentialsWarning.message)}
-          </p>
-          <p className="inbox-meta">{normalizePlanningCopy(weekAiAdvisor.advisor.explanation)}</p>
-          {weekAiAdvisor.contextSnapshot.weekDays.length > 0 ? (
-            <ul className="assistant-secondary">
-              {weekAiAdvisor.contextSnapshot.weekDays.map((day) => (
-                <li key={day.scopeDate}>{formatWeekDaySummary(day)}</li>
-              ))}
-            </ul>
-          ) : null}
-        </section>
-      ) : null}
         </section>
       ) : null}
       {!isWeekSurface && !loading ? (
@@ -1622,14 +1756,14 @@ export function TodayPage({ surface = "day" }: TodayPageProps) {
                     {calendarToday.slice(0, 4).map((event) => (
                       <li className="inbox-item" key={event.id}>
                         <p className="inbox-main-text">{event.title}</p>
-                        <p className="inbox-meta">{event.startAt ? formatTaskDateTime(new Date(event.startAt)) : "Без часу"}</p>
+                        <p className="inbox-meta">{formatCalendarEventTimeRange(event)}</p>
                       </li>
                     ))}
                   </ul>
                 )}
                 {nextCalendarEvent ? (
                   <p className="inbox-meta">
-                    {"\u041d\u0430\u0441\u0442\u0443\u043f\u043d\u0430 \u043f\u043e\u0434\u0456\u044f \u043f\u0456\u0441\u043b\u044f \u0446\u044c\u043e\u0433\u043e \u0434\u043d\u044f:"} {nextCalendarEvent.title} {" \u00b7 "} {nextCalendarEvent.startAt ? formatTaskDateTime(new Date(nextCalendarEvent.startAt)) : "\u0411\u0435\u0437 \u0447\u0430\u0441\u0443"}
+                    {"\u041d\u0430\u0441\u0442\u0443\u043f\u043d\u0430 \u043f\u043e\u0434\u0456\u044f \u043f\u0456\u0441\u043b\u044f \u0446\u044c\u043e\u0433\u043e \u0434\u043d\u044f:"} {nextCalendarEvent.title} {" / "} {formatCalendarEventTimeRange(nextCalendarEvent)}
                   </p>
                 ) : null}
               </>

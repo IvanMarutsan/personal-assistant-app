@@ -90,12 +90,27 @@ function groupByProject(tasks: TaskItem[]): Array<{ project: string; tasks: Task
 
   return Array.from(map.entries())
     .sort(([a, aTasks], [b, bTasks]) => {
-      if (a === "??? ???????" && b !== "??? ???????") return 1;
-      if (b === "??? ???????" && a !== "??? ???????") return -1;
-      if (aTasks.length !== bTasks.length) return bTasks.length - aTasks.length;
+      if (a === "Без проєкту" && b !== "Без проєкту") return 1;
+      if (b === "Без проєкту" && a !== "Без проєкту") return -1;
+      if (aTasks.length != bTasks.length) return bTasks.length - aTasks.length;
       return a.localeCompare(b, "uk-UA");
     })
     .map(([project, projectTasks]) => ({ project, tasks: projectTasks }));
+}
+
+function taskCountLabel(count: number): string {
+  const mod10 = count % 10;
+  const mod100 = count % 100;
+  if (mod10 === 1 && mod100 !== 11) return "задача";
+  if (mod10 >= 2 && mod10 <= 4 && (mod100 < 12 || mod100 > 14)) return "задачі";
+  return "задач";
+}
+
+function scheduledBucketMetaLabel(input: { key: string; count: number }): string {
+  if (input.key === "overdue") return "Тут те, що вже мало початися раніше і потребує окремого рішення.";
+  if (input.key === "today") return "Головна робоча черга: задачі, які вже можна або потрібно рухати.";
+  if (input.key === "upcoming") return "Наступні дати, щоб бачити ближчий порядок і не губити пріоритет.";
+  return `${input.count} ${taskCountLabel(input.count)}`;
 }
 
 export function TasksPage() {
@@ -286,7 +301,41 @@ export function TasksPage() {
 
   const backlogItems = useMemo(() => filteredItems.filter((task) => isBacklogTask(task)), [filteredItems]);
 
-  const scheduledGroups = useMemo(() => groupByProject(scheduledItems), [scheduledItems]);
+  const scheduledBuckets = useMemo(() => {
+    const today = new Date();
+    today.setHours(0, 0, 0, 0);
+    const tomorrow = new Date(today);
+    tomorrow.setDate(tomorrow.getDate() + 1);
+
+    const overdue: TaskItem[] = [];
+    const todayItems: TaskItem[] = [];
+    const upcoming: TaskItem[] = [];
+
+    for (const task of scheduledItems) {
+      const scheduledAt = parseTaskDate(task.scheduled_for);
+      const timestamp = scheduledAt?.getTime();
+      if (!timestamp || Number.isNaN(timestamp)) {
+        upcoming.push(task);
+        continue;
+      }
+      if (timestamp < today.getTime()) {
+        overdue.push(task);
+        continue;
+      }
+      if (timestamp < tomorrow.getTime()) {
+        todayItems.push(task);
+        continue;
+      }
+      upcoming.push(task);
+    }
+
+    return [
+      { key: "overdue", label: "Прострочене в плані", tasks: overdue },
+      { key: "today", label: "Найближче до виконання", tasks: todayItems },
+      { key: "upcoming", label: "Далі за часом", tasks: upcoming }
+    ].filter((bucket) => bucket.tasks.length > 0);
+  }, [scheduledItems]);
+
   const backlogGroups = useMemo(() => groupByProject(backlogItems), [backlogItems]);
 
   const quickCommunicationOpenCount = useMemo(
@@ -617,7 +666,7 @@ export function TasksPage() {
   }
   async function detachCalendarLink(task: TaskItem) {
     if (!sessionToken) {
-      setError("???????? ??????????? ? ???????.");
+      setError("Спочатку авторизуйся в Інбоксі.");
       return;
     }
 
@@ -656,64 +705,84 @@ export function TasksPage() {
     setError(null);
   }
 
-  function renderTaskGroups(
-    groups: Array<{ project: string; tasks: TaskItem[] }>,
-    emptyMessage: string,
-    scope: "scheduled" | "backlog"
-  ) {
-    if (groups.length === 0) {
-      return <p className="empty-note">{emptyMessage}</p>;
+  function renderTaskRow(task: TaskItem, scope: "scheduled" | "backlog") {
+    const timing = formatTaskTimingTone(task);
+    const project = projectName(task);
+
+    return (
+      <li key={task.id} className={scope === "scheduled" ? "inbox-item task-card task-card--scheduled" : "inbox-item task-card task-card--backlog"}>
+        <p className="inbox-main-text task-card-title">
+          {task.title}
+          {task.is_protected_essential ? <span className="essential-badge">Важлива задача</span> : null}
+          {task.planning_flexibility ? <span className={`planning-badge planning-badge--${task.planning_flexibility}`}>{planningFlexibilityLabel(task.planning_flexibility)}</span> : null}
+        </p>
+        <div className="task-chip-row">
+          <span className="task-chip task-chip--type">{taskTypeLabel(task.task_type)}</span>
+          <span className="task-chip">{statusLabel(task.status)}</span>
+          {scope === "backlog" ? <span className="task-chip task-chip--backlog">Беклог</span> : <span className="task-chip task-chip--scheduled">Заплановано</span>}
+        </div>
+        <p className="inbox-meta">Проєкт: {project}</p>
+        {task.status === "cancelled" ? (
+          <p className="inbox-meta">
+            Причина: {moveReasonLabel(task.last_moved_reason) ?? "не вказана"}
+            {task.cancel_reason_text ? ` / ${task.cancel_reason_text}` : ""}
+          </p>
+        ) : null}
+        <p className={timing.tone === "warn" ? "error-note" : "inbox-meta"}>{timing.label}</p>
+        {calendarLinkHint(task) ? <p className="inbox-meta">{calendarLinkHint(task)}</p> : task.linked_calendar_event ? <p className="inbox-meta">Подія в Google Calendar</p> : null}
+        <div className="inbox-actions">
+          {task.status !== "done" ? (
+            <button onClick={() => void runDone(task)} disabled={workingTaskId === task.id}>
+              Виконано
+            </button>
+          ) : null}
+          <button
+            type="button"
+            className="ghost"
+            onClick={() => {
+              setTaskModalMode("view");
+              setActiveTask(task);
+            }}
+          >
+            Відкрити
+          </button>
+        </div>
+      </li>
+    );
+  }
+
+  function renderScheduledQueue() {
+    if (scheduledBuckets.length === 0) {
+      return <p className="empty-note">Запланованих задач немає.</p>;
     }
 
-    return groups.map(({ project, tasks }) => (
-      <details key={project} className="project-group" open>
+    return scheduledBuckets.map((bucket) => (
+      <div key={bucket.key} className="task-queue-group">
+        <div className="task-queue-group__header">
+          <strong>{bucket.label}</strong>
+          <span className="project-group-meta">{bucket.tasks.length} {taskCountLabel(bucket.tasks.length)}</span>
+        </div>
+        <p className="inbox-meta">{scheduledBucketMetaLabel({ key: bucket.key, count: bucket.tasks.length })}</p>
+        <ul className="inbox-list">
+          {bucket.tasks.map((task) => renderTaskRow(task, "scheduled"))}
+        </ul>
+      </div>
+    ));
+  }
+
+  function renderBacklogGroups() {
+    if (backlogGroups.length === 0) {
+      return <p className="empty-note">Беклог порожній.</p>;
+    }
+
+    return backlogGroups.map(({ project, tasks }) => (
+      <details key={project} className="project-group">
         <summary>
           <span className="project-group-title">{project}</span>
-          <span className="project-group-meta">{tasks.length} {tasks.length === 1 ? "??????" : tasks.length < 5 ? "??????" : "?????"}</span>
+          <span className="project-group-meta">{tasks.length} {taskCountLabel(tasks.length)}</span>
         </summary>
         <ul className="inbox-list">
-          {tasks.map((task) => {
-            const timing = formatTaskTimingTone(task);
-            return (
-              <li key={task.id} className={scope === "scheduled" ? "inbox-item task-card task-card--scheduled" : "inbox-item task-card task-card--backlog"}>
-                <p className="inbox-main-text task-card-title">
-                  {task.title}
-                  {task.is_protected_essential ? <span className="essential-badge">???????? ???????</span> : null}
-                  {task.planning_flexibility ? <span className={`planning-badge planning-badge--${task.planning_flexibility}`}>{planningFlexibilityLabel(task.planning_flexibility)}</span> : null}
-                </p>
-                <div className="task-chip-row">
-                  <span className="task-chip task-chip--type">{taskTypeLabel(task.task_type)}</span>
-                  <span className="task-chip">{statusLabel(task.status)}</span>
-                  {scope === "backlog" ? <span className="task-chip task-chip--backlog">??????</span> : <span className="task-chip task-chip--scheduled">???????????</span>}
-                </div>
-                {task.status === "cancelled" ? (
-                  <p className="inbox-meta">
-                    ???????: {moveReasonLabel(task.last_moved_reason) ?? "?? ???????"}
-                    {task.cancel_reason_text ? ` ? ${task.cancel_reason_text}` : ""}
-                  </p>
-                ) : null}
-                <p className={timing.tone === "warn" ? "error-note" : "inbox-meta"}>{timing.label}</p>
-                {calendarLinkHint(task) ? <p className="inbox-meta">{calendarLinkHint(task)}</p> : task.linked_calendar_event ? <p className="inbox-meta">???'????? ? Google Calendar</p> : null}
-                <div className="inbox-actions">
-                  {task.status !== "done" ? (
-                    <button onClick={() => void runDone(task)} disabled={workingTaskId === task.id}>
-                      ????????
-                    </button>
-                  ) : null}
-                  <button
-                    type="button"
-                    className="ghost"
-                    onClick={() => {
-                      setTaskModalMode("view");
-                      setActiveTask(task);
-                    }}
-                  >
-                    ??????
-                  </button>
-                </div>
-              </li>
-            );
-          })}
+          {tasks.map((task) => renderTaskRow(task, "backlog"))}
         </ul>
       </details>
     ));
@@ -722,7 +791,7 @@ export function TasksPage() {
   return (
     <section className="panel">
       <h2>Задачі</h2>
-      <p>Заплановані задачі відокремлені від беклогу, без автоматичного перепланування.</p>
+      <p>Сторінка задач тепер показує робочий порядок: спочатку заплановане й датоване, а беклог лишається нижче як secondary queue.</p>
 
       <div className="toolbar-row">
         <button type="button" onClick={openCreateTask} disabled={!sessionToken || loading || workingTaskId !== null}>
@@ -800,15 +869,20 @@ export function TasksPage() {
       {!loading && filteredItems.length > 0 ? (
         <>
           <section className="today-section">
-            <h3>Заплановані</h3>
-            <p className="inbox-meta">Показує задачі з планованим стартом, відсортовані за часом.</p>
-            {renderTaskGroups(scheduledGroups, "Запланованих задач немає.", "scheduled")}
+            <h3>Операційна черга</h3>
+            <p className="inbox-meta">Тут усе, що вже має час або дату і повинно відчуватись як найближча робота, а не як список проєктів.</p>
+            {renderScheduledQueue()}
           </section>
 
           <section className="today-section">
-            <h3>Беклог</h3>
-            <p className="inbox-meta">Тут задачі без планованого старту. Дедлайн та оцінка лишаються видимими.</p>
-            {renderTaskGroups(backlogGroups, "Беклог порожній.", "backlog")}
+            <details className="project-group">
+              <summary>
+                <span className="project-group-title">Беклог</span>
+                <span className="project-group-meta">{backlogItems.length} {taskCountLabel(backlogItems.length)}</span>
+              </summary>
+              <p className="inbox-meta">Тут лишаються задачі без планованого старту. Проєкт видно, але він більше не визначає головну структуру всієї сторінки.</p>
+              {renderBacklogGroups()}
+            </details>
           </section>
         </>
       ) : null}

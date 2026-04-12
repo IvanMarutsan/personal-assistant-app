@@ -352,6 +352,25 @@ button.danger {
   color: #607166;
 }
 
+.task-queue-group {
+  margin-top: 12px;
+  border-top: 1px solid #e3ece6;
+  padding-top: 12px;
+}
+
+.task-queue-group:first-of-type {
+  margin-top: 0;
+  padding-top: 0;
+  border-top: 0;
+}
+
+.task-queue-group__header {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+}
+
 .today-section {
   margin-top: 10px;
 }
