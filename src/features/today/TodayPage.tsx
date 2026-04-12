@@ -300,6 +300,17 @@ function shouldShowDayReviewPrompt(input: {
   return input.openPlannedCount > 0 || input.dueWithoutScheduleCount > 0 || input.worklogCount === 0;
 }
 
+function formatCalendarEventTimeRange(event: GoogleCalendarEventItem): string {
+  if (!event.startAt) return "Без часу";
+  const start = new Date(event.startAt);
+  if (Number.isNaN(start.getTime())) return "Без часу";
+  const startLabel = formatTaskDateTime(start);
+  if (!event.endAt) return startLabel;
+  const end = new Date(event.endAt);
+  if (Number.isNaN(end.getTime())) return startLabel;
+  return `${startLabel} - ${new Intl.DateTimeFormat("uk-UA", { hour: "2-digit", minute: "2-digit" }).format(end)}`;
+}
+
 function shouldShowWeekReviewPrompt(input: {
   isCurrentWeek: boolean;
   hasWeeklyReview: boolean;
@@ -311,7 +322,11 @@ function shouldShowWeekReviewPrompt(input: {
   if (!input.hasWeeklyReview) return false;
   return input.plannedCount > 0 || input.backlogCount > 0 || input.weeklyWorklogCount === 0;
 }
-export function TodayPage() {
+type TodayPageProps = {
+  surface?: "day" | "week";
+};
+
+export function TodayPage({ surface = "day" }: TodayPageProps) {
   const [items, setItems] = useState<TaskItem[]>([]);
   const [projects, setProjects] = useState<ProjectItem[]>([]);
   const [planning, setPlanning] = useState<PlanningSummary | null>(null);
@@ -473,6 +488,26 @@ export function TodayPage() {
   const selectedWeekLabel = useMemo(() => formatWeekRangeLabel(selectedWeekScopeDate), [selectedWeekScopeDate]);
   const currentWeekScopeDate = useMemo(() => toWeekScopeDate(startOfToday(new Date())), []);
   const isSelectedToday = selectedScopeDate === todayScopeDate;
+  const isWeekSurface = surface === "week";
+  const selectedDayRelation = selectedScopeDate > todayScopeDate ? "future" : selectedScopeDate < todayScopeDate ? "past" : "today";
+  const dayIntroCopy =
+    selectedDayRelation === "today"
+      ? "День зібрано навколо задач із планованим стартом на сьогодні, без автоматичного підтягування беклогу."
+      : selectedDayRelation === "future"
+        ? "Обрана дата показує, що вже стоїть у плані на цей день, без автоматичного підтягування беклогу."
+        : "Обрана дата показує, що було в плані на цей день, без автоматичного підтягування беклогу.";
+  const dayFocusTitle =
+    selectedDayRelation === "today"
+      ? "Що робити зараз?"
+      : selectedDayRelation === "future"
+        ? "На що звернути увагу в цей день?"
+        : "Що було головним у цей день?";
+  const dayFocusEmptyLabel =
+    selectedDayRelation === "today"
+      ? "Немає чіткої головної рекомендації."
+      : selectedDayRelation === "future"
+        ? "Явної головної точки уваги для цього дня поки немає."
+        : "Явної головної точки уваги для цього дня зараз не видно.";
   const scopeDate = selectedScopeDate;
 
   useEffect(() => {
@@ -834,7 +869,7 @@ export function TodayPage() {
   }
   async function detachActiveTaskCalendarLink(task: TaskItem) {
     if (!sessionToken) {
-      setError("???????? ??????????? ? ???????.");
+      setError("Спочатку авторизуйся в Інбоксі.");
       return;
     }
 
@@ -1187,32 +1222,58 @@ export function TodayPage() {
     <section className="panel">
       <div className="today-toolbar">
         <div>
-          <h2>{isSelectedToday ? "\u0421\u044c\u043e\u0433\u043e\u0434\u043d\u0456" : "\u041f\u043b\u0430\u043d \u0434\u043d\u044f"}</h2>
-          <p className="inbox-meta">{selectedDayLabel}</p>
+          <h2>{isWeekSurface ? "Тиждень" : isSelectedToday ? "Сьогодні" : "План дня"}</h2>
+          <p className="inbox-meta">{isWeekSurface ? selectedWeekLabel : selectedDayLabel}</p>
         </div>
         <div className="today-toolbar__actions">
-          <button type="button" className="ghost" onClick={() => setSelectedScopeDate((current) => shiftScopeDate(current, -1))}>
-            {"\u041f\u043e\u043f\u0435\u0440\u0435\u0434\u043d\u0456\u0439 \u0434\u0435\u043d\u044c"}
+          <button type="button" className="ghost" onClick={() => setSelectedScopeDate((current) => shiftScopeDate(current, isWeekSurface ? -7 : -1))}>
+            {isWeekSurface ? "Попередній тиждень" : "Попередній день"}
           </button>
-          <input type="date" value={selectedScopeDate} onChange={(event) => setSelectedScopeDate(event.target.value || todayScopeDate)} />
-          {!isSelectedToday ? (
-            <button type="button" className="ghost" onClick={() => setSelectedScopeDate(todayScopeDate)}>
-              {"\u0421\u044c\u043e\u0433\u043e\u0434\u043d\u0456"}
+          <input
+            type="date"
+            value={isWeekSurface ? selectedWeekScopeDate : selectedScopeDate}
+            onChange={(event) => setSelectedScopeDate(event.target.value || (isWeekSurface ? currentWeekScopeDate : todayScopeDate))}
+          />
+          {(isWeekSurface ? selectedWeekScopeDate !== currentWeekScopeDate : !isSelectedToday) ? (
+            <button type="button" className="ghost" onClick={() => setSelectedScopeDate(isWeekSurface ? currentWeekScopeDate : todayScopeDate)}>
+              {isWeekSurface ? "Цей тиждень" : "Сьогодні"}
             </button>
           ) : null}
-          <button type="button" className="ghost" onClick={() => setSelectedScopeDate((current) => shiftScopeDate(current, 1))}>
-            {"\u041d\u0430\u0441\u0442\u0443\u043f\u043d\u0438\u0439 \u0434\u0435\u043d\u044c"}
+          <button type="button" className="ghost" onClick={() => setSelectedScopeDate((current) => shiftScopeDate(current, isWeekSurface ? 7 : 1))}>
+            {isWeekSurface ? "Наступний тиждень" : "Наступний день"}
           </button>
-          <button
-            type="button"
-            onClick={() => {
-              setTaskModalMode("create");
-              setActiveTask(null);
-            }}
-            disabled={!sessionToken || workingTaskId !== null || noteCreating}
-          >
-            Створити задачу
+        </div>
+      </div>
+      <div className="today-toolbar__actions today-toolbar__actions--primary">
+        {isWeekSurface ? (
+          <button type="button" onClick={() => void openPlanningConversation("week")} disabled={!sessionToken || planningConversationBusy}>
+            {"Обговорити тиждень"}
           </button>
+        ) : (
+          <>
+            <button
+              type="button"
+              onClick={() => {
+                setTaskModalMode("create");
+                setActiveTask(null);
+              }}
+              disabled={!sessionToken || workingTaskId !== null || noteCreating}
+            >
+              Створити задачу
+            </button>
+            <button type="button" onClick={() => void openPlanningConversation("day")} disabled={!sessionToken || planningConversationBusy}>
+              {"Обговорити день"}
+            </button>
+          </>
+        )}
+      </div>
+      <p>
+        {isWeekSurface
+          ? "Тут зібрано тижневий план, огляд і ручні follow-up рішення, без змішування із денним execution flow."
+          : dayIntroCopy}
+      </p>
+      {!isWeekSurface ? (
+        <div className="today-toolbar__actions today-toolbar__actions--secondary">
           <button
             type="button"
             className="ghost"
@@ -1221,15 +1282,8 @@ export function TodayPage() {
           >
             Створити нотатку
           </button>
-          <button type="button" onClick={() => void openPlanningConversation("day")} disabled={!sessionToken || planningConversationBusy}>
-            {"\u041e\u0431\u0433\u043e\u0432\u043e\u0440\u0438\u0442\u0438 \u0434\u0435\u043d\u044c"}
-          </button>
-          <button type="button" className="ghost" onClick={() => void openPlanningConversation("week")} disabled={!sessionToken || planningConversationBusy}>
-            {"\u041e\u0431\u0433\u043e\u0432\u043e\u0440\u0438\u0442\u0438 \u0442\u0438\u0436\u0434\u0435\u043d\u044c"}
-          </button>
         </div>
-      </div>
-      <p>{isSelectedToday ? "\u0414\u0435\u043d\u044c \u0431\u0443\u0434\u0443\u0454\u0442\u044c\u0441\u044f \u043d\u0430\u0432\u043a\u043e\u043b\u043e \u0437\u0430\u0434\u0430\u0447 \u0456\u0437 \u043f\u043b\u0430\u043d\u043e\u0432\u0430\u043d\u0438\u043c \u0441\u0442\u0430\u0440\u0442\u043e\u043c \u043d\u0430 \u0441\u044c\u043e\u0433\u043e\u0434\u043d\u0456, \u0431\u0435\u0437 \u0430\u0432\u0442\u043e\u043c\u0430\u0442\u0438\u0447\u043d\u043e\u0433\u043e \u043f\u0456\u0434\u0442\u044f\u0433\u0443\u0432\u0430\u043d\u043d\u044f \u0431\u0435\u043a\u043b\u043e\u0433\u0443." : "\u041e\u0431\u0440\u0430\u043d\u0438\u0439 \u0434\u0435\u043d\u044c \u0431\u0443\u0434\u0443\u0454\u0442\u044c\u0441\u044f \u043d\u0430\u0432\u043a\u043e\u043b\u043e \u0437\u0430\u0434\u0430\u0447 \u0456\u0437 \u043f\u043b\u0430\u043d\u043e\u0432\u0430\u043d\u0438\u043c \u0441\u0442\u0430\u0440\u0442\u043e\u043c \u043d\u0430 \u0446\u044e \u0434\u0430\u0442\u0443, \u0431\u0435\u0437 \u0430\u0432\u0442\u043e\u043c\u0430\u0442\u0438\u0447\u043d\u043e\u0433\u043e \u043f\u0456\u0434\u0442\u044f\u0433\u0443\u0432\u0430\u043d\u043d\u044f \u0431\u0435\u043a\u043b\u043e\u0433\u0443."}</p>
+      ) : null}
 
       {!sessionToken ? <p className="empty-note">Відкрий Інбокс для авторизації сесії.</p> : null}
       {error ? (
@@ -1242,7 +1296,7 @@ export function TodayPage() {
       ) : null}
       {loading ? <p>Завантаження...</p> : null}
 
-      {planning ? (
+      {!isWeekSurface && planning ? (
         <section className="assistant-block deterministic-block">
           <h3>План дня</h3>
           {diagnostics.debugEnabled ? (
@@ -1347,7 +1401,7 @@ export function TodayPage() {
         </section>
       ) : null}
 
-      {aiAdvisor ? (
+      {!isWeekSurface && aiAdvisor ? (
         <section className="assistant-block ai-block">
           <h3>Порада AI</h3>
           {diagnostics.debugEnabled ? (
@@ -1397,6 +1451,17 @@ export function TodayPage() {
       ) : null}
 
 
+      {isWeekSurface && !loading && (weekPlanning || weekAiAdvisor || showWeekReviewPrompt) ? (
+        <section className="today-disclosure">
+          <div className="today-disclosure__header">
+            <strong>{selectedWeekLabel}</strong>
+            <p className="inbox-meta">Тижневий огляд і обговорення винесені окремо, щоб не змішувати їх із денним фокусом.</p>
+          </div>
+          <div className="today-toolbar__actions today-toolbar__actions--secondary">
+            <button type="button" className="ghost" onClick={() => void openPlanningConversation("week")} disabled={!sessionToken || planningConversationBusy}>
+              {"Обговорити тиждень"}
+            </button>
+          </div>
       {weekPlanning ? (
         <section className="assistant-block deterministic-block">
           <h3>План тижня</h3>
@@ -1532,7 +1597,9 @@ export function TodayPage() {
           ) : null}
         </section>
       ) : null}
-      {!loading ? (
+        </section>
+      ) : null}
+      {!isWeekSurface && !loading ? (
         <>
           {!isSelectedToday ? (
             <section className="today-section">
@@ -1577,7 +1644,7 @@ export function TodayPage() {
             <p className="inbox-meta">{"\u041f\u043b\u0430\u043d\u0443\u0432\u0430\u043d\u043d\u044f \u0434\u043b\u044f \u0432\u0438\u0431\u0440\u0430\u043d\u043e\u0433\u043e \u0434\u043d\u044f \u0437\u043e\u0441\u0435\u0440\u0435\u0434\u0436\u0435\u043d\u0435 \u043d\u0430 \u0437\u0430\u0434\u0430\u0447\u0430\u0445 \u0456\u0437 \u043f\u043b\u0430\u043d\u043e\u0432\u0430\u043d\u0438\u043c \u0441\u0442\u0430\u0440\u0442\u043e\u043c. \u0411\u0435\u043a\u043b\u043e\u0433 \u043d\u0435 \u043f\u0456\u0434\u0442\u044f\u0433\u0443\u0454\u0442\u044c\u0441\u044f \u0432 \u0434\u0435\u043d\u044c \u0430\u0432\u0442\u043e\u043c\u0430\u0442\u0438\u0447\u043d\u043e."}</p>
           </section>
           {renderSection(isSelectedToday ? "\u0417\u0430\u043f\u043b\u0430\u043d\u043e\u0432\u0430\u043d\u043e \u043d\u0430 \u0441\u044c\u043e\u0433\u043e\u0434\u043d\u0456" : "\u0417\u0430\u043f\u043b\u0430\u043d\u043e\u0432\u0430\u043d\u043e \u043d\u0430 \u0432\u0438\u0431\u0440\u0430\u043d\u0438\u0439 \u0434\u0435\u043d\u044c", "\u041e\u0441\u043d\u043e\u0432\u043d\u0438\u0439 \u0441\u043f\u0438\u0441\u043e\u043a \u0434\u043d\u044f: \u0442\u0456\u043b\u044c\u043a\u0438 \u0437\u0430\u0434\u0430\u0447\u0456 \u0437 \u043f\u043b\u0430\u043d\u043e\u0432\u0430\u043d\u0438\u043c \u0441\u0442\u0430\u0440\u0442\u043e\u043c \u043d\u0430 \u0446\u044e \u0434\u0430\u0442\u0443.", scheduledToday, "scheduled")}
-          {renderSection(isSelectedToday ? "??????????? ? ?????" : "??????????? ?? ????????? ???", isSelectedToday ? "??????, ??? ???? ??? ????? ?????????? ????? ??? ???????, ??? ???? ??? ?? ????????? ? ?????." : "??????, ??? ???? ?????????? ????? ??? ??????? ??? ????? ?? ????????? ???.", overdueScheduled, "neutral")}
+          {renderSection(isSelectedToday ? "Заплановане раніше" : "Заплановане до цієї дати", isSelectedToday ? "Тут задачі, які вже мали стартувати раніше й досі лишаються відкритими." : "Тут задачі, які мали стартувати ще до цієї дати й досі лишаються відкритими.", overdueScheduled, "neutral")}
           {renderSection(isSelectedToday ? "\u0414\u0435\u0434\u043b\u0430\u0439\u043d\u0438 \u0441\u044c\u043e\u0433\u043e\u0434\u043d\u0456 \u0431\u0435\u0437 \u043f\u043b\u0430\u043d\u0443" : "\u0414\u0435\u0434\u043b\u0430\u0439\u043d\u0438 \u0446\u044c\u043e\u0433\u043e \u0434\u043d\u044f \u0431\u0435\u0437 \u043f\u043b\u0430\u043d\u0443", "\u041e\u043a\u0440\u0435\u043c\u043e \u043f\u043e\u043a\u0430\u0437\u0430\u043d\u0456 \u0437\u0430\u0434\u0430\u0447\u0456 \u0437 \u0434\u0435\u0434\u043b\u0430\u0439\u043d\u043e\u043c \u043d\u0430 \u0432\u0438\u0431\u0440\u0430\u043d\u0438\u0439 \u0434\u0435\u043d\u044c, \u0430\u043b\u0435 \u0431\u0435\u0437 \u043f\u043b\u0430\u043d\u043e\u0432\u0430\u043d\u043e\u0433\u043e \u0441\u0442\u0430\u0440\u0442\u0443.", dueTodayWithoutSchedule, "unscheduled")}
           {renderSection("\u0411\u0435\u043a\u043b\u043e\u0433", isSelectedToday ? "\u0422\u0443\u0442 \u0437\u0430\u0434\u0430\u0447\u0456 \u0431\u0435\u0437 \u043f\u043b\u0430\u043d\u043e\u0432\u0430\u043d\u043e\u0433\u043e \u0441\u0442\u0430\u0440\u0442\u0443. \u0417\u0432\u0456\u0434\u0441\u0438 \u0457\u0445 \u043c\u043e\u0436\u043d\u0430 \u0448\u0432\u0438\u0434\u043a\u043e \u043f\u043e\u0441\u0442\u0430\u0432\u0438\u0442\u0438 \u0432 \u043f\u043b\u0430\u043d \u0434\u043d\u044f." : "\u0422\u0443\u0442 \u0437\u0430\u0434\u0430\u0447\u0456 \u0431\u0435\u0437 \u043f\u043b\u0430\u043d\u043e\u0432\u0430\u043d\u043e\u0433\u043e \u0441\u0442\u0430\u0440\u0442\u0443. \u0417\u0432\u0456\u0434\u0441\u0438 \u0457\u0445 \u043c\u043e\u0436\u043d\u0430 \u0448\u0432\u0438\u0434\u043a\u043e \u043f\u043e\u0441\u0442\u0430\u0432\u0438\u0442\u0438 \u0432 \u043f\u043b\u0430\u043d \u043d\u0430 \u0432\u0438\u0431\u0440\u0430\u043d\u0438\u0439 \u0434\u0435\u043d\u044c.", pureBacklogItems, "unscheduled")}
           {renderSection("Захищені / регулярні важливі", "Огляд важливих регулярних і захищених задач без автопланування.", protectedEssentials, "neutral")}

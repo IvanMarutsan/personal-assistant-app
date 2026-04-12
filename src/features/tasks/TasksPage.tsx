@@ -89,7 +89,12 @@ function groupByProject(tasks: TaskItem[]): Array<{ project: string; tasks: Task
   }, new Map());
 
   return Array.from(map.entries())
-    .sort(([a], [b]) => a.localeCompare(b, "uk-UA"))
+    .sort(([a, aTasks], [b, bTasks]) => {
+      if (a === "??? ???????" && b !== "??? ???????") return 1;
+      if (b === "??? ???????" && a !== "??? ???????") return -1;
+      if (aTasks.length !== bTasks.length) return bTasks.length - aTasks.length;
+      return a.localeCompare(b, "uk-UA");
+    })
     .map(([project, projectTasks]) => ({ project, tasks: projectTasks }));
 }
 
@@ -651,39 +656,48 @@ export function TasksPage() {
     setError(null);
   }
 
-  function renderTaskGroups(groups: Array<{ project: string; tasks: TaskItem[] }>, emptyMessage: string) {
+  function renderTaskGroups(
+    groups: Array<{ project: string; tasks: TaskItem[] }>,
+    emptyMessage: string,
+    scope: "scheduled" | "backlog"
+  ) {
     if (groups.length === 0) {
       return <p className="empty-note">{emptyMessage}</p>;
     }
 
     return groups.map(({ project, tasks }) => (
-      <section key={project} className="project-group">
-        <h4>{project}</h4>
+      <details key={project} className="project-group" open>
+        <summary>
+          <span className="project-group-title">{project}</span>
+          <span className="project-group-meta">{tasks.length} {tasks.length === 1 ? "??????" : tasks.length < 5 ? "??????" : "?????"}</span>
+        </summary>
         <ul className="inbox-list">
           {tasks.map((task) => {
             const timing = formatTaskTimingTone(task);
             return (
-              <li key={task.id} className="inbox-item">
-                <p className="inbox-main-text">
+              <li key={task.id} className={scope === "scheduled" ? "inbox-item task-card task-card--scheduled" : "inbox-item task-card task-card--backlog"}>
+                <p className="inbox-main-text task-card-title">
                   {task.title}
-                  {task.is_protected_essential ? <span className="essential-badge">Захищене важливе</span> : null}
+                  {task.is_protected_essential ? <span className="essential-badge">???????? ???????</span> : null}
                   {task.planning_flexibility ? <span className={`planning-badge planning-badge--${task.planning_flexibility}`}>{planningFlexibilityLabel(task.planning_flexibility)}</span> : null}
                 </p>
-                <p className="inbox-meta">
-                  {taskTypeLabel(task.task_type)} · {statusLabel(task.status)}
-                </p>
+                <div className="task-chip-row">
+                  <span className="task-chip task-chip--type">{taskTypeLabel(task.task_type)}</span>
+                  <span className="task-chip">{statusLabel(task.status)}</span>
+                  {scope === "backlog" ? <span className="task-chip task-chip--backlog">??????</span> : <span className="task-chip task-chip--scheduled">???????????</span>}
+                </div>
                 {task.status === "cancelled" ? (
                   <p className="inbox-meta">
-                    Причина: {moveReasonLabel(task.last_moved_reason) ?? "Не вказано"}
-                    {task.cancel_reason_text ? ` · ${task.cancel_reason_text}` : ""}
+                    ???????: {moveReasonLabel(task.last_moved_reason) ?? "?? ???????"}
+                    {task.cancel_reason_text ? ` ? ${task.cancel_reason_text}` : ""}
                   </p>
                 ) : null}
                 <p className={timing.tone === "warn" ? "error-note" : "inbox-meta"}>{timing.label}</p>
-                {calendarLinkHint(task) ? <p className="inbox-meta">{calendarLinkHint(task)}</p> : task.linked_calendar_event ? <p className="inbox-meta">Пов'язано з Google Calendar</p> : null}
+                {calendarLinkHint(task) ? <p className="inbox-meta">{calendarLinkHint(task)}</p> : task.linked_calendar_event ? <p className="inbox-meta">???'????? ? Google Calendar</p> : null}
                 <div className="inbox-actions">
                   {task.status !== "done" ? (
                     <button onClick={() => void runDone(task)} disabled={workingTaskId === task.id}>
-                      Виконано
+                      ????????
                     </button>
                   ) : null}
                   <button
@@ -694,14 +708,14 @@ export function TasksPage() {
                       setActiveTask(task);
                     }}
                   >
-                    Деталі
+                    ??????
                   </button>
                 </div>
               </li>
             );
           })}
         </ul>
-      </section>
+      </details>
     ));
   }
 
@@ -788,13 +802,13 @@ export function TasksPage() {
           <section className="today-section">
             <h3>Заплановані</h3>
             <p className="inbox-meta">Показує задачі з планованим стартом, відсортовані за часом.</p>
-            {renderTaskGroups(scheduledGroups, "Запланованих задач немає.")}
+            {renderTaskGroups(scheduledGroups, "Запланованих задач немає.", "scheduled")}
           </section>
 
           <section className="today-section">
             <h3>Беклог</h3>
             <p className="inbox-meta">Тут задачі без планованого старту. Дедлайн та оцінка лишаються видимими.</p>
-            {renderTaskGroups(backlogGroups, "Беклог порожній.")}
+            {renderTaskGroups(backlogGroups, "Беклог порожній.", "backlog")}
           </section>
         </>
       ) : null}

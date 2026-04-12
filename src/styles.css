@@ -260,12 +260,96 @@ button.danger {
 
 .project-group {
   margin-top: 8px;
+  border: 1px solid #dbe7de;
+  border-radius: 12px;
+  background: #fbfdfb;
+  padding: 8px 10px;
 }
 
 .project-group h3 {
   margin: 0 0 8px;
   font-size: 1rem;
   color: #355445;
+}
+
+.project-group > summary {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  cursor: pointer;
+  list-style: none;
+  font-weight: 600;
+  color: #2f4b3a;
+}
+
+.project-group > summary::-webkit-details-marker {
+  display: none;
+}
+
+.project-group-title {
+  font-size: 0.98rem;
+}
+
+.project-group-meta {
+  font-size: 0.82rem;
+  color: #6d8274;
+  font-weight: 500;
+}
+
+.project-group[open] > summary {
+  margin-bottom: 10px;
+}
+
+.task-card {
+  background: #fff;
+}
+
+.task-card--scheduled {
+  border-left: 3px solid #8eb89a;
+}
+
+.task-card--backlog {
+  border-left: 3px solid #d7dfd9;
+}
+
+.task-card-title {
+  line-height: 1.4;
+}
+
+.task-chip-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin: 0 0 6px;
+}
+
+.task-chip {
+  display: inline-flex;
+  align-items: center;
+  padding: 2px 7px;
+  border-radius: 999px;
+  border: 1px solid #d4e0d7;
+  background: #f6faf7;
+  color: #355445;
+  font-size: 0.75rem;
+  font-weight: 500;
+}
+
+.task-chip--type {
+  background: #eef6f0;
+}
+
+.task-chip--scheduled {
+  background: #edf7ef;
+  border-color: #bfdac8;
+  color: #24593e;
+}
+
+.task-chip--backlog {
+  background: #f3f5f4;
+  border-color: #d7dfd9;
+  color: #607166;
 }
 
 .today-section {
@@ -538,6 +622,38 @@ button.danger {
   gap: 8px;
   flex-wrap: wrap;
   margin-bottom: 8px;
+}
+
+.today-toolbar__actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
+}
+
+.today-toolbar__actions--primary {
+  margin-bottom: 8px;
+}
+
+.today-toolbar__actions--secondary {
+  margin: 8px 0 12px;
+}
+
+.today-disclosure {
+  margin: 16px 0;
+  border: 1px solid #dce9df;
+  border-radius: 12px;
+  background: #fbfcfb;
+  padding: 12px;
+}
+
+.today-disclosure__header strong {
+  display: block;
+  margin-bottom: 4px;
+}
+
+.today-disclosure__header p {
+  margin: 0;
 }
 
 .planning-bulk-actions {

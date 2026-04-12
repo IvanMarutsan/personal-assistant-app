@@ -5,6 +5,7 @@ import { NotesPage } from "./features/notes/NotesPage";
 import { WorklogsPage } from "./features/worklogs/WorklogsPage";
 import { TasksPage } from "./features/tasks/TasksPage";
 import { TodayPage } from "./features/today/TodayPage";
+import { WeekPage } from "./features/week/WeekPage";
 import { CalendarPage } from "./features/calendar/CalendarPage";
 import { ProjectsPage } from "./features/projects/ProjectsPage";
 import { useDiagnostics } from "./lib/diagnostics";
@@ -27,6 +28,7 @@ export function App() {
       <nav className="app-nav">
         <Link to="/">Інбокс</Link>
         <Link to="/today">Сьогодні</Link>
+        <Link to="/week">{"Тиждень"}</Link>
         <Link to="/tasks">Задачі</Link>
         <Link to="/projects">Проєкти</Link>
         <Link to="/notes">Нотатки</Link>
@@ -38,7 +40,8 @@ export function App() {
         <DiagnosticsPanel />
         <Routes>
           <Route path="/" element={<InboxPage />} />
-          <Route path="/today" element={<TodayPage />} />
+          <Route path="/today" element={<TodayPage surface="day" />} />
+          <Route path="/week" element={<WeekPage />} />
           <Route path="/tasks" element={<TasksPage />} />
           <Route path="/projects" element={<ProjectsPage />} />
           <Route path="/notes" element={<NotesPage />} />

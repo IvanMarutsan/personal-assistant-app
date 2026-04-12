@@ -688,6 +688,64 @@ export async function updateNote(input: {
   return { createdTaskId: result.createdTaskId };
 }
 
+function normalizePlanningSummary(input: PlanningSummary): PlanningSummary {
+  return {
+    ...input,
+    overload: {
+      ...input.overload,
+      taskTypeSignals: Array.isArray(input.overload?.taskTypeSignals) ? input.overload.taskTypeSignals : [],
+      flags: Array.isArray(input.overload?.flags) ? input.overload.flags : []
+    },
+    essentialRisk: {
+      protectedEssentialRisk: Array.isArray(input.essentialRisk?.protectedEssentialRisk) ? input.essentialRisk.protectedEssentialRisk : [],
+      recurringEssentialRisk: Array.isArray(input.essentialRisk?.recurringEssentialRisk) ? input.essentialRisk.recurringEssentialRisk : [],
+      squeezedOutRisk: Array.isArray(input.essentialRisk?.squeezedOutRisk) ? input.essentialRisk.squeezedOutRisk : []
+    },
+    dailyReview: {
+      ...input.dailyReview,
+      topMovedReasons: Array.isArray(input.dailyReview?.topMovedReasons) ? input.dailyReview.topMovedReasons : [],
+      worklogs: {
+        ...input.dailyReview.worklogs,
+        topProjects: Array.isArray(input.dailyReview?.worklogs?.topProjects) ? input.dailyReview.worklogs.topProjects : [],
+        sourceCounts: Array.isArray(input.dailyReview?.worklogs?.sourceCounts) ? input.dailyReview.worklogs.sourceCounts : []
+      }
+    },
+    weeklyReview: input.weeklyReview
+      ? {
+          done: Array.isArray(input.weeklyReview.done) ? input.weeklyReview.done : [],
+          notDone: Array.isArray(input.weeklyReview.notDone) ? input.weeklyReview.notDone : [],
+          moved: Array.isArray(input.weeklyReview.moved) ? input.weeklyReview.moved : [],
+          shouldMove: Array.isArray(input.weeklyReview.shouldMove) ? input.weeklyReview.shouldMove : [],
+          shouldKill: Array.isArray(input.weeklyReview.shouldKill) ? input.weeklyReview.shouldKill : []
+        }
+      : null,
+    weekDays: Array.isArray(input.weekDays) ? input.weekDays : [],
+    notableDeadlines: Array.isArray(input.notableDeadlines) ? input.notableDeadlines : []
+  };
+}
+
+function normalizeAiAdvisorSummary(input: AiAdvisorSummary): AiAdvisorSummary {
+  return {
+    ...input,
+    contextSnapshot: {
+      ...input.contextSnapshot,
+      taskTypeSignals: Array.isArray(input.contextSnapshot?.taskTypeSignals) ? input.contextSnapshot.taskTypeSignals : [],
+      topMovedReasonsToday: Array.isArray(input.contextSnapshot?.topMovedReasonsToday) ? input.contextSnapshot.topMovedReasonsToday : [],
+      worklogs: {
+        ...input.contextSnapshot.worklogs,
+        topProjects: Array.isArray(input.contextSnapshot?.worklogs?.topProjects) ? input.contextSnapshot.worklogs.topProjects : [],
+        sourceCounts: Array.isArray(input.contextSnapshot?.worklogs?.sourceCounts) ? input.contextSnapshot.worklogs.sourceCounts : []
+      },
+      weekDays: Array.isArray(input.contextSnapshot.weekDays) ? input.contextSnapshot.weekDays : [],
+      notableDeadlines: Array.isArray(input.contextSnapshot.notableDeadlines) ? input.contextSnapshot.notableDeadlines : []
+    },
+    advisor: {
+      ...input.advisor,
+      evidence: Array.isArray(input.advisor?.evidence) ? input.advisor.evidence : []
+    }
+  };
+}
+
 export async function getPlanningAssistant(
   sessionToken: string,
   scopeDate?: string,
@@ -718,7 +776,7 @@ export async function getPlanningAssistant(
     headers: sessionHeaders(sessionToken)
   });
 
-  return {
+  return normalizePlanningSummary({
     generatedAt: result.generatedAt,
     timezone: result.timezone,
     scopeType: result.scopeType,
@@ -732,7 +790,7 @@ export async function getPlanningAssistant(
     weekDays: result.weekDays,
     notableDeadlines: result.notableDeadlines,
     appliedThresholds: result.appliedThresholds
-  };
+  });
 }
 
 export async function getAiAdvisor(
@@ -760,7 +818,7 @@ export async function getAiAdvisor(
     headers: sessionHeaders(sessionToken)
   });
 
-  return {
+  return normalizeAiAdvisorSummary({
     generatedAt: result.generatedAt,
     timezone: result.timezone,
     scopeType: result.scopeType,
@@ -769,7 +827,7 @@ export async function getAiAdvisor(
     fallbackReason: result.fallbackReason,
     contextSnapshot: result.contextSnapshot,
     advisor: result.advisor
-  };
+  });
 }
 
 
