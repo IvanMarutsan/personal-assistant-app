@@ -229,35 +229,43 @@ export async function syncCalendarBlocksFromGoogle(input: {
   const events = await listGoogleCalendarEvents(input);
   const providerIds = events.map((event) => event.id).filter(Boolean);
   const existing = await selectBlocksByProviderIds(supabase, input.userId, providerIds);
-  const existingMap = new Map(existing.map((row) => [row.provider_event_id ?? "", row]));
-
-  const upserts = events
+  const normalizedRows = events
     .map((event) => {
       const parsed = parseGoogleEvent(event);
       if (!parsed) return null;
       const existingRow = existingMap.get(event.id);
       return {
-        id: existingRow?.id,
-        user_id: input.userId,
-        project_id: existingRow?.project_id ?? null,
-        title: parsed.title,
-        details: parsed.details,
-        start_at: parsed.startAt,
-        end_at: parsed.endAt,
-        timezone: parsed.timezone,
-        source: existingRow?.source ?? "google",
-        calendar_provider: "google",
-        provider_event_id: event.id,
-        provider_event_url: parsed.providerEventUrl,
-        provider_status: parsed.providerStatus,
-        is_all_day: parsed.isAllDay,
-        archived_at: null
+        existingId: existingRow?.id ?? null,
+        row: {
+          user_id: input.userId,
+          project_id: existingRow?.project_id ?? null,
+          title: parsed.title,
+          details: parsed.details,
+          start_at: parsed.startAt,
+          end_at: parsed.endAt,
+          timezone: parsed.timezone,
+          source: existingRow?.source ?? "google",
+          calendar_provider: "google",
+          provider_event_id: event.id,
+          provider_event_url: parsed.providerEventUrl,
+          provider_status: parsed.providerStatus,
+          is_all_day: parsed.isAllDay,
+          archived_at: null
+        }
       };
     })
-    .filter(Boolean);
+    .filter((item): item is { existingId: string | null; row: Omit<CalendarBlockRow, "id"> } => Boolean(item));
 
-  if (upserts.length > 0) {
-    const { error } = await supabase.from("calendar_blocks").upsert(upserts, { onConflict: "user_id,calendar_provider,provider_event_id" });
+  const inserts = normalizedRows.filter((item) => !item.existingId).map((item) => item.row);
+  const updates = normalizedRows.filter((item) => item.existingId);
+
+  if (inserts.length > 0) {
+    const { error } = await supabase.from("calendar_blocks").insert(inserts);
+    if (error) throw error;
+  }
+
+  for (const item of updates) {
+    const { error } = await supabase.from("calendar_blocks").update(item.row).eq("id", item.existingId!).eq("user_id", input.userId);
     if (error) throw error;
   }
 
@@ -374,4 +382,6 @@ export async function deleteCalendarBlock(input: { userId: string; blockId: stri
   const { error } = await supabase.from("calendar_blocks").delete().eq("id", existing.id).eq("user_id", input.userId);
   if (error) throw error;
 }
+
+
 

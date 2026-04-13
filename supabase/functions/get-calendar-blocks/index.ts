@@ -36,11 +36,19 @@ Deno.serve(async (req) => {
     });
     return jsonResponse({ ok: true, items: blocks });
   } catch (error) {
-    if (error instanceof Error && (error.message === "calendar_not_connected" || error.message === "calendar_refresh_token_missing")) {
-      const localBlocks = await listLocalCalendarBlocks({ userId: sessionUser.userId, timeMin, timeMax }).catch(() => []);
-      return jsonResponse({ ok: true, items: localBlocks, stale: true });
+    console.error("[get-calendar-blocks] sync_failed", error);
+
+    try {
+      const localBlocks = await listLocalCalendarBlocks({ userId: sessionUser.userId, timeMin, timeMax });
+      return jsonResponse({
+        ok: true,
+        items: localBlocks,
+        stale: true,
+        syncError: error instanceof Error ? error.message : "calendar_blocks_fetch_failed"
+      });
+    } catch (localError) {
+      console.error("[get-calendar-blocks] local_fallback_failed", localError);
+      return jsonResponse({ ok: false, error: "calendar_blocks_fetch_failed" }, 500);
     }
-    console.error("[get-calendar-blocks] failed", error);
-    return jsonResponse({ ok: false, error: "calendar_blocks_fetch_failed" }, 500);
   }
 });
