@@ -24,6 +24,7 @@ import {
   createNote,
   createTask,
   deleteCalendarBlock,
+  deleteTask,
   detachTaskCalendarLink as detachTaskCalendarLinkRequest,
   getAiAdvisor,
   getCalendarBlocks,
@@ -39,6 +40,7 @@ import {
   transcribePlanningVoice,
   updatePlanningProposal,
   updateTask,
+  updateTaskStatus,
   upsertCalendarBlock
 } from "../../lib/api";
 import type {
@@ -320,6 +322,139 @@ function formatCalendarEventTimeRange(event: { start_at: string; end_at: string;
   return `${startLabel} - ${new Intl.DateTimeFormat("uk-UA", { hour: "2-digit", minute: "2-digit" }).format(end)}`;
 }
 
+function parseDateOrNull(value: string | null | undefined): Date | null {
+  if (!value) return null;
+  const parsed = new Date(value);
+  return Number.isNaN(parsed.getTime()) ? null : parsed;
+}
+
+function formatTimeOfDay(value: Date): string {
+  return new Intl.DateTimeFormat("uk-UA", { hour: "2-digit", minute: "2-digit" }).format(value);
+}
+
+function toLocalDateTimeInput(value: string | null | undefined): string {
+  const parsed = parseDateOrNull(value);
+  if (!parsed) return "";
+  const offsetMs = parsed.getTimezoneOffset() * 60_000;
+  const localDate = new Date(parsed.getTime() - offsetMs);
+  return localDate.toISOString().slice(0, 16);
+}
+
+function formatBlockTimelineRange(block: CalendarBlockItem): string {
+  if (block.is_all_day) return "Увесь день";
+  const start = parseDateOrNull(block.start_at);
+  if (!start) return "Без часу";
+  const end = parseDateOrNull(block.end_at);
+  if (!end) return formatTimeOfDay(start);
+  return `${formatTimeOfDay(start)} - ${formatTimeOfDay(end)}`;
+}
+
+function formatTaskTimelineRange(task: TaskItem): string {
+  const start = parseDateOrNull(task.scheduled_for);
+  if (!start) return formatTaskTimingSummary(task);
+  if (task.estimated_minutes && task.estimated_minutes > 0) {
+    const end = new Date(start.getTime() + task.estimated_minutes * 60_000);
+    return `${formatTimeOfDay(start)} - ${formatTimeOfDay(end)}`;
+  }
+  return formatTimeOfDay(start);
+}
+
+function taskTimelineMeta(task: TaskItem): string {
+  const parts = [taskTypeLabel(task.task_type), projectName(task)];
+  if (task.planning_flexibility) parts.push(planningFlexibilityLabel(task.planning_flexibility));
+  return parts.join(" · ");
+}
+
+type DayTimelineEntry =
+  | { kind: "block"; sortTime: number; block: CalendarBlockItem; tasks: TaskItem[] }
+  | { kind: "task"; sortTime: number; task: TaskItem };
+
+type BlockTimelineLayout = {
+  block: CalendarBlockItem;
+  tasks: TaskItem[];
+  top: number;
+  height: number;
+  lane: number;
+  laneCount: number;
+  start: Date;
+  end: Date;
+};
+
+type StandaloneTaskLayout = {
+  task: TaskItem;
+  top: number;
+  height: number;
+  start: Date;
+  end: Date;
+  left: string;
+  width: string;
+  nested: boolean;
+  parentBlockId: string | null;
+  preservesBlockHeader: boolean;
+  collisionGroupKey: string | null;
+  collisionLane: number;
+  collisionLaneCount: number;
+};
+
+const TIMELINE_PX_PER_MINUTE = 1.6;
+const TIMELINE_BLOCK_MIN_HEIGHT = 72;
+const TIMELINE_TASK_MIN_HEIGHT = 44;
+const TIMELINE_NESTED_TASK_MIN_HEIGHT = 40;
+const TIMELINE_BLOCK_HEADER_HEIGHT = 38;
+const TIMELINE_BLOCK_HEADER_PROTECT_PX = 68;
+const TIMELINE_MIN_LANE_WIDTH = 220;
+const TIMELINE_CANVAS_MIN_WIDTH = 320;
+const TIMELINE_LANE_GAP_PX = 8;
+
+function minutesBetween(start: Date, end: Date): number {
+  return Math.max(0, Math.round((end.getTime() - start.getTime()) / 60_000));
+}
+
+function roundTimelineStart(value: Date): Date {
+  const rounded = new Date(value);
+  rounded.setMinutes(0, 0, 0);
+  rounded.setHours(rounded.getHours() - 1);
+  return rounded;
+}
+
+function roundTimelineEnd(value: Date): Date {
+  const rounded = new Date(value);
+  rounded.setMinutes(0, 0, 0);
+  rounded.setHours(rounded.getHours() + 2);
+  return rounded;
+}
+
+function timelineHeight(minutes: number, minHeight: number): number {
+  return Math.max(minHeight, Math.round(minutes * TIMELINE_PX_PER_MINUTE));
+}
+
+function timelineOffset(windowStart: Date, value: Date): number {
+  return Math.max(0, Math.round(minutesBetween(windowStart, value) * TIMELINE_PX_PER_MINUTE));
+}
+
+function timelineDurationHeight(minutes: number, minHeight: number): number {
+  return timelineHeight(Math.max(15, minutes), minHeight);
+}
+
+function timelineLaneStyle(lane: number, laneCount: number, insetPx = 0): { left: string; width: string } {
+  const totalGap = Math.max(0, laneCount - 1) * TIMELINE_LANE_GAP_PX;
+  const width = `calc((100% - ${totalGap}px) / ${laneCount} - ${insetPx}px)`;
+  const left = `calc(${(100 / laneCount) * lane}% + ${lane * TIMELINE_LANE_GAP_PX}px + ${insetPx}px)`;
+  return { left, width };
+}
+
+function timelineTaskCollisionStyle(lane: number, laneCount: number): { left: string; width: string } {
+  if (laneCount <= 1) return { left: "0%", width: "100%" };
+
+  const stepPercent = laneCount === 2 ? 26 : laneCount === 3 ? 18 : 14;
+  const totalInsetPercent = Math.max(0, laneCount - 1) * stepPercent;
+
+  return {
+    left: `${lane * stepPercent}%`,
+    width: `calc(100% - ${totalInsetPercent}%)`
+  };
+}
+
 function projectNameForCalendarBlock(block: CalendarBlockItem): string {
   if (!block.projects) return "Без проєкту";
   if (Array.isArray(block.projects)) return block.projects[0]?.name ?? "Без проєкту";
@@ -353,10 +488,11 @@ export function TodayPage({ surface = "day" }: TodayPageProps) {
   const [weekCalendarBlocks, setWeekCalendarBlocks] = useState<CalendarBlockItem[]>([]);
   const [activeCalendarBlock, setActiveCalendarBlock] = useState<CalendarBlockItem | null>(null);
   const [calendarBlockCreateOpen, setCalendarBlockCreateOpen] = useState(false);
+  const [calendarBlockModalMode, setCalendarBlockModalMode] = useState<"view" | "edit" | "create">("view");
   const [calendarBlockBusy, setCalendarBlockBusy] = useState(false);
   const [calendarBlockError, setCalendarBlockError] = useState<string | null>(null);
   const [activeTask, setActiveTask] = useState<TaskItem | null>(null);
-  const [taskModalMode, setTaskModalMode] = useState<"edit" | "create">("edit");
+  const [taskModalMode, setTaskModalMode] = useState<"view" | "edit" | "create">("view");
   const [noteCreateOpen, setNoteCreateOpen] = useState(false);
   const [noteCreating, setNoteCreating] = useState(false);
   const [planningConversationOpen, setPlanningConversationOpen] = useState(false);
@@ -605,18 +741,6 @@ export function TodayPage({ surface = "day" }: TodayPageProps) {
     return sortTasksByTimeField(relevant, "due_at");
   }, [items, selectedDayEnd, selectedDayStart]);
 
-  const backlogItems = useMemo(
-    () =>
-      items.filter(
-        (task) => task.status !== "done" && task.status !== "cancelled" && isBacklogTask(task)
-      ),
-    [items]
-  );
-
-  const pureBacklogItems = useMemo(() => {
-    return backlogItems.filter((task) => !isDueOnDay(task, selectedDayStart, selectedDayEnd));
-  }, [backlogItems, selectedDayEnd, selectedDayStart]);
-
   const todayKnownEstimateMinutes = useMemo(() => sumKnownEstimateMinutes(scheduledToday), [scheduledToday]);
   const showDayReviewPrompt = shouldShowDayReviewPrompt({
     isSelectedToday,
@@ -744,6 +868,330 @@ export function TodayPage({ surface = "day" }: TodayPageProps) {
       return parsed >= selectedDayStart && parsed <= selectedDayEnd;
     });
   }, [dayCalendarBlocks, selectedDayEnd, selectedDayStart]);
+
+  const dayTimeline = useMemo<DayTimelineEntry[]>(() => {
+    const sortedBlocks = [...calendarToday].sort((left, right) => {
+      const leftStart = parseDateOrNull(left.start_at)?.getTime() ?? Number.MAX_SAFE_INTEGER;
+      const rightStart = parseDateOrNull(right.start_at)?.getTime() ?? Number.MAX_SAFE_INTEGER;
+      return leftStart - rightStart;
+    });
+
+    const tasksByBlock = new Map<string, TaskItem[]>();
+    const standaloneTasks: TaskItem[] = [];
+
+    for (const task of scheduledToday) {
+      const scheduledAt = parseDateOrNull(task.scheduled_for);
+      if (!scheduledAt) {
+        standaloneTasks.push(task);
+        continue;
+      }
+
+      const matchingBlock = sortedBlocks.find((block) => {
+        if (block.is_all_day) return false;
+        const blockStart = parseDateOrNull(block.start_at);
+        const blockEnd = parseDateOrNull(block.end_at);
+        if (!blockStart || !blockEnd) return false;
+        return scheduledAt.getTime() >= blockStart.getTime() && scheduledAt.getTime() < blockEnd.getTime();
+      });
+
+      if (!matchingBlock) {
+        standaloneTasks.push(task);
+        continue;
+      }
+
+      const existing = tasksByBlock.get(matchingBlock.id) ?? [];
+      existing.push(task);
+      tasksByBlock.set(matchingBlock.id, existing);
+    }
+
+    const entries: DayTimelineEntry[] = [
+      ...sortedBlocks.map((block) => ({
+        kind: "block" as const,
+        sortTime: parseDateOrNull(block.start_at)?.getTime() ?? Number.MAX_SAFE_INTEGER,
+        block,
+        tasks: sortTasksByTimeField(tasksByBlock.get(block.id) ?? [], "scheduled_for")
+      })),
+      ...standaloneTasks.map((task) => ({
+        kind: "task" as const,
+        sortTime: parseDateOrNull(task.scheduled_for)?.getTime() ?? Number.MAX_SAFE_INTEGER,
+        task
+      }))
+    ];
+
+    return entries.sort((left, right) => left.sortTime - right.sortTime);
+  }, [calendarToday, scheduledToday]);
+
+  const visibleDayWindow = useMemo(() => {
+    const points: Date[] = [];
+
+    for (const block of calendarToday) {
+      const start = parseDateOrNull(block.start_at);
+      const end = parseDateOrNull(block.end_at);
+      if (start) points.push(start);
+      if (end) points.push(end);
+    }
+
+    for (const task of scheduledToday) {
+      const start = parseDateOrNull(task.scheduled_for);
+      if (!start) continue;
+      points.push(start);
+      const end = task.estimated_minutes && task.estimated_minutes > 0
+        ? new Date(start.getTime() + task.estimated_minutes * 60_000)
+        : new Date(start.getTime() + 30 * 60_000);
+      points.push(end);
+    }
+
+    if (points.length === 0) return null;
+
+    const sorted = points.sort((left, right) => left.getTime() - right.getTime());
+    return {
+      start: roundTimelineStart(sorted[0]!),
+      end: roundTimelineEnd(sorted[sorted.length - 1]!)
+    };
+  }, [calendarToday, scheduledToday]);
+
+  const hourMarks = useMemo(() => {
+    if (!visibleDayWindow) return [];
+    const marks: Array<{ label: string; top: number }> = [];
+    const cursor = new Date(visibleDayWindow.start);
+    cursor.setMinutes(0, 0, 0);
+    while (cursor.getTime() <= visibleDayWindow.end.getTime()) {
+      marks.push({
+        label: formatTimeOfDay(cursor),
+        top: timelineOffset(visibleDayWindow.start, cursor)
+      });
+      cursor.setHours(cursor.getHours() + 1);
+    }
+    return marks;
+  }, [visibleDayWindow]);
+
+  const blockTimelineLayouts = useMemo<BlockTimelineLayout[]>(() => {
+    if (!visibleDayWindow) return [];
+
+    const sortedBlocks = [...calendarToday]
+      .map((block) => {
+        const start = parseDateOrNull(block.start_at);
+        const end = parseDateOrNull(block.end_at);
+        if (!start || !end || block.is_all_day) return null;
+        return { block, start, end };
+      })
+      .filter((item): item is { block: CalendarBlockItem; start: Date; end: Date } => Boolean(item))
+      .sort((left, right) => left.start.getTime() - right.start.getTime());
+
+    const tasksByBlock = new Map<string, TaskItem[]>();
+    for (const task of scheduledToday) {
+      const scheduledAt = parseDateOrNull(task.scheduled_for);
+      if (!scheduledAt) continue;
+      const matchingBlock = sortedBlocks.find((item) => scheduledAt >= item.start && scheduledAt < item.end);
+      if (!matchingBlock) continue;
+      const existing = tasksByBlock.get(matchingBlock.block.id) ?? [];
+      existing.push(task);
+      tasksByBlock.set(matchingBlock.block.id, sortTasksByTimeField(existing, "scheduled_for"));
+    }
+
+    const assignments: Array<{
+      block: CalendarBlockItem;
+      tasks: TaskItem[];
+      start: Date;
+      end: Date;
+      lane: number;
+      laneCount: number;
+    }> = [];
+    let active: Array<{ end: number; lane: number; index: number }> = [];
+    let clusterIndices: number[] = [];
+    let clusterMaxLane = 0;
+
+    const finalizeCluster = () => {
+      if (clusterIndices.length === 0) return;
+      for (const index of clusterIndices) assignments[index]!.laneCount = clusterMaxLane || 1;
+      clusterIndices = [];
+      clusterMaxLane = 0;
+    };
+
+    for (const item of sortedBlocks) {
+      active = active.filter((entry) => entry.end > item.start.getTime());
+      if (active.length === 0) finalizeCluster();
+
+      const usedLanes = new Set(active.map((entry) => entry.lane));
+      let lane = 0;
+      while (usedLanes.has(lane)) lane += 1;
+
+      const index = assignments.push({
+        block: item.block,
+        tasks: tasksByBlock.get(item.block.id) ?? [],
+        start: item.start,
+        end: item.end,
+        lane,
+        laneCount: 1
+      }) - 1;
+
+      active.push({ end: item.end.getTime(), lane, index });
+      clusterIndices.push(index);
+      clusterMaxLane = Math.max(clusterMaxLane, active.length);
+    }
+    finalizeCluster();
+
+    return assignments.map((entry) => ({
+      ...entry,
+      top: timelineOffset(visibleDayWindow.start, entry.start),
+      height: timelineDurationHeight(minutesBetween(entry.start, entry.end), TIMELINE_BLOCK_MIN_HEIGHT)
+    }));
+  }, [calendarToday, scheduledToday, visibleDayWindow]);
+
+  const scheduledTaskLayouts = useMemo<StandaloneTaskLayout[]>(() => {
+    if (!visibleDayWindow) return [];
+
+    const baseLayouts: StandaloneTaskLayout[] = scheduledToday
+      .map((task) => {
+        const start = parseDateOrNull(task.scheduled_for)!;
+        const end = new Date(start.getTime() + ((task.estimated_minutes && task.estimated_minutes > 0 ? task.estimated_minutes : 30) * 60_000));
+        const parentBlock = blockTimelineLayouts.find((entry) => start >= entry.start && start < entry.end);
+        const headerOverlapPx = parentBlock ? timelineOffset(parentBlock.start, start) : 0;
+        const preservesBlockHeader = Boolean(parentBlock && headerOverlapPx < TIMELINE_BLOCK_HEADER_PROTECT_PX);
+        const overlayInsetPx = preservesBlockHeader ? (parentBlock?.laneCount && parentBlock.laneCount > 1 ? 44 : 72) : parentBlock ? 8 : 0;
+        const laneStyle = parentBlock
+          ? timelineLaneStyle(parentBlock.lane, parentBlock.laneCount, overlayInsetPx)
+          : { left: "0px", width: "100%" };
+        return {
+          task,
+          start,
+          end,
+          top: timelineOffset(visibleDayWindow.start, start),
+          height: timelineDurationHeight(
+            minutesBetween(start, end),
+            parentBlock ? TIMELINE_NESTED_TASK_MIN_HEIGHT : TIMELINE_TASK_MIN_HEIGHT
+          ),
+          left: laneStyle.left,
+          width: laneStyle.width,
+          nested: Boolean(parentBlock),
+          parentBlockId: parentBlock?.block.id ?? null,
+          preservesBlockHeader,
+          collisionGroupKey: null,
+          collisionLane: 0,
+          collisionLaneCount: 1
+        };
+      });
+
+    const groupedLayouts = new Map<string, number[]>();
+    baseLayouts.forEach((entry, index) => {
+      if (!entry.nested || !entry.parentBlockId) return;
+      const group = groupedLayouts.get(entry.parentBlockId) ?? [];
+      group.push(index);
+      groupedLayouts.set(entry.parentBlockId, group);
+    });
+
+    for (const [blockId, indices] of groupedLayouts.entries()) {
+      if (indices.length <= 1) continue;
+      const ordered = [...indices].sort((leftIndex, rightIndex) => {
+        const left = baseLayouts[leftIndex];
+        const right = baseLayouts[rightIndex];
+        if (!left || !right) return 0;
+        return left.start.getTime() - right.start.getTime() || left.end.getTime() - right.end.getTime();
+      });
+
+      let clusterSequence = 0;
+      let active: Array<{ end: number; lane: number; index: number }> = [];
+      let clusterIndices: number[] = [];
+      let clusterMaxLane = 1;
+
+      const finalizeCluster = () => {
+        if (clusterIndices.length === 0) return;
+        const laneCount = Math.max(1, clusterMaxLane);
+        clusterIndices.forEach((layoutIndex) => {
+          const current = baseLayouts[layoutIndex];
+          if (!current) return;
+          baseLayouts[layoutIndex] = {
+            ...current,
+            collisionGroupKey: `${blockId}:${clusterSequence}`,
+            collisionLaneCount: laneCount
+          };
+        });
+        clusterSequence += 1;
+        clusterIndices = [];
+        clusterMaxLane = 1;
+      };
+
+      for (const layoutIndex of ordered) {
+        const current = baseLayouts[layoutIndex];
+        if (!current) continue;
+
+        active = active.filter((entry) => entry.end > current.start.getTime());
+        if (active.length === 0) finalizeCluster();
+
+        const usedLanes = new Set(active.map((entry) => entry.lane));
+        let lane = 0;
+        while (usedLanes.has(lane)) lane += 1;
+
+        baseLayouts[layoutIndex] = {
+          ...current,
+          collisionLane: lane
+        };
+
+        active.push({
+          end: current.end.getTime(),
+          lane,
+          index: layoutIndex
+        });
+        clusterIndices.push(layoutIndex);
+        clusterMaxLane = Math.max(clusterMaxLane, active.length);
+      }
+
+      finalizeCluster();
+    }
+
+    return baseLayouts;
+  }, [blockTimelineLayouts, scheduledToday, visibleDayWindow]);
+
+  const taskCollisionGroups = useMemo(() => {
+    const groups = new Map<
+      string,
+      { key: string; top: number; height: number; left: string; width: string; entries: StandaloneTaskLayout[] }
+    >();
+
+    scheduledTaskLayouts.forEach((entry) => {
+      if (!entry.collisionGroupKey || entry.collisionLaneCount <= 1) return;
+      const existing = groups.get(entry.collisionGroupKey);
+      if (existing) {
+        existing.entries.push(entry);
+        existing.top = Math.min(existing.top, entry.top);
+        existing.height = Math.max(existing.height, entry.top + entry.height);
+        return;
+      }
+      groups.set(entry.collisionGroupKey, {
+        key: entry.collisionGroupKey,
+        top: entry.top,
+        height: entry.top + entry.height,
+        left: entry.left,
+        width: entry.width,
+        entries: [entry]
+      });
+    });
+
+    return Array.from(groups.values()).map((group) => ({
+      ...group,
+      height: Math.max(0, group.height - group.top),
+      entries: [...group.entries].sort(
+        (a, b) => a.collisionLane - b.collisionLane || a.start.getTime() - b.start.getTime() || a.end.getTime() - b.end.getTime()
+      )
+    }));
+  }, [scheduledTaskLayouts]);
+
+  const timelineCanvasHeight = useMemo(() => {
+    if (!visibleDayWindow) return 0;
+    return timelineDurationHeight(minutesBetween(visibleDayWindow.start, visibleDayWindow.end), 320);
+  }, [visibleDayWindow]);
+
+  const timelineCanvasMinWidth = useMemo(() => {
+    const maxLaneCount = blockTimelineLayouts.reduce((max, entry) => Math.max(max, entry.laneCount), 1);
+    return Math.max(TIMELINE_CANVAS_MIN_WIDTH, maxLaneCount * TIMELINE_MIN_LANE_WIDTH);
+  }, [blockTimelineLayouts]);
+
+  const currentTimeOffset = useMemo(() => {
+    if (!isSelectedToday || !visibleDayWindow) return null;
+    const now = new Date();
+    if (now < visibleDayWindow.start || now > visibleDayWindow.end) return null;
+    return timelineOffset(visibleDayWindow.start, now);
+  }, [isSelectedToday, visibleDayWindow]);
 
   const nextCalendarEvent = useMemo(() => {
     const sorted = [...dayCalendarBlocks].sort((a, b) => new Date(a.start_at).getTime() - new Date(b.start_at).getTime());
@@ -900,6 +1348,114 @@ export function TodayPage({ surface = "day" }: TodayPageProps) {
     }
   }
 
+  async function deleteCurrentTask() {
+    if (!sessionToken || !activeTask) return;
+
+    const confirmed = window.confirm(`Видалити задачу "${activeTask.title}"?`);
+    if (!confirmed) return;
+
+    setWorkingTaskId(activeTask.id);
+    setError(null);
+    diagnostics.trackAction("delete_task_from_today", { taskId: activeTask.id, route: "/today" });
+
+    try {
+      await deleteTask({ sessionToken, taskId: activeTask.id });
+      setActiveTask(null);
+      setTaskModalMode("view");
+      await loadToday();
+    } catch (actionError) {
+      if (actionError instanceof ApiError) {
+        diagnostics.trackFailure({
+          path: actionError.path,
+          status: actionError.status,
+          code: actionError.code,
+          message: actionError.message,
+          details: actionError.details
+        });
+      }
+      setError(actionError instanceof Error ? actionError.message : "Не вдалося видалити задачу.");
+    } finally {
+      setWorkingTaskId(null);
+    }
+  }
+
+  async function runTaskWorkflowAction(task: TaskItem, action: "done" | "reschedule" | "block" | "unblock" | "cancel") {
+    if (!sessionToken) {
+      setError("Спочатку авторизуйся в Інбоксі.");
+      return;
+    }
+
+    if (action === "done") {
+      await markTaskDone(task);
+      return;
+    }
+
+    const common = {
+      sessionToken,
+      taskId: task.id,
+      reasonCode: "other" as const
+    };
+
+    setWorkingTaskId(task.id);
+    setError(null);
+    diagnostics.trackAction("task_workflow_action_from_today", { taskId: task.id, action, route: "/today" });
+
+    try {
+      if (action === "reschedule") {
+        const suggested = task.scheduled_for
+          ? toLocalDateTimeInput(task.scheduled_for)
+          : toLocalDateTimeInput(todayTaskCreateDefaults.scheduledFor ?? null);
+        const nextStart = window.prompt("Новий час старту для задачі", suggested);
+        if (!nextStart) return;
+        await updateTaskStatus({
+          ...common,
+          status: "planned",
+          rescheduleTo: nextStart
+        });
+      }
+
+      if (action === "block") {
+        await updateTaskStatus({
+          ...common,
+          status: "blocked"
+        });
+      }
+
+      if (action === "unblock") {
+        await updateTaskStatus({
+          ...common,
+          status: "planned"
+        });
+      }
+
+      if (action === "cancel") {
+        const confirmed = window.confirm("Скасувати задачу?");
+        if (!confirmed) return;
+        await updateTaskStatus({
+          ...common,
+          status: "cancelled"
+        });
+      }
+
+      setActiveTask(null);
+      setTaskModalMode("view");
+      await loadToday();
+    } catch (actionError) {
+      if (actionError instanceof ApiError) {
+        diagnostics.trackFailure({
+          path: actionError.path,
+          status: actionError.status,
+          code: actionError.code,
+          message: actionError.message,
+          details: actionError.details
+        });
+      }
+      setError(actionError instanceof Error ? actionError.message : "Не вдалося оновити задачу.");
+    } finally {
+      setWorkingTaskId(null);
+    }
+  }
+
   async function retryActiveTaskCalendarSync(task: TaskItem) {
     if (!sessionToken) return;
 
@@ -1032,6 +1588,7 @@ export function TodayPage({ surface = "day" }: TodayPageProps) {
 
   function openCalendarBlock(block: CalendarBlockItem) {
     setCalendarBlockCreateOpen(false);
+    setCalendarBlockModalMode("view");
     setActiveCalendarBlock(block);
     setCalendarBlockError(null);
   }
@@ -1039,7 +1596,47 @@ export function TodayPage({ surface = "day" }: TodayPageProps) {
   function startCreateCalendarBlock() {
     setActiveCalendarBlock(null);
     setCalendarBlockCreateOpen(true);
+    setCalendarBlockModalMode("create");
     setCalendarBlockError(null);
+  }
+
+  function openTaskDetails(task: TaskItem) {
+    setTaskModalMode("view");
+    setActiveTask(task);
+    setError(null);
+  }
+
+  async function markTaskDone(task: TaskItem) {
+    if (!sessionToken) {
+      setError("Спочатку авторизуйся в Інбоксі.");
+      return;
+    }
+
+    setWorkingTaskId(task.id);
+    setError(null);
+    diagnostics.trackAction("complete_task_from_today_timeline", { taskId: task.id, route: "/today" });
+
+    try {
+      await updateTaskStatus({
+        sessionToken,
+        taskId: task.id,
+        status: "done"
+      });
+      await loadToday();
+    } catch (saveError) {
+      if (saveError instanceof ApiError) {
+        diagnostics.trackFailure({
+          path: saveError.path,
+          status: saveError.status,
+          code: saveError.code,
+          message: saveError.message,
+          details: saveError.details
+        });
+      }
+      setError(saveError instanceof Error ? saveError.message : "Не вдалося позначити задачу виконаною.");
+    } finally {
+      setWorkingTaskId(null);
+    }
   }
 
   async function saveCalendarBlock(input: {
@@ -1073,6 +1670,8 @@ export function TodayPage({ surface = "day" }: TodayPageProps) {
         timezone: input.timezone,
         projectId: input.projectId
       });
+      setCalendarBlockCreateOpen(false);
+      setCalendarBlockModalMode("view");
       setActiveCalendarBlock(null);
       await loadToday();
     } catch (saveError) {
@@ -1109,6 +1708,8 @@ export function TodayPage({ surface = "day" }: TodayPageProps) {
 
     try {
       await deleteCalendarBlock({ sessionToken, id: activeCalendarBlock.id });
+      setCalendarBlockCreateOpen(false);
+      setCalendarBlockModalMode("view");
       setActiveCalendarBlock(null);
       await loadToday();
     } catch (deleteError) {
@@ -1398,10 +1999,198 @@ export function TodayPage({ surface = "day" }: TodayPageProps) {
             {isBusy ? "Збереження..." : "Повернути в беклог"}
           </button>
         ) : null}
-        <button type="button" className="ghost" onClick={() => setActiveTask(task)} disabled={isBusy}>
-          {needsPlanningTouch(task) ? "Дописати план" : "Редагувати"}
+        <button type="button" className="ghost" onClick={() => openTaskDetails(task)} disabled={isBusy}>
+          {needsPlanningTouch(task) ? "Відкрити деталі" : "Переглянути"}
         </button>
       </div>
+    );
+  }
+
+  function renderTimelineTaskRow(task: TaskItem, options?: { nested?: boolean; compact?: boolean; style?: Record<string, string> }) {
+    const isBusy = workingTaskId === task.id;
+    const nested = options?.nested ?? false;
+    const compact = options?.compact ?? false;
+    const start = parseDateOrNull(task.scheduled_for);
+    const durationMinutes = task.estimated_minutes && task.estimated_minutes > 0 ? task.estimated_minutes : 30;
+    const cardStyle = nested
+      ? { minHeight: `${timelineHeight(durationMinutes, TIMELINE_NESTED_TASK_MIN_HEIGHT)}px` }
+      : { minHeight: `${timelineHeight(durationMinutes, TIMELINE_TASK_MIN_HEIGHT)}px` };
+    return (
+      <li
+        className={`day-timeline__task-row${nested ? " day-timeline__task-row--nested" : ""}${compact ? " day-timeline__task-row--compact" : ""}`}
+        key={task.id}
+        style={{ ...cardStyle, ...options?.style }}
+      >
+        <button
+          type="button"
+          className={`ghost day-timeline__quick-action${compact ? " day-timeline__quick-action--compact" : ""}`}
+          onClick={() => void markTaskDone(task)}
+          disabled={isBusy}
+          aria-label={`Позначити задачу "${task.title}" виконаною`}
+        >
+          {isBusy ? "..." : "○"}
+        </button>
+        <div className="day-timeline__task-main">
+          <button
+            type="button"
+            className={`day-timeline__title day-timeline__title--task${nested ? " day-timeline__title--task-nested" : ""}${compact ? " day-timeline__title--task-compact" : ""}`}
+            onClick={() => openTaskDetails(task)}
+            disabled={isBusy}
+          >
+            {task.title}
+          </button>
+          <p className={`day-timeline__meta day-timeline__meta--tight${compact ? " day-timeline__meta--compact-time" : ""}`}>
+            {start ? formatTaskTimelineRange(task) : formatTaskTimingSummary(task)}
+          </p>
+        </div>
+      </li>
+    );
+  }
+
+  function renderDayTimeline() {
+    return (
+      <section className="today-section day-timeline-section">
+        <div className="day-timeline-section__header">
+          <div>
+            <h3>Лінія дня</h3>
+            <p className="inbox-meta">
+              {scheduledToday.length > 0
+                ? `Заплановано на день: ${scheduledToday.length}. Дедлайни без плану: ${dueTodayWithoutSchedule.length}.`
+                : dueTodayWithoutSchedule.length > 0
+                  ? `Запланованих задач на день поки немає. Є ${dueTodayWithoutSchedule.length} дедлайнів без планованого старту.`
+                  : "Часові блоки й заплановані задачі зібрані в один денний потік без дублювання секцій."}
+            </p>
+            <p className="inbox-meta">
+              {loadCoverageLine({
+                knownMinutes: todayKnownEstimateMinutes,
+                missingCount: todayMissingEstimateCount,
+                plannedCount: scheduledToday.length
+              })}
+            </p>
+          </div>
+          <div className="today-toolbar__actions">
+            <button type="button" className="ghost" onClick={() => startCreateCalendarBlock()} disabled={!sessionToken || calendarBlockBusy}>
+              Додати блок
+            </button>
+          </div>
+        </div>
+        {!visibleDayWindow || (blockTimelineLayouts.length === 0 && scheduledTaskLayouts.length === 0) ? (
+          <p className="empty-note">
+            {calendarStatus?.connected
+              ? "На цей день ще немає часових блоків або запланованих задач."
+              : "На цей день ще немає запланованих задач. Календар можна підключити на вкладці «Календар»."}
+          </p>
+        ) : (
+          <div className="day-timeline-shell">
+            <div className="day-timeline-scale" style={{ height: `${timelineCanvasHeight}px` }}>
+              {hourMarks.map((mark) => (
+                <div key={mark.label} className="day-timeline-scale__mark" style={{ top: `${mark.top}px` }}>
+                  <span className="day-timeline-scale__label">{mark.label}</span>
+                </div>
+              ))}
+            </div>
+            <div className="day-timeline-scroll">
+            <div className="day-timeline-canvas" style={{ height: `${timelineCanvasHeight}px`, minWidth: `${timelineCanvasMinWidth}px` }}>
+              {hourMarks.map((mark) => (
+                <div key={`line-${mark.label}`} className="day-timeline-canvas__line" style={{ top: `${mark.top}px` }} />
+              ))}
+              {currentTimeOffset !== null ? (
+                <div className="day-timeline-canvas__now" style={{ top: `${currentTimeOffset}px` }} />
+              ) : null}
+              {blockTimelineLayouts.map((entry) => {
+                const laneStyle = timelineLaneStyle(entry.lane, entry.laneCount);
+                return (
+                  <div
+                    key={entry.block.id}
+                    className="day-timeline-block"
+                    style={{
+                      top: `${entry.top}px`,
+                      height: `${entry.height}px`,
+                      left: laneStyle.left,
+                      width: laneStyle.width
+                    }}
+                  >
+                    <div className="day-timeline__card day-timeline__container">
+                      <div className="day-timeline__container-header">
+                        <div>
+                          <button
+                            type="button"
+                            className="day-timeline__title"
+                            onClick={() => openCalendarBlock(entry.block)}
+                            disabled={calendarBlockBusy}
+                          >
+                            {entry.block.title}
+                          </button>
+                          <p className="day-timeline__meta day-timeline__meta--tight">
+                            {formatBlockTimelineRange(entry.block)}
+                          </p>
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+                );
+              })}
+              {taskCollisionGroups.map((group) => {
+                return (
+                  <div
+                    key={`task-group-${group.key}`}
+                    className="day-timeline-task-group"
+                    style={{ top: `${group.top}px`, height: `${group.height}px`, left: group.left, width: group.width }}
+                  >
+                    {group.entries.map((entry) => {
+                      const collisionStyle = timelineTaskCollisionStyle(entry.collisionLane, entry.collisionLaneCount);
+                      return (
+                        <div
+                          key={entry.task.id}
+                          className={`day-timeline-task day-timeline-task--grouped${entry.preservesBlockHeader ? " day-timeline-task--header-preserve" : ""}`}
+                          style={{
+                            top: `${entry.top - group.top}px`,
+                            height: `${entry.height}px`,
+                            left: collisionStyle.left,
+                            width: collisionStyle.width,
+                            zIndex: `${12 + entry.collisionLane}`
+                          }}
+                        >
+                          {renderTimelineTaskRow(entry.task, {
+                            nested: true,
+                            compact: true,
+                            style: {
+                              height: `${entry.height}px`
+                            }
+                          })}
+                        </div>
+                      );
+                    })}
+                  </div>
+                );
+              })}
+              {scheduledTaskLayouts
+                .filter((entry) => entry.collisionLaneCount <= 1)
+                .map((entry) => (
+                <div
+                  key={entry.task.id}
+                  className={`day-timeline-task${entry.nested ? " day-timeline-task--nested" : ""}${entry.preservesBlockHeader ? " day-timeline-task--header-preserve" : ""}`}
+                  style={{ top: `${entry.top}px`, height: `${entry.height}px`, left: entry.left, width: entry.width }}
+                >
+                  {renderTimelineTaskRow(entry.task, {
+                    nested: entry.nested,
+                    compact: entry.nested,
+                    style: {
+                      height: `${entry.height}px`
+                    }
+                  })}
+                </div>
+              ))}
+            </div>
+            </div>
+          </div>
+        )}
+        {nextCalendarEvent ? (
+          <p className="inbox-meta">
+            Наступна подія після цього дня: {nextCalendarEvent.title} / {formatCalendarEventTimeRange(nextCalendarEvent)}
+          </p>
+        ) : null}
+      </section>
     );
   }
 
@@ -1914,72 +2703,9 @@ export function TodayPage({ surface = "day" }: TodayPageProps) {
               </p>
             </section>
           ) : null}
-          <section className="today-section block-section">
-            <div className="block-section__header">
-              <div>
-                <h3>{"\u0411\u043b\u043e\u043a\u0438 \u0442\u0430 \u043f\u043e\u0434\u0456\u0457 \u0434\u043d\u044f"}</h3>
-                <p className="inbox-meta">Тут видно часові контейнери дня, які можна відкрити й за потреби відредагувати.</p>
-              </div>
-            </div>
-            {!calendarStatus?.connected ? (
-              <p className="empty-note">Google Calendar не підключено. Підключи його на вкладці «Календар».</p>
-            ) : (
-              <>
-                {calendarToday.length === 0 ? (
-                  <p className="empty-note">{"\u041d\u0430 \u0432\u0438\u0431\u0440\u0430\u043d\u0438\u0439 \u0434\u0435\u043d\u044c \u043f\u043e\u0434\u0456\u0439 \u043d\u0435 \u0437\u043d\u0430\u0439\u0434\u0435\u043d\u043e."}</p>
-                ) : (
-                  <ul className="inbox-list">
-                    {calendarToday.slice(0, 4).map((block) => (
-                      <li className="inbox-item block-row" key={block.id}>
-                        <p className="inbox-main-text">{block.title}</p>
-                        <p className="inbox-meta">{formatCalendarEventTimeRange(block)}</p>
-                        <p className="inbox-meta block-row__meta">{block.source === "google" ? "Подія з Google Calendar" : "Блок із додатку"} · Проєкт: {projectNameForCalendarBlock(block)}</p>
-                        <div className="inbox-actions">
-                          <button type="button" className="ghost" onClick={() => openCalendarBlock(block)} disabled={calendarBlockBusy}>
-                            Відкрити
-                          </button>
-                          {block.provider_event_url ? (
-                            <button
-                              type="button"
-                              className="ghost"
-                              onClick={() => {
-                                const providerUrl = block.provider_event_url;
-                                if (!providerUrl) return;
-                                if (window.Telegram?.WebApp?.openLink) {
-                                  window.Telegram.WebApp.openLink(providerUrl);
-                                  return;
-                                }
-                                window.open(providerUrl, "_blank", "noopener,noreferrer");
-                              }}
-                            >
-                              Google Calendar
-                            </button>
-                          ) : null}
-                        </div>
-                      </li>
-                    ))}
-                  </ul>
-                )}
-                {nextCalendarEvent ? (
-                  <p className="inbox-meta">
-                    {"\u041d\u0430\u0441\u0442\u0443\u043f\u043d\u0430 \u043f\u043e\u0434\u0456\u044f \u043f\u0456\u0441\u043b\u044f \u0446\u044c\u043e\u0433\u043e \u0434\u043d\u044f:"} {nextCalendarEvent.title} {" / "} {formatCalendarEventTimeRange(nextCalendarEvent)}
-                  </p>
-                ) : null}
-              </>
-            )}
-          </section>
-          <section className="today-section">
-            <h3>{"\u0421\u0442\u0440\u0443\u043a\u0442\u0443\u0440\u0430 \u0432\u0438\u0431\u0440\u0430\u043d\u043e\u0433\u043e \u0434\u043d\u044f"}</h3>
-            <p className="inbox-meta">
-              {"\u0417\u0430\u043f\u043b\u0430\u043d\u043e\u0432\u0430\u043d\u043e \u043d\u0430 \u0432\u0438\u0431\u0440\u0430\u043d\u0438\u0439 \u0434\u0435\u043d\u044c:"} {scheduledToday.length} {" \u00b7 "} {"\u0414\u0435\u0434\u043b\u0430\u0439\u043d\u0438 \u0446\u044c\u043e\u0433\u043e \u0434\u043d\u044f \u0431\u0435\u0437 \u043f\u043b\u0430\u043d\u0443:"} {dueTodayWithoutSchedule.length} {" \u00b7 "} {"\u0423 \u0431\u0435\u043a\u043b\u043e\u0437\u0456:"} {pureBacklogItems.length}
-            </p>
-            <p className="inbox-meta">{loadCoverageLine({ knownMinutes: todayKnownEstimateMinutes, missingCount: todayMissingEstimateCount, plannedCount: scheduledToday.length })}</p>
-            <p className="inbox-meta">{"\u041f\u043b\u0430\u043d\u0443\u0432\u0430\u043d\u043d\u044f \u0434\u043b\u044f \u0432\u0438\u0431\u0440\u0430\u043d\u043e\u0433\u043e \u0434\u043d\u044f \u0437\u043e\u0441\u0435\u0440\u0435\u0434\u0436\u0435\u043d\u0435 \u043d\u0430 \u0437\u0430\u0434\u0430\u0447\u0430\u0445 \u0456\u0437 \u043f\u043b\u0430\u043d\u043e\u0432\u0430\u043d\u0438\u043c \u0441\u0442\u0430\u0440\u0442\u043e\u043c. \u0411\u0435\u043a\u043b\u043e\u0433 \u043d\u0435 \u043f\u0456\u0434\u0442\u044f\u0433\u0443\u0454\u0442\u044c\u0441\u044f \u0432 \u0434\u0435\u043d\u044c \u0430\u0432\u0442\u043e\u043c\u0430\u0442\u0438\u0447\u043d\u043e."}</p>
-          </section>
-          {renderSection(isSelectedToday ? "\u0417\u0430\u043f\u043b\u0430\u043d\u043e\u0432\u0430\u043d\u043e \u043d\u0430 \u0441\u044c\u043e\u0433\u043e\u0434\u043d\u0456" : "\u0417\u0430\u043f\u043b\u0430\u043d\u043e\u0432\u0430\u043d\u043e \u043d\u0430 \u0432\u0438\u0431\u0440\u0430\u043d\u0438\u0439 \u0434\u0435\u043d\u044c", "\u041e\u0441\u043d\u043e\u0432\u043d\u0438\u0439 \u0441\u043f\u0438\u0441\u043e\u043a \u0434\u043d\u044f: \u0442\u0456\u043b\u044c\u043a\u0438 \u0437\u0430\u0434\u0430\u0447\u0456 \u0437 \u043f\u043b\u0430\u043d\u043e\u0432\u0430\u043d\u0438\u043c \u0441\u0442\u0430\u0440\u0442\u043e\u043c \u043d\u0430 \u0446\u044e \u0434\u0430\u0442\u0443.", scheduledToday, "scheduled")}
+          {renderDayTimeline()}
           {renderSection(isSelectedToday ? "Заплановане раніше" : "Заплановане до цієї дати", isSelectedToday ? "Тут задачі, які вже мали стартувати раніше й досі лишаються відкритими." : "Тут задачі, які мали стартувати ще до цієї дати й досі лишаються відкритими.", overdueScheduled, "neutral")}
           {renderSection(isSelectedToday ? "\u0414\u0435\u0434\u043b\u0430\u0439\u043d\u0438 \u0441\u044c\u043e\u0433\u043e\u0434\u043d\u0456 \u0431\u0435\u0437 \u043f\u043b\u0430\u043d\u0443" : "\u0414\u0435\u0434\u043b\u0430\u0439\u043d\u0438 \u0446\u044c\u043e\u0433\u043e \u0434\u043d\u044f \u0431\u0435\u0437 \u043f\u043b\u0430\u043d\u0443", "\u041e\u043a\u0440\u0435\u043c\u043e \u043f\u043e\u043a\u0430\u0437\u0430\u043d\u0456 \u0437\u0430\u0434\u0430\u0447\u0456 \u0437 \u0434\u0435\u0434\u043b\u0430\u0439\u043d\u043e\u043c \u043d\u0430 \u0432\u0438\u0431\u0440\u0430\u043d\u0438\u0439 \u0434\u0435\u043d\u044c, \u0430\u043b\u0435 \u0431\u0435\u0437 \u043f\u043b\u0430\u043d\u043e\u0432\u0430\u043d\u043e\u0433\u043e \u0441\u0442\u0430\u0440\u0442\u0443.", dueTodayWithoutSchedule, "unscheduled")}
-          {renderSection("\u0411\u0435\u043a\u043b\u043e\u0433", isSelectedToday ? "\u0422\u0443\u0442 \u0437\u0430\u0434\u0430\u0447\u0456 \u0431\u0435\u0437 \u043f\u043b\u0430\u043d\u043e\u0432\u0430\u043d\u043e\u0433\u043e \u0441\u0442\u0430\u0440\u0442\u0443. \u0417\u0432\u0456\u0434\u0441\u0438 \u0457\u0445 \u043c\u043e\u0436\u043d\u0430 \u0448\u0432\u0438\u0434\u043a\u043e \u043f\u043e\u0441\u0442\u0430\u0432\u0438\u0442\u0438 \u0432 \u043f\u043b\u0430\u043d \u0434\u043d\u044f." : "\u0422\u0443\u0442 \u0437\u0430\u0434\u0430\u0447\u0456 \u0431\u0435\u0437 \u043f\u043b\u0430\u043d\u043e\u0432\u0430\u043d\u043e\u0433\u043e \u0441\u0442\u0430\u0440\u0442\u0443. \u0417\u0432\u0456\u0434\u0441\u0438 \u0457\u0445 \u043c\u043e\u0436\u043d\u0430 \u0448\u0432\u0438\u0434\u043a\u043e \u043f\u043e\u0441\u0442\u0430\u0432\u0438\u0442\u0438 \u0432 \u043f\u043b\u0430\u043d \u043d\u0430 \u0432\u0438\u0431\u0440\u0430\u043d\u0438\u0439 \u0434\u0435\u043d\u044c.", pureBacklogItems, "unscheduled")}
           {renderSection("Захищені / регулярні важливі", "Огляд важливих регулярних і захищених задач без автопланування.", protectedEssentials, "neutral")}
         </>
       ) : null}
@@ -1992,7 +2718,7 @@ export function TodayPage({ surface = "day" }: TodayPageProps) {
         endHint={activeCalendarBlock?.end_at ?? new Date(Date.now() + 60 * 60 * 1000).toISOString()}
         projectIdHint={activeCalendarBlock?.project_id ?? null}
         projectOptions={projects}
-        heading={activeCalendarBlock ? "Редагування блоку" : "Новий блок"}
+        heading={activeCalendarBlock ? "Деталі блоку" : "Новий блок"}
         subtitle={
           activeCalendarBlock
             ? activeCalendarBlock.source === "google"
@@ -2000,6 +2726,7 @@ export function TodayPage({ surface = "day" }: TodayPageProps) {
               : "Блок створено в додатку й синхронізовано з Google Calendar."
             : "Новий блок одразу збережеться в календарі й з'явиться в планувальних surfaces."
         }
+        initialMode={calendarBlockCreateOpen ? "create" : calendarBlockModalMode}
         confirmLabel={activeCalendarBlock ? "Зберегти зміни" : "Створити блок"}
         deleteLabel="Видалити блок"
         readOnlyReason={activeCalendarBlock?.is_all_day ? "Події на весь день поки що можна редагувати тільки в Google Calendar." : null}
@@ -2007,7 +2734,9 @@ export function TodayPage({ surface = "day" }: TodayPageProps) {
         errorMessage={calendarBlockError}
         onCancel={() => {
           if (calendarBlockBusy) return;
+          setCalendarBlockCreateOpen(false);
           setActiveCalendarBlock(null);
+          setCalendarBlockModalMode("view");
           setCalendarBlockError(null);
         }}
         onDelete={activeCalendarBlock ? () => void deleteActiveCalendarBlock() : undefined}
@@ -2023,12 +2752,11 @@ export function TodayPage({ surface = "day" }: TodayPageProps) {
         busy={workingTaskId !== null}
         calendarSyncNotice={activeTask ? calendarNotice : null}
         calendarInboundState={activeTask ? calendarInboundState : null}
-        initialMode={taskModalMode === "create" ? "create" : "edit"}
+        initialMode={taskModalMode === "create" ? "create" : taskModalMode}
         createDefaults={todayTaskCreateDefaults}
-        showWorkflowActions={false}
         onClose={() => {
           setActiveTask(null);
-          setTaskModalMode("edit");
+          setTaskModalMode("view");
         }}
         onSave={(payload) => {
           void (async () => {
@@ -2045,7 +2773,7 @@ export function TodayPage({ surface = "day" }: TodayPageProps) {
               });
               if (created) {
                 setActiveTask(null);
-                setTaskModalMode("edit");
+                setTaskModalMode("view");
               }
               return;
             }
@@ -2061,11 +2789,24 @@ export function TodayPage({ surface = "day" }: TodayPageProps) {
               estimatedMinutes: payload.estimatedMinutes,
               planningFlexibility: payload.planningFlexibility
             });
-            if (saved) setActiveTask(null);
+            if (saved) { setActiveTask(null); setTaskModalMode("view"); }
           })();
         }}
-        onAction={() => {}}
-        onCreateCalendarEvent={() => {}}
+        onDelete={() => {
+          void deleteCurrentTask();
+        }}
+        onAction={(action) => {
+          if (!activeTask) return;
+          void runTaskWorkflowAction(activeTask, action);
+        }}
+        onCreateCalendarEvent={() => {
+          if (!activeTask) return;
+          if (!calendarStatus?.connected) {
+            setError("Google Calendar не підключено. Відкрий вкладку «Календар» і підключи акаунт.");
+            return;
+          }
+          void retryActiveTaskCalendarSync(activeTask);
+        }}
         onRetryCalendarSync={() => {
           if (!activeTask) return;
           void retryActiveTaskCalendarSync(activeTask);
@@ -2082,7 +2823,19 @@ export function TodayPage({ surface = "day" }: TodayPageProps) {
           if (!activeTask) return;
           void keepCalendarAppVersion(activeTask);
         }}
-        onOpenLinkedCalendarEvent={() => {}}
+        onOpenLinkedCalendarEvent={(url) => {
+          diagnostics.trackAction("open_task_linked_calendar_event", { taskId: activeTask?.id, route: "/today" });
+          try {
+            if (window.Telegram?.WebApp?.openLink) {
+              window.Telegram.WebApp.openLink(url);
+              return;
+            }
+            window.open(url, "_blank", "noopener,noreferrer");
+          } catch {
+            window.location.href = url;
+          }
+        }}
+        showWorkflowActions
       />
 
       <NoteDetailModal
@@ -2140,6 +2893,8 @@ export function TodayPage({ surface = "day" }: TodayPageProps) {
     </section>
   );
 }
+
+
 
 
 

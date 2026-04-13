@@ -229,6 +229,7 @@ export async function syncCalendarBlocksFromGoogle(input: {
   const events = await listGoogleCalendarEvents(input);
   const providerIds = events.map((event) => event.id).filter(Boolean);
   const existing = await selectBlocksByProviderIds(supabase, input.userId, providerIds);
+  const existingMap = new Map(existing.map((row) => [row.provider_event_id ?? '', row]));
   const normalizedRows = events
     .map((event) => {
       const parsed = parseGoogleEvent(event);

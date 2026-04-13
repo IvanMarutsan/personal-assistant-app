@@ -1,6 +1,8 @@
 ﻿import { useEffect, useMemo, useRef, useState } from "react";
 import type { ProjectItem } from "../types/api";
 
+type CalendarEventModalMode = "view" | "edit" | "create";
+
 type CalendarEventModalProps = {
   open: boolean;
   titleHint: string;
@@ -16,6 +18,7 @@ type CalendarEventModalProps = {
   projectIdHint?: string | null;
   projectOptions?: ProjectItem[];
   readOnlyReason?: string | null;
+  initialMode?: CalendarEventModalMode;
   onCancel: () => void;
   onDelete?: () => void;
   onConfirm: (payload: {
@@ -53,7 +56,12 @@ export function CalendarEventModal(props: CalendarEventModalProps) {
   const [endAtInput, setEndAtInput] = useState("");
   const [timezone, setTimezone] = useState("UTC");
   const [projectId, setProjectId] = useState("");
+  const [editMode, setEditMode] = useState(true);
   const [error, setError] = useState<string | null>(null);
+
+  const initialMode = props.initialMode ?? (props.onDelete ? "edit" : "create");
+  const isCreateMode = initialMode === "create";
+  const isReadOnly = Boolean(props.readOnlyReason) || (!isCreateMode && !editMode);
 
   useEffect(() => {
     if (!props.open) return;
@@ -63,8 +71,9 @@ export function CalendarEventModal(props: CalendarEventModalProps) {
     setEndAtInput(toLocalInput(props.endHint));
     setProjectId(props.projectIdHint ?? "");
     setTimezone(Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC");
+    setEditMode(initialMode !== "view");
     setError(null);
-  }, [props.open, props.titleHint, props.detailsHint, props.startHint, props.endHint, props.projectIdHint]);
+  }, [props.open, props.titleHint, props.detailsHint, props.startHint, props.endHint, props.projectIdHint, initialMode]);
 
   useEffect(() => {
     if (!props.open) return;
@@ -83,14 +92,14 @@ export function CalendarEventModal(props: CalendarEventModalProps) {
   }, [props.open, props.titleHint]);
 
   const submitDisabled = useMemo(
-    () => props.busy || !title.trim() || !startAtInput.trim() || Boolean(props.readOnlyReason),
-    [props.busy, title, startAtInput, props.readOnlyReason]
+    () => props.busy || !editMode || !title.trim() || !startAtInput.trim() || Boolean(props.readOnlyReason),
+    [props.busy, editMode, title, startAtInput, props.readOnlyReason]
   );
 
   if (!props.open) return null;
 
   function submit() {
-    if (props.readOnlyReason) return;
+    if (props.readOnlyReason || !editMode) return;
     setError(null);
     const startAt = toIso(startAtInput);
     const endAt = toIso(endAtInput);
@@ -128,16 +137,16 @@ export function CalendarEventModal(props: CalendarEventModalProps) {
         <div className="modal-body" ref={bodyRef}>
           <label>
             Назва
-            <input value={title} onChange={(event) => setTitle(event.target.value)} disabled={props.busy || Boolean(props.readOnlyReason)} />
+            <input value={title} onChange={(event) => setTitle(event.target.value)} disabled={props.busy || isReadOnly} />
           </label>
           <label>
             Короткий опис
-            <textarea value={description} onChange={(event) => setDescription(event.target.value)} rows={4} disabled={props.busy || Boolean(props.readOnlyReason)} />
+            <textarea value={description} onChange={(event) => setDescription(event.target.value)} rows={4} disabled={props.busy || isReadOnly} />
           </label>
           {props.projectOptions ? (
             <label>
               Проєкт
-              <select value={projectId} onChange={(event) => setProjectId(event.target.value)} disabled={props.busy || Boolean(props.readOnlyReason)}>
+              <select value={projectId} onChange={(event) => setProjectId(event.target.value)} disabled={props.busy || isReadOnly}>
                 <option value="">Без проєкту</option>
                 {props.projectOptions.map((project) => (
                   <option key={project.id} value={project.id}>
@@ -149,17 +158,18 @@ export function CalendarEventModal(props: CalendarEventModalProps) {
           ) : null}
           <label>
             Початок блоку
-            <input type="datetime-local" value={startAtInput} onChange={(event) => setStartAtInput(event.target.value)} disabled={props.busy || Boolean(props.readOnlyReason)} />
+            <input type="datetime-local" value={startAtInput} onChange={(event) => setStartAtInput(event.target.value)} disabled={props.busy || isReadOnly} />
           </label>
           <label>
             Завершення блоку
-            <input type="datetime-local" value={endAtInput} onChange={(event) => setEndAtInput(event.target.value)} disabled={props.busy || Boolean(props.readOnlyReason)} />
+            <input type="datetime-local" value={endAtInput} onChange={(event) => setEndAtInput(event.target.value)} disabled={props.busy || isReadOnly} />
           </label>
           <label>
             Таймзона
-            <input value={timezone} onChange={(event) => setTimezone(event.target.value)} disabled={props.busy || Boolean(props.readOnlyReason)} />
+            <input value={timezone} onChange={(event) => setTimezone(event.target.value)} disabled={props.busy || isReadOnly} />
           </label>
           {props.readOnlyReason ? <p className="modal-readonly-note">{props.readOnlyReason}</p> : null}
+          {!props.readOnlyReason && !editMode && !isCreateMode ? <p className="modal-readonly-note">Спершу переглянь блок, а потім за потреби переходь до редагування.</p> : null}
           {props.errorMessage ? <p className="error-note">{props.errorMessage}</p> : null}
           {error ? <p className="error-note">{error}</p> : null}
         </div>
@@ -167,20 +177,26 @@ export function CalendarEventModal(props: CalendarEventModalProps) {
         <footer className="modal-footer">
           <div className="modal-actions">
             <button type="button" className="ghost" onClick={props.onCancel} disabled={props.busy}>
-              Скасувати
+              Закрити
             </button>
-            {props.onDelete ? (
+            {props.onDelete && editMode ? (
               <button type="button" className="danger" onClick={props.onDelete} disabled={props.busy}>
                 {props.deleteLabel ?? "Видалити"}
               </button>
             ) : null}
-            <button type="button" onClick={submit} disabled={submitDisabled}>
-              {props.busy ? "Збереження..." : props.confirmLabel ?? "Зберегти подію"}
-            </button>
+            {!props.readOnlyReason && !editMode && !isCreateMode ? (
+              <button type="button" onClick={() => setEditMode(true)} disabled={props.busy}>
+                Редагувати
+              </button>
+            ) : null}
+            {editMode ? (
+              <button type="button" onClick={submit} disabled={submitDisabled}>
+                {props.busy ? "Збереження..." : props.confirmLabel ?? "Зберегти подію"}
+              </button>
+            ) : null}
           </div>
         </footer>
       </section>
     </div>
   );
 }
-
