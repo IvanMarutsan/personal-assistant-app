@@ -708,37 +708,36 @@ export function TasksPage() {
   function renderTaskRow(task: TaskItem, scope: "scheduled" | "backlog") {
     const timing = formatTaskTimingTone(task);
     const project = projectName(task);
+    const calendarHint = calendarLinkHint(task) ?? (task.linked_calendar_event ? "Подія в Google Calendar" : null);
 
     return (
       <li key={task.id} className={scope === "scheduled" ? "inbox-item task-card task-card--scheduled" : "inbox-item task-card task-card--backlog"}>
-        <p className="inbox-main-text task-card-title">
-          {task.title}
-          {task.is_protected_essential ? <span className="essential-badge">Важлива задача</span> : null}
-          {task.planning_flexibility ? <span className={`planning-badge planning-badge--${task.planning_flexibility}`}>{planningFlexibilityLabel(task.planning_flexibility)}</span> : null}
-        </p>
-        <div className="task-chip-row">
-          <span className="task-chip task-chip--type">{taskTypeLabel(task.task_type)}</span>
-          <span className="task-chip">{statusLabel(task.status)}</span>
-          {scope === "backlog" ? <span className="task-chip task-chip--backlog">Беклог</span> : <span className="task-chip task-chip--scheduled">Заплановано</span>}
-        </div>
-        <p className="inbox-meta">Проєкт: {project}</p>
-        {task.status === "cancelled" ? (
-          <p className="inbox-meta">
-            Причина: {moveReasonLabel(task.last_moved_reason) ?? "не вказана"}
-            {task.cancel_reason_text ? ` / ${task.cancel_reason_text}` : ""}
+        <div className="task-card__main">
+          <p className="inbox-main-text task-card-title">
+            {task.title}
+            {task.is_protected_essential ? <span className="essential-badge">Важлива задача</span> : null}
+            {task.planning_flexibility ? <span className={`planning-badge planning-badge--${task.planning_flexibility}`}>{planningFlexibilityLabel(task.planning_flexibility)}</span> : null}
           </p>
-        ) : null}
-        <p className={timing.tone === "warn" ? "error-note" : "inbox-meta"}>{timing.label}</p>
-        {calendarLinkHint(task) ? <p className="inbox-meta">{calendarLinkHint(task)}</p> : task.linked_calendar_event ? <p className="inbox-meta">Подія в Google Calendar</p> : null}
-        <div className="inbox-actions">
-          {task.status !== "done" ? (
-            <button onClick={() => void runDone(task)} disabled={workingTaskId === task.id}>
-              Виконано
-            </button>
-          ) : null}
+          <p className={timing.tone === "warn" ? "error-note task-card__timing" : "inbox-meta task-card__timing"}>{timing.label}</p>
+          <div className="task-chip-row task-chip-row--secondary">
+            <span className="task-chip task-chip--type">{taskTypeLabel(task.task_type)}</span>
+            <span className="task-chip">{statusLabel(task.status)}</span>
+            {scope === "backlog" ? <span className="task-chip task-chip--backlog">Беклог</span> : <span className="task-chip task-chip--scheduled">Заплановано</span>}
+          </div>
+          <div className="task-card__meta-stack">
+            <p className="inbox-meta">Проєкт: {project}</p>
+            {task.status === "cancelled" ? (
+              <p className="inbox-meta">
+                Причина: {moveReasonLabel(task.last_moved_reason) ?? "не вказана"}
+                {task.cancel_reason_text ? ` / ${task.cancel_reason_text}` : ""}
+              </p>
+            ) : null}
+            {calendarHint ? <p className="inbox-meta task-card__calendar">{calendarHint}</p> : null}
+          </div>
+        </div>
+        <div className="inbox-actions task-card__actions">
           <button
             type="button"
-            className="ghost"
             onClick={() => {
               setTaskModalMode("view");
               setActiveTask(task);
@@ -746,6 +745,11 @@ export function TasksPage() {
           >
             Відкрити
           </button>
+          {task.status !== "done" ? (
+            <button className="ghost" onClick={() => void runDone(task)} disabled={workingTaskId === task.id}>
+              Виконано
+            </button>
+          ) : null}
         </div>
       </li>
     );
@@ -776,7 +780,7 @@ export function TasksPage() {
     }
 
     return backlogGroups.map(({ project, tasks }) => (
-      <details key={project} className="project-group">
+      <details key={project} className="project-group backlog-group">
         <summary>
           <span className="project-group-title">{project}</span>
           <span className="project-group-meta">{tasks.length} {taskCountLabel(tasks.length)}</span>
@@ -875,7 +879,7 @@ export function TasksPage() {
           </section>
 
           <section className="today-section">
-            <details className="project-group">
+            <details className="project-group backlog-shell">
               <summary>
                 <span className="project-group-title">Беклог</span>
                 <span className="project-group-meta">{backlogItems.length} {taskCountLabel(backlogItems.length)}</span>

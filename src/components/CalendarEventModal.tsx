@@ -1,4 +1,5 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+﻿import { useEffect, useMemo, useRef, useState } from "react";
+import type { ProjectItem } from "../types/api";
 
 type CalendarEventModalProps = {
   open: boolean;
@@ -8,13 +9,22 @@ type CalendarEventModalProps = {
   endHint?: string | null;
   busy: boolean;
   errorMessage?: string | null;
+  heading?: string;
+  subtitle?: string;
+  confirmLabel?: string;
+  deleteLabel?: string;
+  projectIdHint?: string | null;
+  projectOptions?: ProjectItem[];
+  readOnlyReason?: string | null;
   onCancel: () => void;
+  onDelete?: () => void;
   onConfirm: (payload: {
     title: string;
     description: string;
     startAt: string;
     endAt: string | null;
     timezone: string;
+    projectId: string | null;
   }) => void;
 };
 
@@ -42,6 +52,7 @@ export function CalendarEventModal(props: CalendarEventModalProps) {
   const [startAtInput, setStartAtInput] = useState("");
   const [endAtInput, setEndAtInput] = useState("");
   const [timezone, setTimezone] = useState("UTC");
+  const [projectId, setProjectId] = useState("");
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
@@ -50,9 +61,10 @@ export function CalendarEventModal(props: CalendarEventModalProps) {
     setDescription(props.detailsHint ?? "");
     setStartAtInput(toLocalInput(props.startHint));
     setEndAtInput(toLocalInput(props.endHint));
+    setProjectId(props.projectIdHint ?? "");
     setTimezone(Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC");
     setError(null);
-  }, [props.open, props.titleHint, props.detailsHint, props.startHint, props.endHint]);
+  }, [props.open, props.titleHint, props.detailsHint, props.startHint, props.endHint, props.projectIdHint]);
 
   useEffect(() => {
     if (!props.open) return;
@@ -70,19 +82,27 @@ export function CalendarEventModal(props: CalendarEventModalProps) {
     });
   }, [props.open, props.titleHint]);
 
-  const submitDisabled = useMemo(() => props.busy || !title.trim() || !startAtInput.trim(), [props.busy, title, startAtInput]);
+  const submitDisabled = useMemo(
+    () => props.busy || !title.trim() || !startAtInput.trim() || Boolean(props.readOnlyReason),
+    [props.busy, title, startAtInput, props.readOnlyReason]
+  );
 
   if (!props.open) return null;
 
   function submit() {
+    if (props.readOnlyReason) return;
     setError(null);
     const startAt = toIso(startAtInput);
     const endAt = toIso(endAtInput);
     if (!startAt) {
-      setError("Вкажи коректний час початку.");
+      setError("Потрібно вказати час початку.");
       return;
     }
-    if (endAt && new Date(endAt).getTime() <= new Date(startAt).getTime()) {
+    if (!endAt) {
+      setError("Потрібно вказати час завершення.");
+      return;
+    }
+    if (new Date(endAt).getTime() <= new Date(startAt).getTime()) {
       setError("Час завершення має бути пізніше за початок.");
       return;
     }
@@ -92,7 +112,8 @@ export function CalendarEventModal(props: CalendarEventModalProps) {
       description: description.trim(),
       startAt,
       endAt,
-      timezone: timezone.trim() || "UTC"
+      timezone: timezone.trim() || "UTC",
+      projectId: projectId || null
     });
   }
 
@@ -100,31 +121,45 @@ export function CalendarEventModal(props: CalendarEventModalProps) {
     <div className="modal-backdrop" role="dialog" aria-modal="true">
       <section className="modal-card">
         <header className="modal-header">
-          <h3>Створити подію в Google Calendar</h3>
-          <p className="modal-task-title">Явна дія: подія створюється лише після підтвердження</p>
+          <h3>{props.heading ?? "Подія в Google Calendar"}</h3>
+          <p className="modal-task-title">{props.subtitle ?? "Тут можна спокійно оновити часовий блок або подію."}</p>
         </header>
 
         <div className="modal-body" ref={bodyRef}>
           <label>
             Назва
-            <input value={title} onChange={(event) => setTitle(event.target.value)} />
+            <input value={title} onChange={(event) => setTitle(event.target.value)} disabled={props.busy || Boolean(props.readOnlyReason)} />
           </label>
           <label>
-            Опис
-            <textarea value={description} onChange={(event) => setDescription(event.target.value)} rows={4} />
+            Короткий опис
+            <textarea value={description} onChange={(event) => setDescription(event.target.value)} rows={4} disabled={props.busy || Boolean(props.readOnlyReason)} />
+          </label>
+          {props.projectOptions ? (
+            <label>
+              Проєкт
+              <select value={projectId} onChange={(event) => setProjectId(event.target.value)} disabled={props.busy || Boolean(props.readOnlyReason)}>
+                <option value="">Без проєкту</option>
+                {props.projectOptions.map((project) => (
+                  <option key={project.id} value={project.id}>
+                    {project.name}
+                  </option>
+                ))}
+              </select>
+            </label>
+          ) : null}
+          <label>
+            Початок блоку
+            <input type="datetime-local" value={startAtInput} onChange={(event) => setStartAtInput(event.target.value)} disabled={props.busy || Boolean(props.readOnlyReason)} />
           </label>
           <label>
-            Початок
-            <input type="datetime-local" value={startAtInput} onChange={(event) => setStartAtInput(event.target.value)} />
-          </label>
-          <label>
-            Завершення (необов'язково)
-            <input type="datetime-local" value={endAtInput} onChange={(event) => setEndAtInput(event.target.value)} />
+            Завершення блоку
+            <input type="datetime-local" value={endAtInput} onChange={(event) => setEndAtInput(event.target.value)} disabled={props.busy || Boolean(props.readOnlyReason)} />
           </label>
           <label>
             Таймзона
-            <input value={timezone} onChange={(event) => setTimezone(event.target.value)} />
+            <input value={timezone} onChange={(event) => setTimezone(event.target.value)} disabled={props.busy || Boolean(props.readOnlyReason)} />
           </label>
+          {props.readOnlyReason ? <p className="modal-readonly-note">{props.readOnlyReason}</p> : null}
           {props.errorMessage ? <p className="error-note">{props.errorMessage}</p> : null}
           {error ? <p className="error-note">{error}</p> : null}
         </div>
@@ -134,8 +169,13 @@ export function CalendarEventModal(props: CalendarEventModalProps) {
             <button type="button" className="ghost" onClick={props.onCancel} disabled={props.busy}>
               Скасувати
             </button>
+            {props.onDelete ? (
+              <button type="button" className="danger" onClick={props.onDelete} disabled={props.busy}>
+                {props.deleteLabel ?? "Видалити"}
+              </button>
+            ) : null}
             <button type="button" onClick={submit} disabled={submitDisabled}>
-              {props.busy ? "Створення..." : "Створити подію"}
+              {props.busy ? "Збереження..." : props.confirmLabel ?? "Зберегти подію"}
             </button>
           </div>
         </footer>
@@ -143,3 +183,4 @@ export function CalendarEventModal(props: CalendarEventModalProps) {
     </div>
   );
 }
+

@@ -109,6 +109,25 @@ export type GoogleCalendarEventItem = {
   timezone: string | null;
 };
 
+
+export type CalendarBlockItem = {
+  id: string;
+  title: string;
+  details: string | null;
+  start_at: string;
+  end_at: string;
+  timezone: string;
+  source: "app" | "google";
+  calendar_provider: string;
+  provider_event_id: string | null;
+  provider_event_url: string | null;
+  provider_status: string | null;
+  project_id: string | null;
+  is_all_day: boolean;
+  archived_at: string | null;
+  projects?: { name: string } | { name: string }[] | null;
+};
+
 export type TriageAction = "task" | "note" | "worklog" | "discard";
 
 export type TaskStatus = "planned" | "in_progress" | "blocked" | "done" | "cancelled";

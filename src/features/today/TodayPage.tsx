@@ -1,5 +1,6 @@
 ﻿import { useEffect, useMemo, useState } from "react";
 import { useNavigate } from "react-router-dom";
+import { CalendarEventModal } from "../../components/CalendarEventModal";
 import { NoteDetailModal } from "../../components/NoteDetailModal";
 import { PlanningConversationModal } from "../../components/PlanningConversationModal";
 import { TaskDetailModal } from "../../components/TaskDetailModal";
@@ -20,14 +21,15 @@ import {
 import {
   ApiError,
   applyTaskCalendarInbound,
-  keepTaskCalendarLocalVersion,
   createNote,
   createTask,
+  deleteCalendarBlock,
   detachTaskCalendarLink as detachTaskCalendarLinkRequest,
   getAiAdvisor,
+  getCalendarBlocks,
   getGoogleCalendarStatus,
-  getGoogleCalendarUpcoming,
   inspectTaskCalendarInbound,
+  keepTaskCalendarLocalVersion,
   getPlanningAssistant,
   getPlanningConversation,
   getProjects,
@@ -36,11 +38,12 @@ import {
   sendPlanningConversationTurn,
   transcribePlanningVoice,
   updatePlanningProposal,
-  updateTask
+  updateTask,
+  upsertCalendarBlock
 } from "../../lib/api";
 import type {
   AiAdvisorSummary,
-  GoogleCalendarEventItem,
+  CalendarBlockItem,
   GoogleCalendarStatus,
   PlanningConversationScopeType,
   PlanningConversationState,
@@ -307,15 +310,20 @@ function shouldShowDayReviewPrompt(input: {
   return input.openPlannedCount > 0 || input.dueWithoutScheduleCount > 0 || input.worklogCount === 0;
 }
 
-function formatCalendarEventTimeRange(event: GoogleCalendarEventItem): string {
-  if (!event.startAt) return "Без часу";
-  const start = new Date(event.startAt);
+function formatCalendarEventTimeRange(event: { start_at: string; end_at: string; is_all_day: boolean }): string {
+  if (event.is_all_day) return "Увесь день";
+  const start = new Date(event.start_at);
   if (Number.isNaN(start.getTime())) return "Без часу";
   const startLabel = formatTaskDateTime(start);
-  if (!event.endAt) return startLabel;
-  const end = new Date(event.endAt);
+  const end = new Date(event.end_at);
   if (Number.isNaN(end.getTime())) return startLabel;
   return `${startLabel} - ${new Intl.DateTimeFormat("uk-UA", { hour: "2-digit", minute: "2-digit" }).format(end)}`;
+}
+
+function projectNameForCalendarBlock(block: CalendarBlockItem): string {
+  if (!block.projects) return "Без проєкту";
+  if (Array.isArray(block.projects)) return block.projects[0]?.name ?? "Без проєкту";
+  return block.projects.name ?? "Без проєкту";
 }
 
 function shouldShowWeekReviewPrompt(input: {
@@ -341,7 +349,12 @@ export function TodayPage({ surface = "day" }: TodayPageProps) {
   const [aiAdvisor, setAiAdvisor] = useState<AiAdvisorSummary | null>(null);
   const [weekAiAdvisor, setWeekAiAdvisor] = useState<AiAdvisorSummary | null>(null);
   const [calendarStatus, setCalendarStatus] = useState<GoogleCalendarStatus | null>(null);
-  const [calendarUpcoming, setCalendarUpcoming] = useState<GoogleCalendarEventItem[]>([]);
+  const [dayCalendarBlocks, setDayCalendarBlocks] = useState<CalendarBlockItem[]>([]);
+  const [weekCalendarBlocks, setWeekCalendarBlocks] = useState<CalendarBlockItem[]>([]);
+  const [activeCalendarBlock, setActiveCalendarBlock] = useState<CalendarBlockItem | null>(null);
+  const [calendarBlockCreateOpen, setCalendarBlockCreateOpen] = useState(false);
+  const [calendarBlockBusy, setCalendarBlockBusy] = useState(false);
+  const [calendarBlockError, setCalendarBlockError] = useState<string | null>(null);
   const [activeTask, setActiveTask] = useState<TaskItem | null>(null);
   const [taskModalMode, setTaskModalMode] = useState<"edit" | "create">("edit");
   const [noteCreateOpen, setNoteCreateOpen] = useState(false);
@@ -371,7 +384,8 @@ export function TodayPage({ surface = "day" }: TodayPageProps) {
       setAiAdvisor(null);
       setWeekAiAdvisor(null);
       setCalendarStatus(null);
-      setCalendarUpcoming([]);
+      setDayCalendarBlocks([]);
+      setWeekCalendarBlocks([]);
       return;
     }
 
@@ -379,8 +393,19 @@ export function TodayPage({ surface = "day" }: TodayPageProps) {
     setError(null);
     diagnostics.trackAction("load_today", { route: "/today" });
     const errors: string[] = [];
+    const dayRangeStart = parseScopeDateLocal(selectedScopeDate);
+    dayRangeStart.setHours(0, 0, 0, 0);
+    const dayRangeEnd = endOfToday(dayRangeStart);
+    const dayFetchMax = new Date(dayRangeEnd);
+    dayFetchMax.setDate(dayFetchMax.getDate() + 7);
+    dayFetchMax.setHours(23, 59, 59, 999);
+    const weekRangeStart = parseScopeDateLocal(selectedWeekScopeDate);
+    weekRangeStart.setHours(0, 0, 0, 0);
+    const weekRangeEnd = new Date(weekRangeStart);
+    weekRangeEnd.setDate(weekRangeEnd.getDate() + 6);
+    weekRangeEnd.setHours(23, 59, 59, 999);
 
-    const [tasksResult, projectsResult, planningResult, weekPlanningResult, aiResult, weekAiResult, calendarStatusResult, calendarUpcomingResult] = await Promise.allSettled([
+    const [tasksResult, projectsResult, planningResult, weekPlanningResult, aiResult, weekAiResult, calendarStatusResult, dayCalendarBlocksResult, weekCalendarBlocksResult] = await Promise.allSettled([
       getTasks(sessionToken),
       getProjects(sessionToken),
       getPlanningAssistant(sessionToken, selectedScopeDate, "day"),
@@ -388,7 +413,8 @@ export function TodayPage({ surface = "day" }: TodayPageProps) {
       getAiAdvisor(sessionToken, selectedScopeDate, "day"),
       getAiAdvisor(sessionToken, selectedWeekScopeDate, "week"),
       getGoogleCalendarStatus(sessionToken),
-      getGoogleCalendarUpcoming(sessionToken)
+      getCalendarBlocks({ sessionToken, timeMin: dayRangeStart.toISOString(), timeMax: dayFetchMax.toISOString(), maxResults: 120 }),
+      getCalendarBlocks({ sessionToken, timeMin: weekRangeStart.toISOString(), timeMax: weekRangeEnd.toISOString(), maxResults: 160 })
     ]);
 
     if (tasksResult.status === "fulfilled") {
@@ -472,10 +498,20 @@ export function TodayPage({ surface = "day" }: TodayPageProps) {
       setCalendarStatus(null);
     }
 
-    if (calendarUpcomingResult.status === "fulfilled") {
-      setCalendarUpcoming(calendarUpcomingResult.value);
+    if (dayCalendarBlocksResult.status === "fulfilled") {
+      setDayCalendarBlocks(dayCalendarBlocksResult.value);
+      setActiveCalendarBlock((current) => {
+        if (!current) return null;
+        return dayCalendarBlocksResult.value.find((block) => block.id === current.id) ?? current;
+      });
     } else {
-      setCalendarUpcoming([]);
+      setDayCalendarBlocks([]);
+    }
+
+    if (weekCalendarBlocksResult.status === "fulfilled") {
+      setWeekCalendarBlocks(weekCalendarBlocksResult.value);
+    } else {
+      setWeekCalendarBlocks([]);
     }
 
     if (errors.length > 0) {
@@ -596,6 +632,15 @@ export function TodayPage({ surface = "day" }: TodayPageProps) {
     backlogCount: weekPlanning?.overload.backlogCount ?? 0
   });
   const todayMissingEstimateCount = useMemo(() => countMissingEstimates(scheduledToday), [scheduledToday]);
+  const planningTaskTypeSignals = planning?.overload.taskTypeSignals ?? [];
+  const aiTaskTypeSignals = aiAdvisor?.contextSnapshot.taskTypeSignals ?? [];
+  const weekPlanningTaskTypeSignals = weekPlanning?.overload.taskTypeSignals ?? [];
+  const weekPlanningWeekDays = weekPlanning?.weekDays ?? [];
+  const weekPlanningNotableDeadlines = weekPlanning?.notableDeadlines ?? [];
+  const weekAiTaskTypeSignals = weekAiAdvisor?.contextSnapshot.taskTypeSignals ?? [];
+  const weekAiWeekDays = weekAiAdvisor?.contextSnapshot.weekDays ?? [];
+  const weekAiNotableDeadlines = weekAiAdvisor?.contextSnapshot.notableDeadlines ?? [];
+
 
   const weekResolveActions = useMemo<WeekResolveAction[]>(() => {
     const actions: WeekResolveAction[] = [];
@@ -678,7 +723,7 @@ export function TodayPage({ surface = "day" }: TodayPageProps) {
     const plannedCount = weekPlanning?.overload.plannedTodayCount ?? weekAiAdvisor?.contextSnapshot.plannedTodayCount ?? 0;
     const dueCount = weekPlanning?.overload.dueTodayWithoutPlannedStartCount ?? weekAiAdvisor?.contextSnapshot.dueTodayWithoutPlannedStartCount ?? 0;
     const backlogCount = weekPlanning?.overload.backlogCount ?? weekAiAdvisor?.contextSnapshot.backlogCount ?? 0;
-    const notableDeadlineCount = weekPlanning?.notableDeadlines.length ?? weekAiAdvisor?.contextSnapshot.notableDeadlines.length ?? 0;
+    const notableDeadlineCount = weekPlanningNotableDeadlines.length || weekAiNotableDeadlines.length || 0;
 
     return plannedCount === 0 && dueCount === 0 && backlogCount === 0 && notableDeadlineCount === 0 && reviewSignalCount === 0;
   }, [weekAiAdvisor, weekPlanning]);
@@ -693,28 +738,20 @@ export function TodayPage({ surface = "day" }: TodayPageProps) {
   }, [items]);
 
   const calendarToday = useMemo(() => {
-    return calendarUpcoming.filter((event) => {
-      const raw = event.startAt;
-      if (!raw) return false;
-      const parsed = new Date(raw);
+    return dayCalendarBlocks.filter((block) => {
+      const parsed = new Date(block.start_at);
       if (Number.isNaN(parsed.getTime())) return false;
       return parsed >= selectedDayStart && parsed <= selectedDayEnd;
     });
-  }, [calendarUpcoming, selectedDayEnd, selectedDayStart]);
+  }, [dayCalendarBlocks, selectedDayEnd, selectedDayStart]);
 
   const nextCalendarEvent = useMemo(() => {
-    const sorted = [...calendarUpcoming]
-      .filter((event) => Boolean(event.startAt))
-      .sort((a, b) => {
-        const aTs = new Date(a.startAt ?? 0).getTime();
-        const bTs = new Date(b.startAt ?? 0).getTime();
-        return aTs - bTs;
-      });
-    return sorted.find((event) => {
-      const ts = new Date(event.startAt ?? 0).getTime();
+    const sorted = [...dayCalendarBlocks].sort((a, b) => new Date(a.start_at).getTime() - new Date(b.start_at).getTime());
+    return sorted.find((block) => {
+      const ts = new Date(block.start_at).getTime();
       return Number.isFinite(ts) && ts > selectedDayEnd.getTime();
     });
-  }, [calendarUpcoming, selectedDayEnd]);
+  }, [dayCalendarBlocks, selectedDayEnd]);
 
   const todayTaskCreateDefaults = useMemo(
     () => ({
@@ -990,6 +1027,103 @@ export function TodayPage({ surface = "day" }: TodayPageProps) {
       setError(detachError instanceof Error ? detachError.message : "\u041d\u0435 \u0432\u0434\u0430\u043b\u043e\u0441\u044f \u0432\u0456\u0434\u2019\u0454\u0434\u043d\u0430\u0442\u0438 \u043f\u043e\u0434\u0456\u044e.");
     } finally {
       setWorkingTaskId(null);
+    }
+  }
+
+  function openCalendarBlock(block: CalendarBlockItem) {
+    setCalendarBlockCreateOpen(false);
+    setActiveCalendarBlock(block);
+    setCalendarBlockError(null);
+  }
+
+  function startCreateCalendarBlock() {
+    setActiveCalendarBlock(null);
+    setCalendarBlockCreateOpen(true);
+    setCalendarBlockError(null);
+  }
+
+  async function saveCalendarBlock(input: {
+    title: string;
+    description: string;
+    startAt: string;
+    endAt: string | null;
+    timezone: string;
+    projectId: string | null;
+  }) {
+    if (!sessionToken || !input.endAt) {
+      setError("Спочатку авторизуйся в Інбоксі.");
+      return;
+    }
+
+    setCalendarBlockBusy(true);
+    setCalendarBlockError(null);
+    diagnostics.trackAction("save_calendar_block_from_today", {
+      blockId: activeCalendarBlock?.id ?? null,
+      route: surface === "week" ? "/week" : "/today"
+    });
+
+    try {
+      await upsertCalendarBlock({
+        sessionToken,
+        id: activeCalendarBlock?.id ?? null,
+        title: input.title,
+        details: input.description,
+        startAt: input.startAt,
+        endAt: input.endAt,
+        timezone: input.timezone,
+        projectId: input.projectId
+      });
+      setActiveCalendarBlock(null);
+      await loadToday();
+    } catch (saveError) {
+      if (saveError instanceof ApiError) {
+        diagnostics.trackFailure({
+          path: saveError.path,
+          status: saveError.status,
+          code: saveError.code,
+          message: saveError.message,
+          details: saveError.details
+        });
+      }
+      setCalendarBlockError(saveError instanceof Error ? saveError.message : "Не вдалося зберегти блок у календарі.");
+    } finally {
+      setCalendarBlockBusy(false);
+    }
+  }
+
+  async function deleteActiveCalendarBlock() {
+    if (!sessionToken || !activeCalendarBlock) {
+      setError("Спочатку авторизуйся в Інбоксі.");
+      return;
+    }
+
+    const confirmed = window.confirm("Видалити цей блок із календаря?");
+    if (!confirmed) return;
+
+    setCalendarBlockBusy(true);
+    setCalendarBlockError(null);
+    diagnostics.trackAction("delete_calendar_block_from_today", {
+      blockId: activeCalendarBlock.id,
+      route: surface === "week" ? "/week" : "/today"
+    });
+
+    try {
+      await deleteCalendarBlock({ sessionToken, id: activeCalendarBlock.id });
+      setActiveCalendarBlock(null);
+      await loadToday();
+    } catch (deleteError) {
+      if (deleteError instanceof ApiError) {
+        diagnostics.trackFailure({
+          path: deleteError.path,
+          status: deleteError.status,
+          code: deleteError.code,
+          message: deleteError.message,
+          details: deleteError.details
+        });
+      }
+      setCalendarBlockError(deleteError instanceof Error ? deleteError.message : "Не вдалося видалити блок із календаря.");
+    } finally {
+      setCalendarBlockBusy(false);
     }
   }
 
@@ -1338,9 +1472,14 @@ export function TodayPage({ surface = "day" }: TodayPageProps) {
       </div>
       <div className="today-toolbar__actions today-toolbar__actions--primary">
         {isWeekSurface ? (
-          <button type="button" onClick={() => void openPlanningConversation("week")} disabled={!sessionToken || planningConversationBusy}>
-            {"Обговорити тиждень"}
-          </button>
+          <>
+            <button type="button" onClick={() => void openPlanningConversation("week")} disabled={!sessionToken || planningConversationBusy}>
+              {"Обговорити тиждень"}
+            </button>
+            <button type="button" className="ghost" onClick={() => startCreateCalendarBlock()} disabled={!sessionToken || calendarBlockBusy}>
+              {"Створити блок"}
+            </button>
+          </>
         ) : (
           <>
             <button
@@ -1407,8 +1546,8 @@ export function TodayPage({ surface = "day" }: TodayPageProps) {
               plannedCount: planning.overload.plannedTodayCount
             })}
           </p>
-          {planning.overload.taskTypeSignals.length > 0 ? (
-            <p className="inbox-meta">{normalizePlanningCopy(planning.overload.taskTypeSignals.slice(0, 2).join(" "))}</p>
+          {planningTaskTypeSignals.length > 0 ? (
+            <p className="inbox-meta">{normalizePlanningCopy(planningTaskTypeSignals.slice(0, 2).join(" "))}</p>
           ) : null}
 
           <h3>Що робити зараз?</h3>
@@ -1517,8 +1656,8 @@ export function TodayPage({ surface = "day" }: TodayPageProps) {
               plannedCount: aiAdvisor.contextSnapshot.plannedTodayCount
             })}
           </p>
-          {aiAdvisor.contextSnapshot.taskTypeSignals.length > 0 ? (
-            <p className="inbox-meta">{normalizePlanningCopy(aiAdvisor.contextSnapshot.taskTypeSignals.slice(0, 2).join(" "))}</p>
+          {aiTaskTypeSignals.length > 0 ? (
+            <p className="inbox-meta">{normalizePlanningCopy(aiTaskTypeSignals.slice(0, 2).join(" "))}</p>
           ) : null}
 
           <div className="assistant-primary">
@@ -1587,6 +1726,38 @@ export function TodayPage({ surface = "day" }: TodayPageProps) {
             )}
           </section>
 
+          <section className="today-section block-section">
+            <div className="block-section__header">
+              <div>
+                <h3>Блоки тижня</h3>
+                <p className="inbox-meta">Події й часові блоки, які формують реальний каркас тижня.</p>
+              </div>
+              <button type="button" className="ghost" onClick={() => startCreateCalendarBlock()} disabled={!sessionToken || calendarBlockBusy}>
+                Додати блок
+              </button>
+            </div>
+            {!calendarStatus?.connected ? (
+              <p className="empty-note">Google Calendar не підключено. Підключи його на вкладці «Календар».</p>
+            ) : weekCalendarBlocks.length === 0 ? (
+              <p className="empty-note">На цей тиждень блоків поки не видно.</p>
+            ) : (
+              <ul className="inbox-list">
+                {weekCalendarBlocks.slice(0, 8).map((block) => (
+                  <li className="inbox-item block-row" key={block.id}>
+                    <p className="inbox-main-text">{block.title}</p>
+                    <p className="inbox-meta">{formatCalendarEventTimeRange(block)}</p>
+                    <p className="inbox-meta block-row__meta">{block.source === "google" ? "Подія з Google Calendar" : "Блок із додатку"} · Проєкт: {projectNameForCalendarBlock(block)}</p>
+                    <div className="inbox-actions">
+                      <button type="button" className="ghost" onClick={() => openCalendarBlock(block)} disabled={calendarBlockBusy}>
+                        Відкрити
+                      </button>
+                    </div>
+                  </li>
+                ))}
+              </ul>
+            )}
+          </section>
+
           {weekPlanning ? (
             <section className="assistant-block deterministic-block">
               <h3>{"\u041f\u043b\u0430\u043d \u0442\u0438\u0436\u043d\u044f"}</h3>
@@ -1606,8 +1777,8 @@ export function TodayPage({ surface = "day" }: TodayPageProps) {
                   plannedCount: weekPlanning.overload.plannedTodayCount
                 })}
               </p>
-              {weekPlanning.overload.taskTypeSignals.length > 0 ? (
-                <p className="inbox-meta">{normalizePlanningCopy(weekPlanning.overload.taskTypeSignals.slice(0, 2).join(" "))}</p>
+              {weekPlanningTaskTypeSignals.length > 0 ? (
+                <p className="inbox-meta">{normalizePlanningCopy(weekPlanningTaskTypeSignals.slice(0, 2).join(" "))}</p>
               ) : null}
               {weekPlanning.whatNow.primary ? (
                 <div className="assistant-primary">
@@ -1627,21 +1798,21 @@ export function TodayPage({ surface = "day" }: TodayPageProps) {
                   ))}
                 </ul>
               ) : null}
-              {weekPlanning.weekDays.length > 0 ? (
+              {weekPlanningWeekDays.length > 0 ? (
                 <>
                   <h3>{"\u041a\u0430\u0440\u0442\u0438\u043d\u0430 \u0442\u0438\u0436\u043d\u044f"}</h3>
                   <ul className="assistant-secondary">
-                    {weekPlanning.weekDays.map((day) => (
+                    {weekPlanningWeekDays.map((day) => (
                       <li key={day.scopeDate}>{formatWeekDaySummary(day)}</li>
                     ))}
                   </ul>
                 </>
               ) : null}
-              {weekPlanning.notableDeadlines.length > 0 ? (
+              {weekPlanningNotableDeadlines.length > 0 ? (
                 <>
                   <h3>{"\u041f\u043e\u043c\u0456\u0442\u043d\u0456 \u0434\u0435\u0434\u043b\u0430\u0439\u043d\u0438 \u0442\u0438\u0436\u043d\u044f"}</h3>
                   <ul className="assistant-secondary">
-                    {weekPlanning.notableDeadlines.slice(0, 5).map((item) => (
+                    {weekPlanningNotableDeadlines.slice(0, 5).map((item) => (
                       <li key={item.taskId}>
                         {item.title} {" / "} {formatTaskDateTime(new Date(item.dueAt))}
                       </li>
@@ -1705,8 +1876,8 @@ export function TodayPage({ surface = "day" }: TodayPageProps) {
                       plannedCount: weekAiAdvisor.contextSnapshot.plannedTodayCount
                     })}
                   </p>
-                  {weekAiAdvisor.contextSnapshot.taskTypeSignals.length > 0 ? (
-                    <p className="inbox-meta">{normalizePlanningCopy(weekAiAdvisor.contextSnapshot.taskTypeSignals.slice(0, 2).join(" "))}</p>
+                  {weekAiTaskTypeSignals.length > 0 ? (
+                    <p className="inbox-meta">{normalizePlanningCopy(weekAiTaskTypeSignals.slice(0, 2).join(" "))}</p>
                   ) : null}
                   <div className="assistant-primary">
                     <p className="assistant-title">{"\u041d\u0430 \u0449\u043e \u043f\u043e\u0434\u0438\u0432\u0438\u0442\u0438\u0441\u044c \u043f\u0435\u0440\u0448\u0438\u043c:"} {weekAiAdvisor.advisor.suggestedNextAction.title}</p>
@@ -1720,9 +1891,9 @@ export function TodayPage({ surface = "day" }: TodayPageProps) {
                     {normalizePlanningCopy(weekAiAdvisor.advisor.protectedEssentialsWarning.message)}
                   </p>
                   <p className="inbox-meta">{normalizePlanningCopy(weekAiAdvisor.advisor.explanation)}</p>
-                  {weekAiAdvisor.contextSnapshot.weekDays.length > 0 ? (
+                  {weekAiWeekDays.length > 0 ? (
                     <ul className="assistant-secondary">
-                      {weekAiAdvisor.contextSnapshot.weekDays.map((day) => (
+                      {weekAiWeekDays.map((day) => (
                         <li key={day.scopeDate}>{formatWeekDaySummary(day)}</li>
                       ))}
                     </ul>
@@ -1743,8 +1914,13 @@ export function TodayPage({ surface = "day" }: TodayPageProps) {
               </p>
             </section>
           ) : null}
-          <section className="today-section">
-            <h3>{"\u041a\u0430\u043b\u0435\u043d\u0434\u0430\u0440\u043d\u0438\u0439 \u043a\u043e\u043d\u0442\u0435\u043a\u0441\u0442 \u0434\u043d\u044f"}</h3>
+          <section className="today-section block-section">
+            <div className="block-section__header">
+              <div>
+                <h3>{"\u0411\u043b\u043e\u043a\u0438 \u0442\u0430 \u043f\u043e\u0434\u0456\u0457 \u0434\u043d\u044f"}</h3>
+                <p className="inbox-meta">Тут видно часові контейнери дня, які можна відкрити й за потреби відредагувати.</p>
+              </div>
+            </div>
             {!calendarStatus?.connected ? (
               <p className="empty-note">Google Calendar не підключено. Підключи його на вкладці «Календар».</p>
             ) : (
@@ -1753,10 +1929,33 @@ export function TodayPage({ surface = "day" }: TodayPageProps) {
                   <p className="empty-note">{"\u041d\u0430 \u0432\u0438\u0431\u0440\u0430\u043d\u0438\u0439 \u0434\u0435\u043d\u044c \u043f\u043e\u0434\u0456\u0439 \u043d\u0435 \u0437\u043d\u0430\u0439\u0434\u0435\u043d\u043e."}</p>
                 ) : (
                   <ul className="inbox-list">
-                    {calendarToday.slice(0, 4).map((event) => (
-                      <li className="inbox-item" key={event.id}>
-                        <p className="inbox-main-text">{event.title}</p>
-                        <p className="inbox-meta">{formatCalendarEventTimeRange(event)}</p>
+                    {calendarToday.slice(0, 4).map((block) => (
+                      <li className="inbox-item block-row" key={block.id}>
+                        <p className="inbox-main-text">{block.title}</p>
+                        <p className="inbox-meta">{formatCalendarEventTimeRange(block)}</p>
+                        <p className="inbox-meta block-row__meta">{block.source === "google" ? "Подія з Google Calendar" : "Блок із додатку"} · Проєкт: {projectNameForCalendarBlock(block)}</p>
+                        <div className="inbox-actions">
+                          <button type="button" className="ghost" onClick={() => openCalendarBlock(block)} disabled={calendarBlockBusy}>
+                            Відкрити
+                          </button>
+                          {block.provider_event_url ? (
+                            <button
+                              type="button"
+                              className="ghost"
+                              onClick={() => {
+                                const providerUrl = block.provider_event_url;
+                                if (!providerUrl) return;
+                                if (window.Telegram?.WebApp?.openLink) {
+                                  window.Telegram.WebApp.openLink(providerUrl);
+                                  return;
+                                }
+                                window.open(providerUrl, "_blank", "noopener,noreferrer");
+                              }}
+                            >
+                              Google Calendar
+                            </button>
+                          ) : null}
+                        </div>
                       </li>
                     ))}
                   </ul>
@@ -1784,6 +1983,38 @@ export function TodayPage({ surface = "day" }: TodayPageProps) {
           {renderSection("Захищені / регулярні важливі", "Огляд важливих регулярних і захищених задач без автопланування.", protectedEssentials, "neutral")}
         </>
       ) : null}
+
+      <CalendarEventModal
+        open={calendarBlockCreateOpen || !!activeCalendarBlock}
+        titleHint={activeCalendarBlock?.title ?? ""}
+        detailsHint={activeCalendarBlock?.details ?? ""}
+        startHint={activeCalendarBlock?.start_at ?? new Date().toISOString()}
+        endHint={activeCalendarBlock?.end_at ?? new Date(Date.now() + 60 * 60 * 1000).toISOString()}
+        projectIdHint={activeCalendarBlock?.project_id ?? null}
+        projectOptions={projects}
+        heading={activeCalendarBlock ? "Редагування блоку" : "Новий блок"}
+        subtitle={
+          activeCalendarBlock
+            ? activeCalendarBlock.source === "google"
+              ? "Подія прийшла з Google Calendar, але її можна спокійно змінити тут."
+              : "Блок створено в додатку й синхронізовано з Google Calendar."
+            : "Новий блок одразу збережеться в календарі й з'явиться в планувальних surfaces."
+        }
+        confirmLabel={activeCalendarBlock ? "Зберегти зміни" : "Створити блок"}
+        deleteLabel="Видалити блок"
+        readOnlyReason={activeCalendarBlock?.is_all_day ? "Події на весь день поки що можна редагувати тільки в Google Calendar." : null}
+        busy={calendarBlockBusy}
+        errorMessage={calendarBlockError}
+        onCancel={() => {
+          if (calendarBlockBusy) return;
+          setActiveCalendarBlock(null);
+          setCalendarBlockError(null);
+        }}
+        onDelete={activeCalendarBlock ? () => void deleteActiveCalendarBlock() : undefined}
+        onConfirm={(payload) => {
+          void saveCalendarBlock(payload);
+        }}
+      />
 
       <TaskDetailModal
         open={taskModalMode === "create" || !!activeTask}
@@ -1909,6 +2140,14 @@ export function TodayPage({ surface = "day" }: TodayPageProps) {
     </section>
   );
 }
+
+
+
+
+
+
+
+
 
 
 

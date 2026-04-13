@@ -301,6 +301,42 @@ button.danger {
   margin-bottom: 10px;
 }
 
+
+.backlog-shell {
+  margin-top: 0;
+  border-color: #e7eee9;
+  background: #f7faf8;
+}
+
+.backlog-shell > summary {
+  color: #4d6357;
+}
+
+.backlog-shell > .inbox-meta {
+  color: #708377;
+  margin-bottom: 8px;
+}
+
+.backlog-group {
+  background: #fcfdfc;
+  border-color: #edf2ee;
+  padding: 6px 8px;
+}
+
+.backlog-group > summary {
+  color: #5c7266;
+  font-weight: 500;
+}
+
+.backlog-group[open] > summary {
+  margin-bottom: 8px;
+}
+
+.task-card--backlog {
+  border-left-color: #e1e6e2;
+  background: #fcfdfc;
+}
+
 .task-card {
   background: #fff;
 }
@@ -310,11 +346,44 @@ button.danger {
 }
 
 .task-card--backlog {
-  border-left: 3px solid #d7dfd9;
+  border-left: 3px solid #e1e6e2;
+  background: #fcfdfc;
 }
 
 .task-card-title {
   line-height: 1.4;
+}
+
+.task-card__main {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.task-card__timing {
+  margin-top: 0;
+}
+
+.task-chip-row--secondary {
+  margin-bottom: 0;
+}
+
+.task-card__meta-stack {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.task-card__calendar {
+  color: #6d8274;
+}
+
+.task-card__actions {
+  align-items: center;
+}
+
+.task-card__actions > :first-child {
+  min-width: 110px;
 }
 
 .task-chip-row {
@@ -736,4 +805,41 @@ button.danger {
 .worklog-entry-body {
   margin: 6px 0 0;
   white-space: pre-wrap;
+}
+
+.block-section {
+  border: 1px solid #dde8e1;
+  border-radius: 12px;
+  background: #fbfcfb;
+  padding: 10px;
+}
+
+.block-section__header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 10px;
+  margin-bottom: 8px;
+}
+
+.block-section__header h3 {
+  margin-bottom: 4px;
+}
+
+.block-row {
+  background: #fcfdfc;
+  border-color: #e3ebe5;
+}
+
+.block-row__meta {
+  color: #6a7d71;
+}
+
+.modal-readonly-note {
+  margin: 0;
+  border: 1px solid #e4e9e6;
+  border-radius: 8px;
+  background: #f7faf8;
+  padding: 8px;
+  color: #566b5e;
 }
