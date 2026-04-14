@@ -13,6 +13,7 @@ export type TaskCalendarSyncRow = {
   scheduled_for: string | null;
   estimated_minutes: number | null;
   calendar_provider: string | null;
+  calendar_provider_calendar_id: string | null;
   calendar_event_id: string | null;
   calendar_sync_mode: TaskCalendarSyncMode | null;
   calendar_sync_error: string | null;
@@ -122,9 +123,9 @@ function googleEventUrl(calendarId: string, eventId?: string): string {
   return eventId ? `${base}/${encodeURIComponent(eventId)}` : base;
 }
 
-async function googleCreateEvent(userId: string, payload: GoogleEventPayload): Promise<GoogleEventResult> {
+async function googleCreateEvent(userId: string, calendarId: string, payload: GoogleEventPayload): Promise<GoogleEventResult> {
   const auth = await getGoogleAccessTokenForUser(userId);
-  const response = await fetch(googleEventUrl(auth.calendarId), {
+  const response = await fetch(googleEventUrl(calendarId), {
     method: "POST",
     headers: {
       authorization: `Bearer ${auth.accessToken}`,
@@ -141,9 +142,9 @@ async function googleCreateEvent(userId: string, payload: GoogleEventPayload): P
   return { id: body.id, htmlLink: body.htmlLink ?? null };
 }
 
-async function googleUpdateEvent(userId: string, eventId: string, payload: GoogleEventPayload): Promise<GoogleEventResult> {
+async function googleUpdateEvent(userId: string, calendarId: string, eventId: string, payload: GoogleEventPayload): Promise<GoogleEventResult> {
   const auth = await getGoogleAccessTokenForUser(userId);
-  const response = await fetch(googleEventUrl(auth.calendarId, eventId), {
+  const response = await fetch(googleEventUrl(calendarId, eventId), {
     method: "PATCH",
     headers: {
       authorization: `Bearer ${auth.accessToken}`,
@@ -160,9 +161,9 @@ async function googleUpdateEvent(userId: string, eventId: string, payload: Googl
   return { id: body.id, htmlLink: body.htmlLink ?? null };
 }
 
-async function googleGetEvent(userId: string, eventId: string): Promise<GoogleEventSnapshot> {
+async function googleGetEvent(userId: string, calendarId: string, eventId: string): Promise<GoogleEventSnapshot> {
   const auth = await getGoogleAccessTokenForUser(userId);
-  const response = await fetch(googleEventUrl(auth.calendarId, eventId), {
+  const response = await fetch(googleEventUrl(calendarId, eventId), {
     method: "GET",
     headers: {
       authorization: `Bearer ${auth.accessToken}`
@@ -199,9 +200,9 @@ async function googleGetEvent(userId: string, eventId: string): Promise<GoogleEv
   };
 }
 
-async function googleDeleteEvent(userId: string, eventId: string): Promise<void> {
+async function googleDeleteEvent(userId: string, calendarId: string, eventId: string): Promise<void> {
   const auth = await getGoogleAccessTokenForUser(userId);
-  const response = await fetch(googleEventUrl(auth.calendarId, eventId), {
+  const response = await fetch(googleEventUrl(calendarId, eventId), {
     method: "DELETE",
     headers: {
       authorization: `Bearer ${auth.accessToken}`
@@ -215,6 +216,7 @@ async function googleDeleteEvent(userId: string, eventId: string): Promise<void>
 async function upsertCalendarEventLink(input: {
   supabase: SupabaseAdminClient;
   task: TaskCalendarSyncRow;
+  providerCalendarId: string;
   providerEventId: string;
   providerEventUrl: string | null;
   timezone: string;
@@ -226,6 +228,7 @@ async function upsertCalendarEventLink(input: {
     {
       user_id: task.user_id,
       provider: "google",
+      provider_calendar_id: input.providerCalendarId,
       provider_event_id: input.providerEventId,
       task_id: task.id,
       note_id: null,
@@ -236,7 +239,7 @@ async function upsertCalendarEventLink(input: {
       timezone: input.timezone,
       provider_event_url: input.providerEventUrl
     },
-    { onConflict: "user_id,provider,provider_event_id" }
+    { onConflict: "user_id,provider,provider_calendar_id,provider_event_id" }
   );
 
   if (error) throw error;
@@ -271,6 +274,7 @@ async function syncCalendarLinkFromRemoteEvent(input: {
   await upsertCalendarEventLink({
     supabase: input.supabase,
     task: input.task,
+    providerCalendarId: input.task.calendar_provider_calendar_id ?? "primary",
     providerEventId: input.event.id,
     providerEventUrl: input.event.htmlLink,
     timezone: normalizeTimezone(input.event.timezone),
@@ -308,7 +312,7 @@ export async function loadTaskForCalendarSync(
   const { data, error } = await supabase
     .from("tasks")
     .select(
-      "id, user_id, title, details, status, due_at, scheduled_for, estimated_minutes, calendar_provider, calendar_event_id, calendar_sync_mode, calendar_sync_error"
+      "id, user_id, title, details, status, due_at, scheduled_for, estimated_minutes, calendar_provider, calendar_provider_calendar_id, calendar_event_id, calendar_sync_mode, calendar_sync_error"
     )
     .eq("id", taskId)
     .eq("user_id", userId)
@@ -349,7 +353,7 @@ async function inspectTaskInboundCalendarChangeFromTask(
 
   let remoteEvent: GoogleEventSnapshot;
   try {
-    remoteEvent = await googleGetEvent(task.user_id, task.calendar_event_id!);
+    remoteEvent = await googleGetEvent(task.user_id, task.calendar_provider_calendar_id ?? "primary", task.calendar_event_id!);
   } catch (error) {
     const message = error instanceof Error ? error.message : "calendar_event_fetch_failed";
     if (message === "calendar_event_not_found") {
@@ -417,6 +421,7 @@ export async function syncTaskCalendarAfterMutation(
     const shouldRemoveManagedEvent =
       task.calendar_sync_mode === "app_managed" &&
       task.calendar_provider === "google" &&
+      !!task.calendar_provider_calendar_id &&
       !!task.calendar_event_id &&
       (!task.scheduled_for || task.status === "done");
 
@@ -424,7 +429,7 @@ export async function syncTaskCalendarAfterMutation(
       let deleteError: string | null = null;
 
       try {
-        await googleDeleteEvent(userId, task.calendar_event_id!);
+        await googleDeleteEvent(userId, task.calendar_provider_calendar_id!, task.calendar_event_id!);
       } catch (error) {
         deleteError = error instanceof Error ? error.message : "calendar_sync_delete_failed";
       }
@@ -447,6 +452,7 @@ export async function syncTaskCalendarAfterMutation(
             }
           : {
               calendar_provider: null,
+              calendar_provider_calendar_id: null,
               calendar_event_id: null,
               calendar_sync_mode: null,
               calendar_sync_error: null
@@ -473,6 +479,8 @@ export async function syncTaskCalendarAfterMutation(
 
     let eventResult: GoogleEventResult;
     let staleEventId: string | null = null;
+    const auth = await getGoogleAccessTokenForUser(userId);
+    const targetCalendarId = task.calendar_provider_calendar_id || auth.defaultCalendarId;
 
     if (task.calendar_sync_mode === "app_managed" && task.calendar_provider === "google" && task.calendar_event_id) {
       if (!options.ignoreInboundConflict) {
@@ -485,7 +493,7 @@ export async function syncTaskCalendarAfterMutation(
         }
         if (inboundState.status === "missing") {
           staleEventId = task.calendar_event_id;
-          eventResult = await googleCreateEvent(userId, eventPayload);
+          eventResult = await googleCreateEvent(userId, targetCalendarId, eventPayload);
         } else if (inboundState.status === "unsupported") {
           await updateTaskCalendarFields(supabase, task.id, userId, {
             calendar_sync_error: "calendar_inbound_change_unsupported"
@@ -493,26 +501,26 @@ export async function syncTaskCalendarAfterMutation(
           return;
         } else {
           try {
-            eventResult = await googleUpdateEvent(userId, task.calendar_event_id, eventPayload);
+            eventResult = await googleUpdateEvent(userId, targetCalendarId, task.calendar_event_id, eventPayload);
           } catch (error) {
             const message = error instanceof Error ? error.message : "calendar_event_update_failed";
             if (message !== "calendar_event_not_found") throw error;
             staleEventId = task.calendar_event_id;
-            eventResult = await googleCreateEvent(userId, eventPayload);
+            eventResult = await googleCreateEvent(userId, targetCalendarId, eventPayload);
           }
         }
       } else {
         try {
-          eventResult = await googleUpdateEvent(userId, task.calendar_event_id, eventPayload);
+          eventResult = await googleUpdateEvent(userId, targetCalendarId, task.calendar_event_id, eventPayload);
         } catch (error) {
           const message = error instanceof Error ? error.message : "calendar_event_update_failed";
           if (message !== "calendar_event_not_found") throw error;
           staleEventId = task.calendar_event_id;
-          eventResult = await googleCreateEvent(userId, eventPayload);
+          eventResult = await googleCreateEvent(userId, targetCalendarId, eventPayload);
         }
       }
     } else if (!task.calendar_event_id) {
-      eventResult = await googleCreateEvent(userId, eventPayload);
+      eventResult = await googleCreateEvent(userId, targetCalendarId, eventPayload);
     } else {
       return;
     }
@@ -528,6 +536,7 @@ export async function syncTaskCalendarAfterMutation(
     await upsertCalendarEventLink({
       supabase,
       task,
+      providerCalendarId: targetCalendarId,
       providerEventId: eventResult.id,
       providerEventUrl: eventResult.htmlLink,
       timezone,
@@ -537,6 +546,7 @@ export async function syncTaskCalendarAfterMutation(
 
     await updateTaskCalendarFields(supabase, task.id, userId, {
       calendar_provider: "google",
+      calendar_provider_calendar_id: targetCalendarId,
       calendar_event_id: eventResult.id,
       calendar_sync_mode: "app_managed",
       calendar_sync_error: null
@@ -644,6 +654,7 @@ export async function detachTaskCalendarLink(
     await clearCalendarLinksForTask(supabase, task.id, task.calendar_event_id);
     await updateTaskCalendarFields(supabase, task.id, task.user_id, {
       calendar_provider: null,
+      calendar_provider_calendar_id: null,
       calendar_event_id: null,
       calendar_sync_mode: null,
       calendar_sync_error: null
@@ -655,10 +666,11 @@ export async function detachTaskCalendarLink(
     throw new Error("calendar_link_detach_not_allowed");
   }
 
-  await googleDeleteEvent(task.user_id, task.calendar_event_id);
+  await googleDeleteEvent(task.user_id, task.calendar_provider_calendar_id ?? "primary", task.calendar_event_id);
   await clearCalendarLinksForTask(supabase, task.id, task.calendar_event_id);
   await updateTaskCalendarFields(supabase, task.id, task.user_id, {
     calendar_provider: null,
+    calendar_provider_calendar_id: null,
     calendar_event_id: null,
     calendar_sync_mode: null,
     calendar_sync_error: null
@@ -675,7 +687,7 @@ export async function cleanupDeletedTaskCalendarSync(
   }
 
   try {
-    await googleDeleteEvent(task.user_id, task.calendar_event_id);
+    await googleDeleteEvent(task.user_id, task.calendar_provider_calendar_id ?? "primary", task.calendar_event_id);
   } catch (_error) {
     // Deleting the task in the app still wins in V1. Remote orphan cleanup can come later.
   }

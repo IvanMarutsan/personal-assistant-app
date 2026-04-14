@@ -19,7 +19,7 @@ Deno.serve(async (req) => {
   const { data, error } = await supabase
     .from("tasks")
     .select(
-      "id, title, details, task_type, status, last_moved_reason, project_id, due_at, scheduled_for, estimated_minutes, planning_flexibility, is_protected_essential, calendar_provider, calendar_event_id, calendar_sync_mode, calendar_sync_error, projects(name)"
+      "id, title, details, task_type, status, last_moved_reason, project_id, due_at, scheduled_for, estimated_minutes, planning_flexibility, is_recurring, recurrence_rule, recurrence_timezone, is_protected_essential, calendar_provider, calendar_provider_calendar_id, calendar_event_id, calendar_sync_mode, calendar_sync_error, google_task_provider, google_task_list_id, google_task_id, google_task_sync_mode, google_task_sync_error, projects(name)"
     )
     .eq("user_id", sessionUser.userId)
     .order("created_at", { ascending: false })
@@ -64,7 +64,7 @@ Deno.serve(async (req) => {
   if (taskIds.length > 0) {
     const { data: calendarLinks } = await supabase
       .from("calendar_event_links")
-      .select("task_id, provider, provider_event_id, provider_event_url, title, starts_at, ends_at, timezone, created_at")
+      .select("task_id, provider, provider_calendar_id, provider_event_id, provider_event_url, title, starts_at, ends_at, timezone, created_at")
       .eq("user_id", sessionUser.userId)
       .eq("provider", "google")
       .in("task_id", taskIds)
@@ -74,6 +74,7 @@ Deno.serve(async (req) => {
       if (!link.task_id || calendarLinkByTaskId.has(link.task_id)) continue;
       calendarLinkByTaskId.set(link.task_id, {
         provider: "google",
+        provider_calendar_id: link.provider_calendar_id,
         provider_event_id: link.provider_event_id,
         provider_event_url: link.provider_event_url ?? null,
         title: link.title,
@@ -85,9 +86,42 @@ Deno.serve(async (req) => {
   }
 
   const items = (data ?? []).map((task) => ({
-    ...task,
+    id: task.id,
+    title: task.title,
+    details: task.details,
+    task_type: task.task_type,
+    status: task.status,
+    last_moved_reason: task.last_moved_reason,
+    project_id: task.project_id,
+    due_at: task.due_at,
+    scheduled_for: task.scheduled_for,
+    estimated_minutes: task.estimated_minutes,
+    planning_flexibility: task.planning_flexibility,
+    is_recurring: task.is_recurring,
+    recurrence_rule: task.recurrence_rule,
+    recurrence_timezone: task.recurrence_timezone,
+    is_protected_essential: task.is_protected_essential,
+    calendar_provider: task.calendar_provider,
+    calendar_provider_calendar_id: task.calendar_provider_calendar_id,
+    calendar_event_id: task.calendar_event_id,
+    calendar_sync_mode: task.calendar_sync_mode,
+    calendar_sync_error: task.calendar_sync_error,
+    google_task_provider: task.google_task_provider,
+    google_task_list_id: task.google_task_list_id,
+    google_task_id: task.google_task_id,
+    google_task_sync_mode: task.google_task_sync_mode,
+    google_task_sync_error: task.google_task_sync_error,
+    projects: task.projects,
     cancel_reason_text: cancelReasonByTaskId.get(task.id) ?? null,
-    linked_calendar_event: calendarLinkByTaskId.get(task.id) ?? null
+    linked_calendar_event: calendarLinkByTaskId.get(task.id) ?? null,
+    linked_google_task:
+      task.google_task_provider === "google_tasks" && task.google_task_list_id && task.google_task_id
+        ? {
+            provider: "google_tasks" as const,
+            task_list_id: task.google_task_list_id,
+            task_id: task.google_task_id
+          }
+        : null
   }));
 
   return jsonResponse({ ok: true, items });

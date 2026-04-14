@@ -482,6 +482,24 @@ button.danger {
   color: #24593e;
 }
 
+.recurrence-badge {
+  margin-left: 8px;
+  padding: 2px 7px;
+  border-radius: 999px;
+  background: #eef1fb;
+  border: 1px solid #cfd7f2;
+  color: #415389;
+  font-size: 0.75rem;
+  font-weight: 500;
+}
+
+.recurrence-badge--timeline {
+  margin-left: 6px;
+  padding: 1px 6px;
+  font-size: 0.68rem;
+  vertical-align: middle;
+}
+
 .assistant-block {
   border: 1px solid #d7e5db;
   border-radius: 10px;

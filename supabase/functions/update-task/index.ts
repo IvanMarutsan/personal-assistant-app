@@ -1,7 +1,8 @@
 ﻿import { createAdminClient } from "../_shared/db.ts";
 import { handleOptions, jsonResponse, safeJson } from "../_shared/http.ts";
 import { resolveSessionUser } from "../_shared/session.ts";
-import { syncTaskCalendarAfterMutation } from "../_shared/task-calendar-sync.ts";
+import { syncTaskGoogleAfterMutation } from "../_shared/task-google-sync.ts";
+import { buildSupportedRecurrenceRule, parseSupportedRecurrenceFrequency } from "../_shared/recurrence.ts";
 
 type TaskType =
   | "communication"
@@ -30,6 +31,7 @@ type UpdateTaskBody = {
   scheduledFor?: string | null;
   estimatedMinutes?: number | null;
   planningFlexibility?: PlanningFlexibility | null;
+  recurrenceFrequency?: string | null;
 };
 
 function toIsoOrNull(value: string | null | undefined): string | null {
@@ -65,6 +67,8 @@ Deno.serve(async (req) => {
 
   const dueAt = toIsoOrNull(body.dueAt);
   const scheduledFor = toIsoOrNull(body.scheduledFor);
+  const recurrenceFrequency = parseSupportedRecurrenceFrequency(body?.recurrenceFrequency ?? null);
+  const recurrenceRule = buildSupportedRecurrenceRule(recurrenceFrequency);
 
   if (body.dueAt && dueAt === null) {
     return jsonResponse({ ok: false, error: "invalid_due_at" }, 400);
@@ -86,6 +90,12 @@ Deno.serve(async (req) => {
     body.planningFlexibility !== "flexible"
   ) {
     return jsonResponse({ ok: false, error: "invalid_planning_flexibility" }, 400);
+  }
+  if (body?.recurrenceFrequency !== undefined && body?.recurrenceFrequency !== null && !recurrenceFrequency) {
+    return jsonResponse({ ok: false, error: "invalid_recurrence_frequency" }, 400);
+  }
+  if (recurrenceRule && !scheduledFor && !dueAt) {
+    return jsonResponse({ ok: false, error: "recurrence_requires_anchor" }, 400);
   }
 
   const supabase = createAdminClient();
@@ -141,6 +151,11 @@ Deno.serve(async (req) => {
   if (body.planningFlexibility !== undefined) {
     updatePayload.planning_flexibility = body.planningFlexibility;
   }
+  if (body.recurrenceFrequency !== undefined) {
+    updatePayload.is_recurring = Boolean(recurrenceRule);
+    updatePayload.recurrence_rule = recurrenceRule;
+    updatePayload.recurrence_timezone = recurrenceRule ? "UTC" : null;
+  }
 
   const { error: updateError } = await supabase
     .from("tasks")
@@ -152,7 +167,15 @@ Deno.serve(async (req) => {
     return jsonResponse({ ok: false, error: "task_update_failed", message: updateError.message }, 500);
   }
 
-  await syncTaskCalendarAfterMutation(supabase, sessionUser.userId, body.taskId);
+  try {
+    await syncTaskGoogleAfterMutation(supabase, sessionUser.userId, body.taskId);
+  } catch (googleTaskError) {
+    console.error("[update-task] google_task_sync_failed", {
+      taskId: body.taskId,
+      userId: sessionUser.userId,
+      error: googleTaskError
+    });
+  }
 
   return jsonResponse({ ok: true, taskId: body.taskId });
 });

@@ -95,7 +95,39 @@ export type GoogleCalendarStatus = {
   provider: "google";
   email: string | null;
   calendarId: string | null;
+  selectedCalendarIds: string[];
+  defaultCalendarId: string | null;
+  defaultTaskListId: string | null;
+  tasksScopeAvailable: boolean;
   expiresAt: string | null;
+};
+
+export type GoogleCalendarListItem = {
+  id: string;
+  summary: string;
+  description: string | null;
+  primary: boolean;
+  selected: boolean;
+  default: boolean;
+  accessRole: string | null;
+  backgroundColor: string | null;
+};
+
+export type GoogleTaskListItem = {
+  id: string;
+  title: string;
+  updated: string | null;
+  isDefault: boolean;
+};
+
+export type GoogleIntegrationPreferences = {
+  connected: boolean;
+  calendars: GoogleCalendarListItem[];
+  taskLists: GoogleTaskListItem[];
+  selectedCalendarIds: string[];
+  defaultCalendarId: string | null;
+  defaultTaskListId: string | null;
+  tasksScopeAvailable: boolean;
 };
 
 export type GoogleCalendarEventItem = {
@@ -119,11 +151,16 @@ export type CalendarBlockItem = {
   timezone: string;
   source: "app" | "google";
   calendar_provider: string;
+  provider_calendar_id?: string;
   provider_event_id: string | null;
   provider_event_url: string | null;
   provider_status: string | null;
   project_id: string | null;
   is_all_day: boolean;
+  is_recurring?: boolean;
+  recurrence_rule?: string | null;
+  recurrence_timezone?: string | null;
+  recurrence_parent_provider_event_id?: string | null;
   archived_at: string | null;
   projects?: { name: string } | { name: string }[] | null;
 };
@@ -149,6 +186,7 @@ export type TaskType =
   | "someday";
 
 export type PlanningFlexibility = "essential" | "flexible";
+export type RecurrenceFrequency = "daily" | "weekly" | "monthly";
 
 export type TaskItem = {
   id: string;
@@ -159,11 +197,18 @@ export type TaskItem = {
   last_moved_reason?: MoveReasonCode | null;
   cancel_reason_text?: string | null;
   calendar_provider?: string | null;
+  calendar_provider_calendar_id?: string | null;
   calendar_event_id?: string | null;
   calendar_sync_mode?: "app_managed" | "manual" | null;
   calendar_sync_error?: string | null;
+  google_task_provider?: string | null;
+  google_task_list_id?: string | null;
+  google_task_id?: string | null;
+  google_task_sync_mode?: "app_managed" | "manual" | null;
+  google_task_sync_error?: string | null;
   linked_calendar_event?: {
     provider: "google";
+    provider_calendar_id?: string;
     provider_event_id: string;
     provider_event_url: string | null;
     title: string;
@@ -171,13 +216,28 @@ export type TaskItem = {
     ends_at: string;
     timezone: string;
   } | null;
+  linked_google_task?: {
+    provider: "google_tasks";
+    task_list_id: string;
+    task_id: string;
+  } | null;
   project_id: string | null;
   due_at: string | null;
   scheduled_for: string | null;
   estimated_minutes: number | null;
   planning_flexibility: PlanningFlexibility | null;
+  is_recurring?: boolean;
+  recurrence_rule?: string | null;
+  recurrence_timezone?: string | null;
   is_protected_essential: boolean;
   projects?: { name: string } | { name: string }[] | null;
+};
+
+export type CreateTaskResult = {
+  taskId: string;
+  googleTaskSyncError: string | null;
+  linkedGoogleTask: boolean;
+  googleTaskSyncState: "linked" | "not_linked" | "sync_unavailable";
 };
 
 export type MoveReasonCode =
@@ -230,6 +290,23 @@ export type TaskCalendarInboundState =
     }
   | {
       status: "missing" | "unsupported";
+      message: string;
+    };
+export type TaskGoogleInboundState =
+  | {
+      status: "manual" | "not_linked" | "healthy";
+      message: string | null;
+    }
+  | {
+      status: "changed";
+      message: string;
+      remoteTitle: string;
+      remoteDetails: string | null;
+      remoteDueAt: string | null;
+      remoteStatus: "planned" | "done";
+    }
+  | {
+      status: "missing";
       message: string;
     };
 export type PlanningSummary = {

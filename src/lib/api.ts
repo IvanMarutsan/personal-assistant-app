@@ -3,18 +3,24 @@ import type {
   AiAdvisorSummary,
   AppSession,
   CalendarBlockItem,
+  GoogleCalendarListItem,
   GoogleCalendarEventItem,
+  GoogleIntegrationPreferences,
   GoogleCalendarStatus,
+  GoogleTaskListItem,
   InboxItem,
   PlanningConversationState,
   PlanningConversationScopeType,
   PlanningFlexibility,
+  CreateTaskResult,
+  RecurrenceFrequency,
   MoveReasonCode,
   NoteItem,
   WorklogItem,
   PlanningSummary,
   ProjectItem,
   TaskCalendarInboundState,
+  TaskGoogleInboundState,
   TaskItem,
   TaskType,
   TaskStatus,
@@ -82,6 +88,30 @@ function resolveUserSafeMessage(status: number, code: string | null, fallback: s
   if (code === "calendar_not_connected") {
     return "Google Calendar \u0449\u0435 \u043d\u0435 \u043f\u0456\u0434\u043a\u043b\u044e\u0447\u0435\u043d\u043e.";
   }
+  if (code === "selected_calendars_required") {
+    return "Потрібно залишити хоча б один видимий календар.";
+  }
+  if (code === "invalid_selected_calendar" || code === "invalid_default_calendar") {
+    return "Вибрано календар, який зараз недоступний у Google.";
+  }
+  if (code === "invalid_default_task_list") {
+    return "Вибраний список Google Tasks зараз недоступний.";
+  }
+  if (code === "google_tasks_not_connected") {
+    return "Google Tasks ще не підключено. Перепідключи Google акаунт у вкладці «Календар».";
+  }
+  if (code === "google_tasks_scope_missing") {
+    return "Для Google Tasks потрібен оновлений дозвіл Google. Перепідключи Google акаунт.";
+  }
+  if (code === "google_tasks_auth_expired") {
+    return "Доступ до Google Tasks завершився. Перепідключи Google акаунт.";
+  }
+  if (code === "google_tasks_permission_denied") {
+    return "Немає доступу до Google Tasks. Перевір підключення Google акаунта.";
+  }
+  if (code === "google_task_link_not_found") {
+    return "Зв'язок із Google Tasks уже відсутній.";
+  }
   if (code === "calendar_auth_expired") {
     return "\u0414\u043e\u0441\u0442\u0443\u043f \u0434\u043e Google Calendar \u0437\u0430\u0432\u0435\u0440\u0448\u0438\u0432\u0441\u044f. \u041f\u0435\u0440\u0435\u043f\u0456\u0434\u043a\u043b\u044e\u0447\u0438 \u043a\u0430\u043b\u0435\u043d\u0434\u0430\u0440.";
   }
@@ -93,6 +123,12 @@ function resolveUserSafeMessage(status: number, code: string | null, fallback: s
   }
   if (code === "missing_title") {
     return "\u0414\u043b\u044f \u0431\u043b\u043e\u043a\u0443 \u043f\u043e\u0442\u0440\u0456\u0431\u043d\u0430 \u043d\u0430\u0437\u0432\u0430.";
+  }
+  if (code === "invalid_recurrence_frequency") {
+    return "Поки що повторення підтримує лише щоденний, щотижневий або щомісячний режим.";
+  }
+  if (code === "recurrence_requires_anchor") {
+    return "Для повторення потрібен дедлайн або планований старт.";
   }
   if (code === "project_not_found") {
     return "\u0412\u043a\u0430\u0437\u0430\u043d\u0438\u0439 \u043f\u0440\u043e\u0454\u043a\u0442 \u043d\u0435 \u0437\u043d\u0430\u0439\u0434\u0435\u043d\u043e.";
@@ -206,6 +242,10 @@ export async function getGoogleCalendarStatus(sessionToken: string): Promise<Goo
     provider: "google";
     email: string | null;
     calendarId: string | null;
+    selectedCalendarIds: string[];
+    defaultCalendarId: string | null;
+    defaultTaskListId: string | null;
+    tasksScopeAvailable: boolean;
     expiresAt: string | null;
   }>("get-google-calendar-status", {
     method: "GET",
@@ -217,8 +257,68 @@ export async function getGoogleCalendarStatus(sessionToken: string): Promise<Goo
     provider: result.provider,
     email: result.email,
     calendarId: result.calendarId,
+    selectedCalendarIds: result.selectedCalendarIds ?? [],
+    defaultCalendarId: result.defaultCalendarId ?? null,
+    defaultTaskListId: result.defaultTaskListId ?? null,
+    tasksScopeAvailable: Boolean(result.tasksScopeAvailable),
     expiresAt: result.expiresAt
   };
+}
+
+export async function getGoogleIntegrationPreferences(sessionToken: string): Promise<GoogleIntegrationPreferences> {
+  const result = await request<{
+    ok: true;
+    connected: boolean;
+    calendars: GoogleCalendarListItem[];
+    taskLists: GoogleTaskListItem[];
+    selectedCalendarIds: string[];
+    defaultCalendarId: string | null;
+    defaultTaskListId: string | null;
+    tasksScopeAvailable: boolean;
+  }>("get-google-integration-preferences", {
+    method: "GET",
+    headers: sessionHeaders(sessionToken)
+  });
+
+  return {
+    connected: result.connected,
+    calendars: result.calendars ?? [],
+    taskLists: result.taskLists ?? [],
+    selectedCalendarIds: result.selectedCalendarIds ?? [],
+    defaultCalendarId: result.defaultCalendarId ?? null,
+    defaultTaskListId: result.defaultTaskListId ?? null,
+    tasksScopeAvailable: Boolean(result.tasksScopeAvailable)
+  };
+}
+
+export async function updateGoogleIntegrationPreferences(input: {
+  sessionToken: string;
+  selectedCalendarIds: string[];
+  defaultCalendarId: string | null;
+  defaultTaskListId?: string | null;
+}): Promise<{
+  selectedCalendarIds: string[];
+  defaultCalendarId: string | null;
+  defaultTaskListId: string | null;
+}> {
+  const result = await request<{
+    ok: true;
+    preferences: {
+      selectedCalendarIds: string[];
+      defaultCalendarId: string | null;
+      defaultTaskListId: string | null;
+    };
+  }>("update-google-integration-preferences", {
+    method: "POST",
+    headers: sessionHeaders(input.sessionToken),
+    body: JSON.stringify({
+      selectedCalendarIds: input.selectedCalendarIds,
+      defaultCalendarId: input.defaultCalendarId,
+      defaultTaskListId: input.defaultTaskListId ?? null
+    })
+  });
+
+  return result.preferences;
 }
 
 export async function getGoogleCalendarUpcoming(sessionToken: string): Promise<GoogleCalendarEventItem[]> {
@@ -285,6 +385,7 @@ export async function upsertCalendarBlock(input: {
   endAt: string;
   timezone?: string | null;
   projectId?: string | null;
+  recurrenceFrequency?: RecurrenceFrequency | null;
 }): Promise<CalendarBlockItem> {
   const result = await request<{ ok: true; block: CalendarBlockItem }>("upsert-calendar-block", {
     method: "POST",
@@ -296,7 +397,8 @@ export async function upsertCalendarBlock(input: {
       startAt: input.startAt,
       endAt: input.endAt,
       timezone: input.timezone ?? null,
-      projectId: input.projectId ?? null
+      projectId: input.projectId ?? null,
+      recurrenceFrequency: input.recurrenceFrequency ?? null
     })
   });
   return result.block;
@@ -500,10 +602,14 @@ export async function createTask(input: {
   scheduledFor?: string | null;
   estimatedMinutes?: number | null;
   planningFlexibility?: PlanningFlexibility | null;
-}): Promise<{ taskId: string }> {
+  recurrenceFrequency?: RecurrenceFrequency | null;
+}): Promise<CreateTaskResult> {
   const result = await request<{
     ok: true;
     taskId: string;
+    googleTaskSyncError?: string | null;
+    linkedGoogleTask?: boolean;
+    googleTaskSyncState?: "linked" | "not_linked" | "sync_unavailable";
   }>("create-task", {
     method: "POST",
     headers: sessionHeaders(input.sessionToken),
@@ -515,11 +621,17 @@ export async function createTask(input: {
       dueAt: input.dueAt ?? null,
       scheduledFor: input.scheduledFor ?? null,
       estimatedMinutes: input.estimatedMinutes ?? null,
-      planningFlexibility: input.planningFlexibility ?? null
+      planningFlexibility: input.planningFlexibility ?? null,
+      recurrenceFrequency: input.recurrenceFrequency ?? null
     })
   });
 
-  return { taskId: result.taskId };
+  return {
+    taskId: result.taskId,
+    googleTaskSyncError: result.googleTaskSyncError ?? null,
+    linkedGoogleTask: Boolean(result.linkedGoogleTask),
+    googleTaskSyncState: result.googleTaskSyncState ?? (result.googleTaskSyncError ? "sync_unavailable" : result.linkedGoogleTask ? "linked" : "not_linked")
+  };
 }
 
 export async function getTasks(sessionToken: string): Promise<TaskItem[]> {
@@ -582,6 +694,7 @@ export async function updateTask(input: {
   scheduledFor?: string | null;
   estimatedMinutes?: number | null;
   planningFlexibility?: PlanningFlexibility | null;
+  recurrenceFrequency?: RecurrenceFrequency | null;
 }): Promise<void> {
   const payload: Record<string, unknown> = {
     taskId: input.taskId,
@@ -595,6 +708,7 @@ export async function updateTask(input: {
   if (input.scheduledFor !== undefined) payload.scheduledFor = input.scheduledFor;
   if (input.estimatedMinutes !== undefined) payload.estimatedMinutes = input.estimatedMinutes;
   if (input.planningFlexibility !== undefined) payload.planningFlexibility = input.planningFlexibility;
+  if (input.recurrenceFrequency !== undefined) payload.recurrenceFrequency = input.recurrenceFrequency;
 
   await request<{ ok: true }>("update-task", {
     method: "POST",
@@ -634,6 +748,62 @@ export async function detachTaskCalendarLink(input: {
     headers: sessionHeaders(input.sessionToken),
     body: JSON.stringify({ taskId: input.taskId })
   });
+}
+
+export async function retryTaskGoogleSync(input: {
+  sessionToken: string;
+  taskId: string;
+}): Promise<void> {
+  await request<{ ok: true }>("retry-task-google-sync", {
+    method: "POST",
+    headers: sessionHeaders(input.sessionToken),
+    body: JSON.stringify({ taskId: input.taskId })
+  });
+}
+
+export async function detachTaskGoogleLink(input: {
+  sessionToken: string;
+  taskId: string;
+}): Promise<void> {
+  await request<{ ok: true }>("detach-task-google-link", {
+    method: "POST",
+    headers: sessionHeaders(input.sessionToken),
+    body: JSON.stringify({ taskId: input.taskId })
+  });
+}
+
+export async function inspectTaskGoogleInbound(input: {
+  sessionToken: string;
+  taskId: string;
+}): Promise<TaskGoogleInboundState> {
+  const result = await request<{
+    ok: true;
+    taskId: string;
+    state: TaskGoogleInboundState;
+  }>("sync-task-google-inbound", {
+    method: "POST",
+    headers: sessionHeaders(input.sessionToken),
+    body: JSON.stringify({ taskId: input.taskId, action: "inspect" })
+  });
+
+  return result.state;
+}
+
+export async function applyTaskGoogleInbound(input: {
+  sessionToken: string;
+  taskId: string;
+}): Promise<TaskGoogleInboundState> {
+  const result = await request<{
+    ok: true;
+    taskId: string;
+    state: TaskGoogleInboundState;
+  }>("sync-task-google-inbound", {
+    method: "POST",
+    headers: sessionHeaders(input.sessionToken),
+    body: JSON.stringify({ taskId: input.taskId, action: "apply" })
+  });
+
+  return result.state;
 }
 export async function inspectTaskCalendarInbound(input: {
   sessionToken: string;

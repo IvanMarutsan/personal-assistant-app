@@ -6,11 +6,16 @@ const DEFAULT_SCOPES = [
   "openid",
   "email",
   "https://www.googleapis.com/auth/calendar.events",
-  "https://www.googleapis.com/auth/calendar.readonly"
+  "https://www.googleapis.com/auth/calendar.readonly",
+  "https://www.googleapis.com/auth/tasks",
+  "https://www.googleapis.com/auth/tasks.readonly"
 ].join(" ");
 const STATE_TTL_SECONDS = Number(Deno.env.get("GOOGLE_OAUTH_STATE_TTL_SECONDS") ?? "600");
 const TOKEN_REFRESH_BUFFER_SECONDS = Number(Deno.env.get("GOOGLE_TOKEN_REFRESH_BUFFER_SECONDS") ?? "90");
 const STATE_PEPPER = Deno.env.get("GOOGLE_OAUTH_STATE_PEPPER") ?? requiredEnv("SUPABASE_SERVICE_ROLE_KEY");
+const DEFAULT_CALENDAR_ID = "primary";
+const DEFAULT_TASK_LIST_ID = "@default";
+const GOOGLE_TASKS_SCOPE = "https://www.googleapis.com/auth/tasks";
 
 export type GoogleCalendarConnection = {
   user_id: string;
@@ -22,6 +27,52 @@ export type GoogleCalendarConnection = {
   scope: string | null;
   expires_at: string | null;
   calendar_id: string;
+  selected_calendar_ids: string[] | null;
+  default_calendar_id: string | null;
+  default_task_list_id: string | null;
+};
+
+export type GoogleCalendarSelectionState = {
+  defaultCalendarId: string;
+  selectedCalendarIds: string[];
+  defaultTaskListId: string;
+};
+
+export type GoogleAccessContext = {
+  accessToken: string;
+  calendarId: string;
+  defaultCalendarId: string;
+  selectedCalendarIds: string[];
+  defaultTaskListId: string;
+  googleEmail: string | null;
+  scope: string | null;
+};
+
+export type GoogleCalendarListItem = {
+  id: string;
+  summary: string;
+  description: string | null;
+  primary: boolean;
+  selected: boolean;
+  default: boolean;
+  accessRole: string | null;
+  backgroundColor: string | null;
+};
+
+export type GoogleTaskListItem = {
+  id: string;
+  title: string;
+  updated: string | null;
+  isDefault: boolean;
+};
+
+export type ResolvedGoogleCalendarSelection = {
+  selectedCalendarIds: string[];
+  defaultCalendarId: string;
+};
+
+export type ResolvedGoogleTaskListSelection = {
+  defaultTaskListId: string;
 };
 
 type TokenResponse = {
@@ -31,6 +82,21 @@ type TokenResponse = {
   scope?: string;
   token_type?: string;
   id_token?: string;
+};
+
+type GoogleCalendarListApiItem = {
+  id?: string;
+  summary?: string | null;
+  description?: string | null;
+  primary?: boolean;
+  accessRole?: string | null;
+  backgroundColor?: string | null;
+};
+
+type GoogleTaskListApiItem = {
+  id?: string;
+  title?: string | null;
+  updated?: string | null;
 };
 
 function randomHex(bytes = 24): string {
@@ -75,6 +141,89 @@ export function googleScopes(): string {
 
 export function miniAppBaseUrl(): string {
   return requiredEnv("MINI_APP_BASE_URL");
+}
+
+function normalizeSelectedCalendarIds(value: string[] | null | undefined, fallback: string): string[] {
+  const unique = Array.from(new Set((value ?? []).map((item) => item?.trim()).filter(Boolean)));
+  if (unique.length > 0) return unique;
+  return [fallback];
+}
+
+function normalizeDefaultCalendarId(value: string | null | undefined, selectedCalendarIds: string[]): string {
+  const trimmed = value?.trim() || null;
+  if (trimmed && selectedCalendarIds.includes(trimmed)) return trimmed;
+  return selectedCalendarIds[0] ?? DEFAULT_CALENDAR_ID;
+}
+
+function normalizeDefaultTaskListId(value: string | null | undefined): string {
+  return value?.trim() || DEFAULT_TASK_LIST_ID;
+}
+
+function resolveTaskListSelectionAgainstAvailableLists(input: {
+  defaultTaskListId: string | null | undefined;
+  taskLists: Array<Pick<GoogleTaskListItem, "id">>;
+}): ResolvedGoogleTaskListSelection {
+  const requestedId = normalizeDefaultTaskListId(input.defaultTaskListId);
+  const availableIds = new Set(input.taskLists.map((item) => item.id));
+  if (requestedId !== DEFAULT_TASK_LIST_ID && availableIds.has(requestedId)) {
+    return { defaultTaskListId: requestedId };
+  }
+  return { defaultTaskListId: input.taskLists[0]?.id ?? DEFAULT_TASK_LIST_ID };
+}
+
+export function hasGoogleTasksScope(scope: string | null | undefined): boolean {
+  return Boolean(scope?.split(/\s+/).includes(GOOGLE_TASKS_SCOPE));
+}
+
+export function calendarSelectionState(connection: GoogleCalendarConnection | null): GoogleCalendarSelectionState {
+  const baseCalendarId = connection?.calendar_id?.trim() || DEFAULT_CALENDAR_ID;
+  const selectedCalendarIds = normalizeSelectedCalendarIds(connection?.selected_calendar_ids, baseCalendarId);
+  return {
+    defaultCalendarId: normalizeDefaultCalendarId(connection?.default_calendar_id ?? connection?.calendar_id, selectedCalendarIds),
+    selectedCalendarIds,
+    defaultTaskListId: normalizeDefaultTaskListId(connection?.default_task_list_id)
+  };
+}
+
+function canonicalCalendarId(value: string | null | undefined, primaryCalendarId: string | null): string | null {
+  const trimmed = value?.trim() || null;
+  if (!trimmed) return null;
+  if (trimmed === DEFAULT_CALENDAR_ID && primaryCalendarId) return primaryCalendarId;
+  return trimmed;
+}
+
+export function resolveCalendarSelectionAgainstAvailableCalendars(input: {
+  selectedCalendarIds: string[];
+  defaultCalendarId: string | null;
+  calendars: Array<Pick<GoogleCalendarListItem, "id" | "primary">>;
+}): ResolvedGoogleCalendarSelection {
+  const primaryCalendarId = input.calendars.find((calendar) => calendar.primary)?.id ?? null;
+  const availableIds = new Set(input.calendars.map((calendar) => calendar.id));
+
+  const selectedCalendarIds = Array.from(
+    new Set(
+      input.selectedCalendarIds
+        .map((id) => canonicalCalendarId(id, primaryCalendarId))
+        .filter((id): id is string => Boolean(id && availableIds.has(id)))
+    )
+  );
+
+  const fallbackDefault =
+    primaryCalendarId ??
+    input.calendars[0]?.id ??
+    DEFAULT_CALENDAR_ID;
+
+  const normalizedSelected = selectedCalendarIds.length > 0 ? selectedCalendarIds : [fallbackDefault];
+  const canonicalDefault = canonicalCalendarId(input.defaultCalendarId, primaryCalendarId);
+  const defaultCalendarId =
+    canonicalDefault && normalizedSelected.includes(canonicalDefault)
+      ? canonicalDefault
+      : normalizedSelected[0];
+
+  return {
+    selectedCalendarIds: normalizedSelected,
+    defaultCalendarId
+  };
 }
 
 export async function createOAuthState(input: { userId: string; returnPath: string }): Promise<string> {
@@ -181,12 +330,19 @@ export async function upsertGoogleConnection(input: {
 
   const { data: existing } = await supabase
     .from("calendar_connections")
-    .select("refresh_token")
+    .select("refresh_token, selected_calendar_ids, default_calendar_id, default_task_list_id, calendar_id")
     .eq("user_id", input.userId)
     .eq("provider", "google")
     .maybeSingle();
 
   const refreshToken = input.token.refresh_token ?? (existing?.refresh_token as string | null) ?? null;
+  const baseCalendarId = (existing?.calendar_id as string | null) ?? DEFAULT_CALENDAR_ID;
+  const selectedCalendarIds = normalizeSelectedCalendarIds(existing?.selected_calendar_ids as string[] | null | undefined, baseCalendarId);
+  const defaultCalendarId = normalizeDefaultCalendarId(
+    (existing?.default_calendar_id as string | null | undefined) ?? baseCalendarId,
+    selectedCalendarIds
+  );
+  const defaultTaskListId = normalizeDefaultTaskListId(existing?.default_task_list_id as string | null | undefined);
 
   const { error } = await supabase.from("calendar_connections").upsert(
     {
@@ -198,7 +354,10 @@ export async function upsertGoogleConnection(input: {
       token_type: input.token.token_type ?? null,
       scope: input.token.scope ?? null,
       expires_at: computeExpiresAt(input.token.expires_in),
-      calendar_id: "primary"
+      calendar_id: defaultCalendarId,
+      selected_calendar_ids: selectedCalendarIds,
+      default_calendar_id: defaultCalendarId,
+      default_task_list_id: defaultTaskListId
     },
     { onConflict: "user_id,provider" }
   );
@@ -210,7 +369,7 @@ export async function getGoogleConnection(userId: string): Promise<GoogleCalenda
   const supabase = createAdminClient();
   const { data, error } = await supabase
     .from("calendar_connections")
-    .select("user_id, provider, google_email, access_token, refresh_token, token_type, scope, expires_at, calendar_id")
+    .select("user_id, provider, google_email, access_token, refresh_token, token_type, scope, expires_at, calendar_id, selected_calendar_ids, default_calendar_id, default_task_list_id")
     .eq("user_id", userId)
     .eq("provider", "google")
     .maybeSingle();
@@ -219,19 +378,21 @@ export async function getGoogleConnection(userId: string): Promise<GoogleCalenda
   return (data as GoogleCalendarConnection | null) ?? null;
 }
 
-export async function getGoogleAccessTokenForUser(userId: string): Promise<{
-  accessToken: string;
-  calendarId: string;
-  googleEmail: string | null;
-}> {
+export async function getGoogleAccessTokenForUser(userId: string): Promise<GoogleAccessContext> {
   const connection = await getGoogleConnection(userId);
   if (!connection) throw new Error("calendar_not_connected");
+
+  const selection = calendarSelectionState(connection);
 
   if (!isExpiringSoon(connection.expires_at)) {
     return {
       accessToken: connection.access_token,
-      calendarId: connection.calendar_id || "primary",
-      googleEmail: connection.google_email
+      calendarId: selection.defaultCalendarId,
+      defaultCalendarId: selection.defaultCalendarId,
+      selectedCalendarIds: selection.selectedCalendarIds,
+      defaultTaskListId: selection.defaultTaskListId,
+      googleEmail: connection.google_email,
+      scope: connection.scope ?? null
     };
   }
 
@@ -255,8 +416,141 @@ export async function getGoogleAccessTokenForUser(userId: string): Promise<{
 
   return {
     accessToken: refreshed.access_token,
-    calendarId: connection.calendar_id || "primary",
-    googleEmail: connection.google_email
+    calendarId: selection.defaultCalendarId,
+    defaultCalendarId: selection.defaultCalendarId,
+    selectedCalendarIds: selection.selectedCalendarIds,
+    defaultTaskListId: selection.defaultTaskListId,
+    googleEmail: connection.google_email,
+    scope: refreshed.scope ?? connection.scope ?? null
+  };
+}
+
+export async function listGoogleCalendars(userId: string): Promise<GoogleCalendarListItem[]> {
+  const auth = await getGoogleAccessTokenForUser(userId);
+  const response = await fetch("https://www.googleapis.com/calendar/v3/users/me/calendarList", {
+    headers: { authorization: `Bearer ${auth.accessToken}` }
+  });
+
+  const payload = (await response.json().catch(() => null)) as { items?: GoogleCalendarListApiItem[] } | null;
+  if (!response.ok) {
+    throw new Error(response.status === 403 ? "calendar_permission_denied" : `calendar_list_fetch_failed_${response.status}`);
+  }
+
+  const allowed = new Set(["owner", "writer", "reader", "freeBusyReader"]);
+  const rawItems = (payload?.items ?? [])
+    .filter((item) => item.id && allowed.has(item.accessRole ?? "reader"))
+    .map((item) => ({
+      id: item.id!,
+      summary: item.summary?.trim() || item.id!,
+      description: item.description?.trim() || null,
+      primary: Boolean(item.primary),
+      selected: false,
+      default: false,
+      accessRole: item.accessRole ?? null,
+      backgroundColor: item.backgroundColor ?? null
+    }));
+
+  const resolved = resolveCalendarSelectionAgainstAvailableCalendars({
+    selectedCalendarIds: auth.selectedCalendarIds,
+    defaultCalendarId: auth.defaultCalendarId,
+    calendars: rawItems
+  });
+
+  return rawItems
+    .map((item) => ({
+      ...item,
+      selected: resolved.selectedCalendarIds.includes(item.id),
+      default: resolved.defaultCalendarId === item.id
+    }))
+    .sort((a, b) => {
+      if (a.default && !b.default) return -1;
+      if (b.default && !a.default) return 1;
+      if (a.primary && !b.primary) return -1;
+      if (b.primary && !a.primary) return 1;
+      return a.summary.localeCompare(b.summary, "uk-UA");
+    });
+}
+
+export async function listGoogleTaskLists(userId: string): Promise<GoogleTaskListItem[]> {
+  const auth = await getGoogleAccessTokenForUser(userId);
+  if (!hasGoogleTasksScope(auth.scope)) {
+    throw new Error("google_tasks_scope_missing");
+  }
+
+  const response = await fetch("https://tasks.googleapis.com/tasks/v1/users/@me/lists", {
+    headers: { authorization: `Bearer ${auth.accessToken}` }
+  });
+
+  const payload = (await response.json().catch(() => null)) as { items?: GoogleTaskListApiItem[] } | null;
+  if (!response.ok) {
+    throw new Error(response.status === 403 ? "google_tasks_permission_denied" : `google_task_lists_fetch_failed_${response.status}`);
+  }
+
+  const rawItems = (payload?.items ?? [])
+    .filter((item) => item.id)
+    .map((item) => ({
+      id: item.id!,
+      title: item.title?.trim() || item.id!,
+      updated: item.updated ?? null,
+      isDefault: false
+    }));
+
+  const resolved = resolveTaskListSelectionAgainstAvailableLists({
+    defaultTaskListId: auth.defaultTaskListId,
+    taskLists: rawItems
+  });
+
+  return rawItems
+    .map((item) => ({
+      ...item,
+      isDefault: resolved.defaultTaskListId === item.id
+    }))
+    .sort((a, b) => {
+      if (a.isDefault && !b.isDefault) return -1;
+      if (b.isDefault && !a.isDefault) return 1;
+      return a.title.localeCompare(b.title, "uk-UA");
+    });
+}
+
+export async function updateGoogleConnectionPreferences(input: {
+  userId: string;
+  selectedCalendarIds?: string[];
+  defaultCalendarId?: string | null;
+  defaultTaskListId?: string | null;
+}): Promise<GoogleCalendarSelectionState> {
+  const connection = await getGoogleConnection(input.userId);
+  if (!connection) throw new Error("calendar_not_connected");
+
+  const current = calendarSelectionState(connection);
+  const calendars = await listGoogleCalendars(input.userId);
+  const resolved = resolveCalendarSelectionAgainstAvailableCalendars({
+    selectedCalendarIds: normalizeSelectedCalendarIds(
+      input.selectedCalendarIds ?? current.selectedCalendarIds,
+      current.defaultCalendarId
+    ),
+    defaultCalendarId: input.defaultCalendarId ?? current.defaultCalendarId,
+    calendars
+  });
+  const defaultTaskListId = normalizeDefaultTaskListId(input.defaultTaskListId ?? current.defaultTaskListId);
+
+  const supabase = createAdminClient();
+  const { error } = await supabase
+    .from("calendar_connections")
+    .update({
+      calendar_id: resolved.defaultCalendarId,
+      selected_calendar_ids: resolved.selectedCalendarIds,
+      default_calendar_id: resolved.defaultCalendarId,
+      default_task_list_id: defaultTaskListId
+    })
+    .eq("user_id", input.userId)
+    .eq("provider", "google");
+
+  if (error) throw new Error("calendar_preferences_update_failed");
+
+  return {
+    selectedCalendarIds: resolved.selectedCalendarIds,
+    defaultCalendarId: resolved.defaultCalendarId,
+    defaultTaskListId
   };
 }
 

@@ -2,6 +2,7 @@ import { createAdminClient } from "../_shared/db.ts";
 import { handleOptions, jsonResponse, safeJson } from "../_shared/http.ts";
 import { resolveSessionUser } from "../_shared/session.ts";
 import { cleanupDeletedTaskCalendarSync, type TaskCalendarSyncRow } from "../_shared/task-calendar-sync.ts";
+import { cleanupDeletedTaskGoogleSync, type TaskGoogleSyncRow } from "../_shared/task-google-sync.ts";
 
 type DeleteTaskBody = {
   taskId?: string;
@@ -29,7 +30,7 @@ Deno.serve(async (req) => {
   const { data: task, error: taskError } = await supabase
     .from("tasks")
     .select(
-      "id, user_id, title, details, due_at, scheduled_for, estimated_minutes, calendar_provider, calendar_event_id, calendar_sync_mode, calendar_sync_error"
+      "id, user_id, title, details, due_at, scheduled_for, estimated_minutes, calendar_provider, calendar_provider_calendar_id, calendar_event_id, calendar_sync_mode, calendar_sync_error, google_task_provider, google_task_list_id, google_task_id, google_task_sync_mode, google_task_sync_error, status"
     )
     .eq("id", body.taskId)
     .eq("user_id", sessionUser.userId)
@@ -40,6 +41,7 @@ Deno.serve(async (req) => {
   }
 
   await cleanupDeletedTaskCalendarSync(supabase, task as TaskCalendarSyncRow);
+  await cleanupDeletedTaskGoogleSync(supabase, task as TaskGoogleSyncRow);
 
   const { error } = await supabase
     .from("tasks")

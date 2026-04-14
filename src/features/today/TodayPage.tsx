@@ -5,6 +5,7 @@ import { NoteDetailModal } from "../../components/NoteDetailModal";
 import { PlanningConversationModal } from "../../components/PlanningConversationModal";
 import { TaskDetailModal } from "../../components/TaskDetailModal";
 import { useDiagnostics } from "../../lib/diagnostics";
+import { recurrenceLabel } from "../../lib/recurrence";
 import { taskTypeLabel } from "../../lib/taskTypes";
 import {
   countMissingEstimates,
@@ -21,21 +22,26 @@ import {
 import {
   ApiError,
   applyTaskCalendarInbound,
+  applyTaskGoogleInbound,
   createNote,
   createTask,
   deleteCalendarBlock,
   deleteTask,
   detachTaskCalendarLink as detachTaskCalendarLinkRequest,
+  detachTaskGoogleLink as detachTaskGoogleLinkRequest,
   getAiAdvisor,
   getCalendarBlocks,
   getGoogleCalendarStatus,
   inspectTaskCalendarInbound,
+  inspectTaskGoogleInbound,
   keepTaskCalendarLocalVersion,
   getPlanningAssistant,
   getPlanningConversation,
   getProjects,
   getTasks,
   retryTaskCalendarSync as retryTaskCalendarSyncRequest,
+  retryTaskGoogleSync as retryTaskGoogleSyncRequest,
+  startGoogleCalendarConnect,
   sendPlanningConversationTurn,
   transcribePlanningVoice,
   updatePlanningProposal,
@@ -52,6 +58,7 @@ import type {
   PlanningSummary,
   ProjectItem,
   TaskCalendarInboundState,
+  TaskGoogleInboundState,
   TaskItem,
   TaskType
 } from "../../types/api";
@@ -365,6 +372,11 @@ function taskTimelineMeta(task: TaskItem): string {
   return parts.join(" · ");
 }
 
+function recurringShortHint(rule: string | null | undefined): string | null {
+  const label = recurrenceLabel(rule);
+  return label ? `Повтор: ${label}` : null;
+}
+
 type DayTimelineEntry =
   | { kind: "block"; sortTime: number; block: CalendarBlockItem; tasks: TaskItem[] }
   | { kind: "task"; sortTime: number; task: TaskItem };
@@ -476,6 +488,15 @@ type TodayPageProps = {
   surface?: "day" | "week";
 };
 
+function oauthReasonLabel(reason: string | null): string {
+  if (!reason) return "Google успішно підключено.";
+  if (reason === "invalid_or_expired_state") return "Спроба підключення застаріла. Запусти її ще раз.";
+  if (reason === "missing_code_or_state") return "Google не повернув потрібні дані для підключення.";
+  if (reason === "google_oauth_callback_failed") return "Не вдалося завершити підключення Google.";
+  if (reason.startsWith("oauth_")) return "Google повернув помилку під час підключення.";
+  return "Підключення Google не вдалося.";
+}
+
 export function TodayPage({ surface = "day" }: TodayPageProps) {
   const [items, setItems] = useState<TaskItem[]>([]);
   const [projects, setProjects] = useState<ProjectItem[]>([]);
@@ -506,10 +527,21 @@ export function TodayPage({ surface = "day" }: TodayPageProps) {
   const [workingTaskId, setWorkingTaskId] = useState<string | null>(null);
   const [calendarNotice, setCalendarNotice] = useState<CalendarNotice | null>(null);
   const [calendarInboundState, setCalendarInboundState] = useState<TaskCalendarInboundState | null>(null);
+  const [googleTaskNotice, setGoogleTaskNotice] = useState<CalendarNotice | null>(null);
+  const [googleTaskInboundState, setGoogleTaskInboundState] = useState<TaskGoogleInboundState | null>(null);
+  const [pageNotice, setPageNotice] = useState<CalendarNotice | null>(null);
   const diagnostics = useDiagnostics();
   const navigate = useNavigate();
 
   const sessionToken = localStorage.getItem(SESSION_KEY) ?? "";
+  const connectHint = useMemo(() => {
+    const params = new URLSearchParams(window.location.search);
+    const marker = params.get("calendar_connect");
+    const reason = params.get("reason");
+    if (marker === "success") return { tone: "success" as const, message: "Google перепідключено. Оновлюю стан синхронізації..." };
+    if (marker === "error") return { tone: "error" as const, message: oauthReasonLabel(reason) };
+    return null;
+  }, []);
 
   async function loadToday() {
     if (!sessionToken) {
@@ -695,6 +727,32 @@ export function TodayPage({ surface = "day" }: TodayPageProps) {
   }, [sessionToken, selectedScopeDate]);
 
   useEffect(() => {
+    if (!connectHint) return;
+    if (connectHint.tone === "success" && sessionToken) {
+      void (async () => {
+        await loadToday();
+        try {
+          const status = await getGoogleCalendarStatus(sessionToken);
+          setPageNotice(
+            status.tasksScopeAvailable
+              ? { tone: "success", message: "Google перепідключено. Google Tasks уже доступні." }
+              : { tone: "info", message: "Google перепідключено, але Google Tasks досі недоступні для цього акаунта." }
+          );
+        } catch {
+          setPageNotice(connectHint);
+        }
+      })();
+    } else {
+      setPageNotice(connectHint);
+    }
+    const url = new URL(window.location.href);
+    url.searchParams.delete("calendar_connect");
+    url.searchParams.delete("reason");
+    window.history.replaceState({}, "", url.toString());
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [connectHint, sessionToken]);
+
+  useEffect(() => {
     if (!sessionToken || !activeTask || activeTask.calendar_sync_mode !== "app_managed" || !activeTask.calendar_event_id) {
       setCalendarInboundState(null);
       return;
@@ -714,6 +772,27 @@ export function TodayPage({ surface = "day" }: TodayPageProps) {
       cancelled = true;
     };
   }, [activeTask?.id, activeTask?.calendar_event_id, activeTask?.calendar_sync_mode, sessionToken]);
+
+  useEffect(() => {
+    if (!sessionToken || !activeTask || activeTask.google_task_sync_mode !== "app_managed" || !activeTask.google_task_id) {
+      setGoogleTaskInboundState(null);
+      return;
+    }
+
+    let cancelled = false;
+    void (async () => {
+      try {
+        const state = await inspectTaskGoogleInbound({ sessionToken, taskId: activeTask.id });
+        if (!cancelled) setGoogleTaskInboundState(state);
+      } catch {
+        if (!cancelled) setGoogleTaskInboundState(null);
+      }
+    })();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [activeTask?.id, activeTask?.google_task_id, activeTask?.google_task_sync_mode, sessionToken]);
 
   const scheduledToday = useMemo(() => {
     const relevant = items.filter((task) => {
@@ -1220,6 +1299,7 @@ export function TodayPage({ surface = "day" }: TodayPageProps) {
     scheduledFor: string | null;
     estimatedMinutes: number | null;
     planningFlexibility: TaskItem["planning_flexibility"];
+    recurrenceFrequency: "daily" | "weekly" | "monthly" | null;
   }): Promise<boolean> {
     if (!sessionToken) {
       setError("Спочатку авторизуйся в Інбоксі.");
@@ -1228,10 +1308,11 @@ export function TodayPage({ surface = "day" }: TodayPageProps) {
 
     setWorkingTaskId("today_create_task");
     setError(null);
+    setPageNotice(null);
     diagnostics.trackAction("create_task_from_today", { scopeDate: selectedScopeDate });
 
     try {
-      await createTask({
+      const created = await createTask({
         sessionToken,
         title: payload.title,
         details: payload.details,
@@ -1240,9 +1321,30 @@ export function TodayPage({ surface = "day" }: TodayPageProps) {
         dueAt: payload.dueAt,
         scheduledFor: payload.scheduledFor,
         estimatedMinutes: payload.estimatedMinutes,
-        planningFlexibility: payload.planningFlexibility
+        planningFlexibility: payload.planningFlexibility,
+        recurrenceFrequency: payload.recurrenceFrequency
       });
       await loadToday();
+
+      const scheduledForSelectedDay =
+        payload.scheduledFor && isScheduledForDay({ scheduled_for: payload.scheduledFor } as TaskItem, selectedDayStart, selectedDayEnd);
+
+      if (created.googleTaskSyncError) {
+        setPageNotice({
+          tone: "info",
+          message:
+            created.googleTaskSyncError === "google_tasks_scope_missing"
+              ? "Задачу створено в додатку, але Google Tasks ще недоступні для цього підключення. Перепідключи Google у вкладці «Календар»."
+              : created.googleTaskSyncError === "google_tasks_permission_denied"
+                ? "Задачу створено в додатку, але Google Tasks зараз не дає доступ. Перепідключи Google і перевір дозволи для Tasks."
+              : "Задачу створено в додатку, але синхронізація з Google Tasks зараз недоступна."
+        });
+      } else if (!scheduledForSelectedDay) {
+        setPageNotice({
+          tone: "info",
+          message: "Задачу створено в додатку. Вона не належить до цього дня, тому шукай її у вкладці «Задачі»."
+        });
+      }
       return true;
     } catch (saveError) {
       if (saveError instanceof ApiError) {
@@ -1301,6 +1403,7 @@ export function TodayPage({ surface = "day" }: TodayPageProps) {
     dueAt?: string | null;
     estimatedMinutes?: number | null;
     planningFlexibility?: TaskItem["planning_flexibility"];
+    recurrenceFrequency?: "daily" | "weekly" | "monthly" | null;
     title?: string;
     details?: string | null;
     projectId?: string | null;
@@ -1327,7 +1430,17 @@ export function TodayPage({ surface = "day" }: TodayPageProps) {
         scheduledFor: patch.scheduledFor !== undefined ? patch.scheduledFor : task.scheduled_for ?? null,
         estimatedMinutes: patch.estimatedMinutes !== undefined ? patch.estimatedMinutes : task.estimated_minutes ?? null,
         planningFlexibility:
-          patch.planningFlexibility !== undefined ? patch.planningFlexibility : task.planning_flexibility ?? null
+          patch.planningFlexibility !== undefined ? patch.planningFlexibility : task.planning_flexibility ?? null,
+        recurrenceFrequency:
+          patch.recurrenceFrequency !== undefined
+            ? patch.recurrenceFrequency
+            : task.recurrence_rule?.includes("FREQ=DAILY")
+              ? "daily"
+              : task.recurrence_rule?.includes("FREQ=WEEKLY")
+                ? "weekly"
+                : task.recurrence_rule?.includes("FREQ=MONTHLY")
+                  ? "monthly"
+                  : null
       });
       await loadToday();
       return true;
@@ -1351,7 +1464,13 @@ export function TodayPage({ surface = "day" }: TodayPageProps) {
   async function deleteCurrentTask() {
     if (!sessionToken || !activeTask) return;
 
-    const confirmed = window.confirm(`Видалити задачу "${activeTask.title}"?`);
+    const recurrenceWarning = activeTask.recurrence_rule ? " Це видалить лише цей повтор." : "";
+    const googleTaskWarning = activeTask.linked_google_task
+      ? activeTask.google_task_sync_mode === "app_managed"
+        ? " Зв'язану задачу в Google Tasks теж буде видалено."
+        : " Зв'язок з Google Tasks буде прибрано лише локально."
+      : "";
+    const confirmed = window.confirm(`Видалити задачу "${activeTask.title}"?${recurrenceWarning}${googleTaskWarning}`);
     if (!confirmed) return;
 
     setWorkingTaskId(activeTask.id);
@@ -1429,7 +1548,7 @@ export function TodayPage({ surface = "day" }: TodayPageProps) {
       }
 
       if (action === "cancel") {
-        const confirmed = window.confirm("Скасувати задачу?");
+        const confirmed = window.confirm(task.recurrence_rule ? "Скасувати лише цей повтор?" : "Скасувати задачу?");
         if (!confirmed) return;
         await updateTaskStatus({
           ...common,
@@ -1639,6 +1758,132 @@ export function TodayPage({ surface = "day" }: TodayPageProps) {
     }
   }
 
+  async function retryActiveTaskGoogleSync(task: TaskItem) {
+    if (!sessionToken) return;
+
+    setWorkingTaskId(task.id);
+    setError(null);
+    diagnostics.trackAction("retry_task_google_sync", { taskId: task.id, route: "/today" });
+
+    try {
+      await retryTaskGoogleSyncRequest({ sessionToken, taskId: task.id });
+      setGoogleTaskNotice({
+        tone: "success",
+        message: task.linked_google_task || task.google_task_id ? "Синхронізацію з Google Tasks оновлено." : "Задачу створено в Google Tasks."
+      });
+      await loadToday();
+    } catch (retryError) {
+      if (retryError instanceof ApiError) {
+        diagnostics.trackFailure({
+          path: retryError.path,
+          status: retryError.status,
+          code: retryError.code,
+          message: retryError.message,
+          details: retryError.details
+        });
+      }
+      setError(retryError instanceof Error ? retryError.message : "Не вдалося синхронізувати задачу з Google Tasks");
+    } finally {
+      setWorkingTaskId(null);
+    }
+  }
+
+  async function applyInboundGoogleTaskChange(task: TaskItem) {
+    if (!sessionToken) {
+      setError("Спочатку авторизуйся в Інбоксі.");
+      return;
+    }
+
+    setWorkingTaskId(task.id);
+    setError(null);
+    diagnostics.trackAction("apply_task_google_inbound", { taskId: task.id, route: "/today" });
+
+    try {
+      const state = await applyTaskGoogleInbound({ sessionToken, taskId: task.id });
+      setGoogleTaskNotice({
+        tone: "success",
+        message: state.message ?? "Зміни з Google Tasks застосовано."
+      });
+      await loadToday();
+    } catch (applyError) {
+      if (applyError instanceof ApiError) {
+        diagnostics.trackFailure({
+          path: applyError.path,
+          status: applyError.status,
+          code: applyError.code,
+          message: applyError.message,
+          details: applyError.details
+        });
+      }
+      setGoogleTaskNotice({ tone: "error", message: "Не вдалося застосувати зміни з Google Tasks." });
+      setError(applyError instanceof Error ? applyError.message : "Не вдалося застосувати зміни з Google Tasks.");
+    } finally {
+      setWorkingTaskId(null);
+    }
+  }
+
+  async function detachActiveTaskGoogleLink(task: TaskItem) {
+    if (!sessionToken) {
+      setError("Спочатку авторизуйся в Інбоксі.");
+      return;
+    }
+
+    setWorkingTaskId(task.id);
+    setError(null);
+    diagnostics.trackAction("detach_task_google_link", { taskId: task.id, route: "/today" });
+
+    try {
+      await detachTaskGoogleLinkRequest({ sessionToken, taskId: task.id });
+      setGoogleTaskNotice({
+        tone: "success",
+        message: task.google_task_sync_mode === "app_managed" ? "Зв'язок із Google Tasks прибрано." : "Google Tasks від'єднано від задачі."
+      });
+      await loadToday();
+    } catch (detachError) {
+      if (detachError instanceof ApiError) {
+        diagnostics.trackFailure({
+          path: detachError.path,
+          status: detachError.status,
+          code: detachError.code,
+          message: detachError.message,
+          details: detachError.details
+        });
+      }
+      setGoogleTaskNotice({ tone: "error", message: "Не вдалося від'єднати Google Tasks." });
+      setError(detachError instanceof Error ? detachError.message : "Не вдалося від'єднати Google Tasks.");
+    } finally {
+      setWorkingTaskId(null);
+    }
+  }
+
+  async function reconnectGoogleForTasks() {
+    if (!sessionToken) {
+      setError("Спочатку авторизуйся в Інбоксі.");
+      return;
+    }
+
+    try {
+      const returnPath = surface === "week" ? "/week" : "/today";
+      const result = await startGoogleCalendarConnect({ sessionToken, returnPath });
+      if (window.Telegram?.WebApp?.openLink) {
+        window.Telegram.WebApp.openLink(result.authUrl);
+        return;
+      }
+      window.open(result.authUrl, "_blank", "noopener,noreferrer");
+    } catch (connectError) {
+      if (connectError instanceof ApiError) {
+        diagnostics.trackFailure({
+          path: connectError.path,
+          status: connectError.status,
+          code: connectError.code,
+          message: connectError.message,
+          details: connectError.details
+        });
+      }
+      setError(connectError instanceof Error ? connectError.message : "Не вдалося почати перепідключення Google.");
+    }
+  }
+
   async function saveCalendarBlock(input: {
     title: string;
     description: string;
@@ -1646,6 +1891,7 @@ export function TodayPage({ surface = "day" }: TodayPageProps) {
     endAt: string | null;
     timezone: string;
     projectId: string | null;
+    recurrenceFrequency: "daily" | "weekly" | "monthly" | null;
   }) {
     if (!sessionToken || !input.endAt) {
       setError("Спочатку авторизуйся в Інбоксі.");
@@ -1668,7 +1914,8 @@ export function TodayPage({ surface = "day" }: TodayPageProps) {
         startAt: input.startAt,
         endAt: input.endAt,
         timezone: input.timezone,
-        projectId: input.projectId
+        projectId: input.projectId,
+        recurrenceFrequency: input.recurrenceFrequency
       });
       setCalendarBlockCreateOpen(false);
       setCalendarBlockModalMode("view");
@@ -1696,7 +1943,7 @@ export function TodayPage({ surface = "day" }: TodayPageProps) {
       return;
     }
 
-    const confirmed = window.confirm("Видалити цей блок із календаря?");
+    const confirmed = window.confirm(activeCalendarBlock?.recurrence_rule ? "Видалити лише цей повтор із календаря?" : "Видалити цей блок із календаря?");
     if (!confirmed) return;
 
     setCalendarBlockBusy(true);
@@ -2038,6 +2285,7 @@ export function TodayPage({ surface = "day" }: TodayPageProps) {
             disabled={isBusy}
           >
             {task.title}
+            {task.recurrence_rule ? <span className="recurrence-badge recurrence-badge--timeline">{recurrenceLabel(task.recurrence_rule)}</span> : null}
           </button>
           <p className={`day-timeline__meta day-timeline__meta--tight${compact ? " day-timeline__meta--compact-time" : ""}`}>
             {start ? formatTaskTimelineRange(task) : formatTaskTimingSummary(task)}
@@ -2120,10 +2368,12 @@ export function TodayPage({ surface = "day" }: TodayPageProps) {
                             disabled={calendarBlockBusy}
                           >
                             {entry.block.title}
+                            {entry.block.recurrence_rule ? <span className="recurrence-badge recurrence-badge--timeline">{recurrenceLabel(entry.block.recurrence_rule)}</span> : null}
                           </button>
                           <p className="day-timeline__meta day-timeline__meta--tight">
                             {formatBlockTimelineRange(entry.block)}
                           </p>
+                          {entry.block.recurrence_rule ? <p className="day-timeline__meta day-timeline__meta--subtle">Зараз редагується лише цей повтор.</p> : null}
                         </div>
                       </div>
                     </div>
@@ -2212,6 +2462,7 @@ export function TodayPage({ surface = "day" }: TodayPageProps) {
               <li className="inbox-item" key={task.id}>
                 <p className="inbox-main-text">
                   {task.title}
+                  {task.recurrence_rule ? <span className="recurrence-badge">{recurrenceLabel(task.recurrence_rule)}</span> : null}
                   {task.planning_flexibility ? (
                     <span className={`planning-badge planning-badge--${task.planning_flexibility}`}>
                       {planningFlexibilityLabel(task.planning_flexibility)}
@@ -2222,6 +2473,7 @@ export function TodayPage({ surface = "day" }: TodayPageProps) {
                 <p className="inbox-meta">
                   {projectName(task)} · {taskTypeLabel(task.task_type)} · {task.status === "blocked" ? "Заблоковано" : task.status === "in_progress" ? "В роботі" : "Заплановано"}
                 </p>
+                {recurringShortHint(task.recurrence_rule) ? <p className="inbox-meta">{recurringShortHint(task.recurrence_rule)} · Дії стосуються лише цього повтору.</p> : null}
                 <p className="inbox-meta">{formatTaskTimingSummary(task)}</p>
                 {calendarLinkHint(task) ? <p className="inbox-meta">{calendarLinkHint(task)}</p> : null}
                 {renderActions(task, actionMode)}
@@ -2306,6 +2558,7 @@ export function TodayPage({ surface = "day" }: TodayPageProps) {
       ) : null}
 
       {!sessionToken ? <p className="empty-note">Відкрий Інбокс для авторизації сесії.</p> : null}
+      {pageNotice ? <p className={pageNotice.tone === "error" ? "error-note" : "inbox-meta"}>{pageNotice.message}</p> : null}
       {error ? (
         <p className="error-note">
           {error}{" "}
@@ -2533,9 +2786,13 @@ export function TodayPage({ surface = "day" }: TodayPageProps) {
               <ul className="inbox-list">
                 {weekCalendarBlocks.slice(0, 8).map((block) => (
                   <li className="inbox-item block-row" key={block.id}>
-                    <p className="inbox-main-text">{block.title}</p>
+                    <p className="inbox-main-text">
+                      {block.title}
+                      {block.recurrence_rule ? <span className="recurrence-badge">{recurrenceLabel(block.recurrence_rule)}</span> : null}
+                    </p>
                     <p className="inbox-meta">{formatCalendarEventTimeRange(block)}</p>
                     <p className="inbox-meta block-row__meta">{block.source === "google" ? "Подія з Google Calendar" : "Блок із додатку"} · Проєкт: {projectNameForCalendarBlock(block)}</p>
+                    {block.recurrence_rule ? <p className="inbox-meta">Зараз відкривається лише цей повтор.</p> : null}
                     <div className="inbox-actions">
                       <button type="button" className="ghost" onClick={() => openCalendarBlock(block)} disabled={calendarBlockBusy}>
                         Відкрити
@@ -2717,6 +2974,8 @@ export function TodayPage({ surface = "day" }: TodayPageProps) {
         startHint={activeCalendarBlock?.start_at ?? new Date().toISOString()}
         endHint={activeCalendarBlock?.end_at ?? new Date(Date.now() + 60 * 60 * 1000).toISOString()}
         projectIdHint={activeCalendarBlock?.project_id ?? null}
+        recurrenceRuleHint={activeCalendarBlock?.recurrence_rule ?? null}
+        recurrenceTimezoneHint={activeCalendarBlock?.recurrence_timezone ?? null}
         projectOptions={projects}
         heading={activeCalendarBlock ? "Деталі блоку" : "Новий блок"}
         subtitle={
@@ -2752,6 +3011,8 @@ export function TodayPage({ surface = "day" }: TodayPageProps) {
         busy={workingTaskId !== null}
         calendarSyncNotice={activeTask ? calendarNotice : null}
         calendarInboundState={activeTask ? calendarInboundState : null}
+        googleTaskSyncNotice={activeTask ? googleTaskNotice : null}
+        googleTaskInboundState={activeTask ? googleTaskInboundState : null}
         initialMode={taskModalMode === "create" ? "create" : taskModalMode}
         createDefaults={todayTaskCreateDefaults}
         onClose={() => {
@@ -2769,7 +3030,8 @@ export function TodayPage({ surface = "day" }: TodayPageProps) {
                 dueAt: payload.dueAt,
                 scheduledFor: payload.scheduledFor,
                 estimatedMinutes: payload.estimatedMinutes,
-                planningFlexibility: payload.planningFlexibility
+                planningFlexibility: payload.planningFlexibility,
+                recurrenceFrequency: payload.recurrenceFrequency
               });
               if (created) {
                 setActiveTask(null);
@@ -2787,7 +3049,8 @@ export function TodayPage({ surface = "day" }: TodayPageProps) {
               dueAt: payload.dueAt,
               scheduledFor: payload.scheduledFor,
               estimatedMinutes: payload.estimatedMinutes,
-              planningFlexibility: payload.planningFlexibility
+              planningFlexibility: payload.planningFlexibility,
+              recurrenceFrequency: payload.recurrenceFrequency
             });
             if (saved) { setActiveTask(null); setTaskModalMode("view"); }
           })();
@@ -2818,6 +3081,21 @@ export function TodayPage({ surface = "day" }: TodayPageProps) {
         onApplyCalendarInbound={() => {
           if (!activeTask) return;
           void applyInboundCalendarChange(activeTask);
+        }}
+        onRetryGoogleTaskSync={() => {
+          if (!activeTask) return;
+          void retryActiveTaskGoogleSync(activeTask);
+        }}
+        onDetachGoogleTaskLink={() => {
+          if (!activeTask) return;
+          void detachActiveTaskGoogleLink(activeTask);
+        }}
+        onApplyGoogleTaskInbound={() => {
+          if (!activeTask) return;
+          void applyInboundGoogleTaskChange(activeTask);
+        }}
+        onReconnectGoogle={() => {
+          void reconnectGoogleForTasks();
         }}
         onKeepCalendarAppVersion={() => {
           if (!activeTask) return;

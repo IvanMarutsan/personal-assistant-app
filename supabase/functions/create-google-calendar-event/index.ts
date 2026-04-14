@@ -101,7 +101,8 @@ Deno.serve(async (req) => {
     }
 
     const auth = await getGoogleAccessTokenForUser(sessionUser.userId);
-    const apiUrl = `https://www.googleapis.com/calendar/v3/calendars/${encodeURIComponent(auth.calendarId)}/events`;
+    const targetCalendarId = auth.defaultCalendarId;
+    const apiUrl = `https://www.googleapis.com/calendar/v3/calendars/${encodeURIComponent(targetCalendarId)}/events`;
 
     const response = await fetch(apiUrl, {
       method: "POST",
@@ -132,6 +133,7 @@ Deno.serve(async (req) => {
     const { error: linkError } = await supabase.from("calendar_event_links").insert({
       user_id: sessionUser.userId,
       provider: "google",
+      provider_calendar_id: targetCalendarId,
       provider_event_id: payload.id,
       inbox_item_id: body?.sourceInboxItemId ?? null,
       task_id: body?.sourceTaskId ?? null,
@@ -152,6 +154,7 @@ Deno.serve(async (req) => {
         .from("tasks")
         .update({
           calendar_provider: "google",
+          calendar_provider_calendar_id: targetCalendarId,
           calendar_event_id: payload.id,
           calendar_sync_mode: "manual",
           calendar_sync_error: null

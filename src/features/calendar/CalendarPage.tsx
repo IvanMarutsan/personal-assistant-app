@@ -1,16 +1,19 @@
 ﻿import { useEffect, useMemo, useState } from "react";
 import { CalendarEventModal } from "../../components/CalendarEventModal";
 import { useDiagnostics } from "../../lib/diagnostics";
+import { recurrenceLabel } from "../../lib/recurrence";
 import {
   ApiError,
   deleteCalendarBlock,
   getCalendarBlocks,
+  getGoogleIntegrationPreferences,
   getGoogleCalendarStatus,
   getProjects,
   startGoogleCalendarConnect,
+  updateGoogleIntegrationPreferences,
   upsertCalendarBlock
 } from "../../lib/api";
-import type { CalendarBlockItem, GoogleCalendarStatus, ProjectItem } from "../../types/api";
+import type { CalendarBlockItem, GoogleCalendarStatus, GoogleIntegrationPreferences, ProjectItem } from "../../types/api";
 
 const SESSION_KEY = "personal_assistant_app_session_token";
 
@@ -40,6 +43,18 @@ function blockProjectName(block: CalendarBlockItem): string {
 
 function sourceLabel(block: CalendarBlockItem): string {
   return block.source === "app" ? "Створено в додатку" : "Подія з Google Calendar";
+}
+
+function calendarDisplayName(preferences: GoogleIntegrationPreferences | null, calendarId: string | null | undefined): string {
+  if (!calendarId) return "primary";
+  const match = preferences?.calendars.find((item) => item.id === calendarId);
+  return match?.summary ?? calendarId;
+}
+
+function taskListDisplayName(preferences: GoogleIntegrationPreferences | null, listId: string | null | undefined): string {
+  if (!listId || listId === "@default") return "Основний список";
+  const match = preferences?.taskLists.find((item) => item.id === listId);
+  return match?.title ?? listId;
 }
 
 function mapCalendarError(error: unknown, fallback: string): string {
@@ -72,6 +87,7 @@ export function CalendarPage() {
   const [status, setStatus] = useState<GoogleCalendarStatus | null>(null);
   const [blocks, setBlocks] = useState<CalendarBlockItem[]>([]);
   const [projects, setProjects] = useState<ProjectItem[]>([]);
+  const [integrationPreferences, setIntegrationPreferences] = useState<GoogleIntegrationPreferences | null>(null);
   const [activeBlock, setActiveBlock] = useState<CalendarBlockItem | null>(null);
   const [blockEditorOpen, setBlockEditorOpen] = useState(false);
   const [loading, setLoading] = useState(false);
@@ -79,6 +95,7 @@ export function CalendarPage() {
   const [blockBusy, setBlockBusy] = useState(false);
   const [authUrl, setAuthUrl] = useState<string | null>(null);
   const [authUrlCopied, setAuthUrlCopied] = useState(false);
+  const [preferencesBusy, setPreferencesBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [blockError, setBlockError] = useState<string | null>(null);
 
@@ -109,6 +126,12 @@ export function CalendarPage() {
       ]);
       setStatus(calendarStatus);
       setProjects(projectItems);
+      if (calendarStatus.connected) {
+        const prefs = await getGoogleIntegrationPreferences(sessionToken);
+        setIntegrationPreferences(prefs);
+      } else {
+        setIntegrationPreferences(null);
+      }
       if (!calendarStatus.connected) {
         setBlocks([]);
       } else {
@@ -178,6 +201,48 @@ export function CalendarPage() {
     }
   }
 
+  async function saveIntegrationPreferences(next: {
+    selectedCalendarIds: string[];
+    defaultCalendarId: string | null;
+    defaultTaskListId?: string | null;
+  }) {
+    if (!sessionToken) return;
+    setPreferencesBusy(true);
+    setError(null);
+    try {
+      const updated = await updateGoogleIntegrationPreferences({
+        sessionToken,
+        selectedCalendarIds: next.selectedCalendarIds,
+        defaultCalendarId: next.defaultCalendarId,
+        defaultTaskListId: next.defaultTaskListId ?? null
+      });
+      setIntegrationPreferences((current) =>
+        current
+          ? {
+              ...current,
+              selectedCalendarIds: updated.selectedCalendarIds,
+              defaultCalendarId: updated.defaultCalendarId,
+              defaultTaskListId: updated.defaultTaskListId,
+              calendars: current.calendars.map((item) => ({
+                ...item,
+                selected: updated.selectedCalendarIds.includes(item.id),
+                default: updated.defaultCalendarId === item.id
+              })),
+              taskLists: current.taskLists.map((item) => ({
+                ...item,
+                isDefault: updated.defaultTaskListId === item.id
+              }))
+            }
+          : current
+      );
+      await loadCalendarData();
+    } catch (preferencesError) {
+      setError(mapCalendarError(preferencesError, "Не вдалося зберегти налаштування календарів."));
+    } finally {
+      setPreferencesBusy(false);
+    }
+  }
+
   function openAuthInBrowser() {
     if (!authUrl) return;
     diagnostics.trackAction("open_google_connect_external", { route: "/calendar" });
@@ -203,7 +268,15 @@ export function CalendarPage() {
     }
   }
 
-  async function saveBlock(input: { title: string; description: string; startAt: string; endAt: string | null; timezone: string; projectId: string | null }) {
+  async function saveBlock(input: {
+    title: string;
+    description: string;
+    startAt: string;
+    endAt: string | null;
+    timezone: string;
+    projectId: string | null;
+    recurrenceFrequency: "daily" | "weekly" | "monthly" | null;
+  }) {
     if (!sessionToken || !input.endAt) return;
     setBlockBusy(true);
     setBlockError(null);
@@ -216,7 +289,8 @@ export function CalendarPage() {
         startAt: input.startAt,
         endAt: input.endAt,
         timezone: input.timezone,
-        projectId: input.projectId
+        projectId: input.projectId,
+        recurrenceFrequency: input.recurrenceFrequency
       });
       setBlockEditorOpen(false);
       setActiveBlock(null);
@@ -230,7 +304,7 @@ export function CalendarPage() {
 
   async function removeBlock() {
     if (!sessionToken || !activeBlock) return;
-    const confirmed = window.confirm("Видалити цей блок із календаря?");
+    const confirmed = window.confirm(activeBlock?.recurrence_rule ? "Видалити лише цей повтор із календаря?" : "Видалити цей блок із календаря?");
     if (!confirmed) return;
     setBlockBusy(true);
     setBlockError(null);
@@ -296,12 +370,104 @@ export function CalendarPage() {
           <>
             <p className="inbox-meta">Підключено: так</p>
             <p className="inbox-meta">Акаунт: {status.email ?? "невідомо"}</p>
-            <p className="inbox-meta">Календар: {status.calendarId ?? "primary"}</p>
+            <p className="inbox-meta">Календар за замовчуванням: {calendarDisplayName(integrationPreferences, status.defaultCalendarId ?? status.calendarId)}</p>
+            <p className="inbox-meta">Видимі календарі: {integrationPreferences?.selectedCalendarIds.length ?? status.selectedCalendarIds.length}</p>
+            <p className="inbox-meta">Google Tasks за замовчуванням: {taskListDisplayName(integrationPreferences, status.defaultTaskListId)}</p>
           </>
         ) : (
           <p className="empty-note">Google Calendar не підключено.</p>
         )}
       </section>
+
+      {status?.connected && integrationPreferences ? (
+        <section className="project-group">
+          <h3>Що бачити й куди створювати</h3>
+          <p className="inbox-meta">Познач, які Google Calendar треба читати в додатку, і вибери календар за замовчуванням для нових блоків.</p>
+          <div className="inbox-list">
+            {integrationPreferences.calendars.map((calendar) => (
+              <label key={calendar.id} className="inbox-item">
+                <div className="toolbar-row">
+                  <input
+                    type="checkbox"
+                    checked={integrationPreferences.selectedCalendarIds.includes(calendar.id)}
+                    disabled={
+                      preferencesBusy ||
+                      (integrationPreferences.selectedCalendarIds.length === 1 &&
+                        integrationPreferences.selectedCalendarIds.includes(calendar.id))
+                    }
+                    onChange={(event) => {
+                      const nextSelected = event.target.checked
+                        ? Array.from(new Set([...integrationPreferences.selectedCalendarIds, calendar.id]))
+                        : integrationPreferences.selectedCalendarIds.filter((id) => id !== calendar.id);
+                      const nextDefault = nextSelected.includes(integrationPreferences.defaultCalendarId ?? "")
+                        ? integrationPreferences.defaultCalendarId
+                        : nextSelected[0] ?? null;
+                      void saveIntegrationPreferences({
+                        selectedCalendarIds: nextSelected,
+                        defaultCalendarId: nextDefault,
+                        defaultTaskListId: integrationPreferences.defaultTaskListId
+                      });
+                    }}
+                  />
+                  <div>
+                    <p className="inbox-main-text">{calendar.summary}</p>
+                    <p className="inbox-meta">
+                      {calendar.primary ? "Основний календар" : "Додатковий календар"}
+                      {calendar.default ? " · за замовчуванням" : ""}
+                    </p>
+                  </div>
+                </div>
+              </label>
+            ))}
+          </div>
+          <label>
+            Календар за замовчуванням для нових блоків
+            <select
+              value={integrationPreferences.defaultCalendarId ?? ""}
+              disabled={preferencesBusy || integrationPreferences.selectedCalendarIds.length === 0}
+              onChange={(event) => {
+                void saveIntegrationPreferences({
+                  selectedCalendarIds: integrationPreferences.selectedCalendarIds,
+                  defaultCalendarId: event.target.value || null,
+                  defaultTaskListId: integrationPreferences.defaultTaskListId
+                });
+              }}
+            >
+              {integrationPreferences.calendars
+                .filter((calendar) => integrationPreferences.selectedCalendarIds.includes(calendar.id))
+                .map((calendar) => (
+                  <option key={calendar.id} value={calendar.id}>
+                    {calendar.summary}
+                  </option>
+                ))}
+            </select>
+          </label>
+          {integrationPreferences.tasksScopeAvailable && integrationPreferences.taskLists.length > 0 ? (
+            <label>
+              Список Google Tasks за замовчуванням
+              <select
+                value={integrationPreferences.defaultTaskListId ?? "@default"}
+                disabled={preferencesBusy}
+                onChange={(event) => {
+                  void saveIntegrationPreferences({
+                    selectedCalendarIds: integrationPreferences.selectedCalendarIds,
+                    defaultCalendarId: integrationPreferences.defaultCalendarId,
+                    defaultTaskListId: event.target.value || "@default"
+                  });
+                }}
+              >
+                {integrationPreferences.taskLists.map((taskList) => (
+                  <option key={taskList.id} value={taskList.id}>
+                    {taskList.title}
+                  </option>
+                ))}
+              </select>
+            </label>
+          ) : (
+            <p className="inbox-meta">Google Tasks поки що використовує основний список за замовчуванням.</p>
+          )}
+        </section>
+      ) : null}
 
       <section className="project-group">
         <h3>Найближчі блоки та події</h3>
@@ -313,9 +479,13 @@ export function CalendarPage() {
           <ul className="inbox-list">
             {blocks.map((block) => (
               <li className="inbox-item block-row" key={block.id}>
-                <p className="inbox-main-text">{block.title}</p>
+                <p className="inbox-main-text">
+                  {block.title}
+                  {block.recurrence_rule ? <span className="recurrence-badge">{recurrenceLabel(block.recurrence_rule)}</span> : null}
+                </p>
                 <p className="inbox-meta">{formatBlockRange(block)}</p>
-                <p className="inbox-meta block-row__meta">{sourceLabel(block)} · Проєкт: {blockProjectName(block)}</p>
+                <p className="inbox-meta block-row__meta">{sourceLabel(block)} · Календар: {calendarDisplayName(integrationPreferences, block.provider_calendar_id)} · Проєкт: {blockProjectName(block)}</p>
+                {block.recurrence_rule ? <p className="inbox-meta">Зараз відкривається лише цей повтор, не вся серія.</p> : null}
                 {block.details ? <p className="inbox-meta">{block.details}</p> : null}
                 <div className="inbox-actions">
                   <button
@@ -357,6 +527,8 @@ export function CalendarPage() {
         startHint={activeBlock?.start_at ?? new Date().toISOString()}
         endHint={activeBlock?.end_at ?? new Date(Date.now() + 60 * 60 * 1000).toISOString()}
         projectIdHint={activeBlock?.project_id ?? null}
+        recurrenceRuleHint={activeBlock?.recurrence_rule ?? null}
+        recurrenceTimezoneHint={activeBlock?.recurrence_timezone ?? null}
         projectOptions={projects}
         heading={activeBlock ? "Редагування блоку" : "Новий блок"}
         subtitle={

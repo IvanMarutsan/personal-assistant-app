@@ -1,5 +1,6 @@
 ﻿import { useEffect, useMemo, useRef, useState } from "react";
-import type { ProjectItem } from "../types/api";
+import type { ProjectItem, RecurrenceFrequency } from "../types/api";
+import { RECURRENCE_OPTIONS, parseRecurrenceFrequency, recurrenceLabel } from "../lib/recurrence";
 
 type CalendarEventModalMode = "view" | "edit" | "create";
 
@@ -16,6 +17,8 @@ type CalendarEventModalProps = {
   confirmLabel?: string;
   deleteLabel?: string;
   projectIdHint?: string | null;
+  recurrenceRuleHint?: string | null;
+  recurrenceTimezoneHint?: string | null;
   projectOptions?: ProjectItem[];
   readOnlyReason?: string | null;
   initialMode?: CalendarEventModalMode;
@@ -28,6 +31,7 @@ type CalendarEventModalProps = {
     endAt: string | null;
     timezone: string;
     projectId: string | null;
+    recurrenceFrequency: RecurrenceFrequency | null;
   }) => void;
 };
 
@@ -56,6 +60,7 @@ export function CalendarEventModal(props: CalendarEventModalProps) {
   const [endAtInput, setEndAtInput] = useState("");
   const [timezone, setTimezone] = useState("UTC");
   const [projectId, setProjectId] = useState("");
+  const [recurrenceFrequency, setRecurrenceFrequency] = useState<RecurrenceFrequency | null>(null);
   const [editMode, setEditMode] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
@@ -70,10 +75,11 @@ export function CalendarEventModal(props: CalendarEventModalProps) {
     setStartAtInput(toLocalInput(props.startHint));
     setEndAtInput(toLocalInput(props.endHint));
     setProjectId(props.projectIdHint ?? "");
-    setTimezone(Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC");
+    setTimezone(props.recurrenceTimezoneHint ?? (Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC"));
+    setRecurrenceFrequency(parseRecurrenceFrequency(props.recurrenceRuleHint));
     setEditMode(initialMode !== "view");
     setError(null);
-  }, [props.open, props.titleHint, props.detailsHint, props.startHint, props.endHint, props.projectIdHint, initialMode]);
+  }, [props.open, props.titleHint, props.detailsHint, props.startHint, props.endHint, props.projectIdHint, props.recurrenceTimezoneHint, props.recurrenceRuleHint, initialMode]);
 
   useEffect(() => {
     if (!props.open) return;
@@ -122,7 +128,8 @@ export function CalendarEventModal(props: CalendarEventModalProps) {
       startAt,
       endAt,
       timezone: timezone.trim() || "UTC",
-      projectId: projectId || null
+      projectId: projectId || null,
+      recurrenceFrequency
     });
   }
 
@@ -168,6 +175,22 @@ export function CalendarEventModal(props: CalendarEventModalProps) {
             Таймзона
             <input value={timezone} onChange={(event) => setTimezone(event.target.value)} disabled={props.busy || isReadOnly} />
           </label>
+          <label>
+            Повторення
+            <select
+              value={recurrenceFrequency ?? ""}
+              onChange={(event) => setRecurrenceFrequency((event.target.value || null) as RecurrenceFrequency | null)}
+              disabled={props.busy || isReadOnly}
+            >
+              {RECURRENCE_OPTIONS.map((option) => (
+                <option key={option.value || "empty"} value={option.value}>
+                  {option.label}
+                </option>
+              ))}
+            </select>
+            {!editMode && props.recurrenceRuleHint ? <p className="modal-readonly-note">Повторення: {recurrenceLabel(props.recurrenceRuleHint)}</p> : null}
+          </label>
+          {props.recurrenceRuleHint ? <p className="modal-readonly-note">У цьому V1 редагування й видалення стосуються лише цього повтору, а не всієї серії.</p> : null}
           {props.readOnlyReason ? <p className="modal-readonly-note">{props.readOnlyReason}</p> : null}
           {!props.readOnlyReason && !editMode && !isCreateMode ? <p className="modal-readonly-note">Спершу переглянь блок, а потім за потреби переходь до редагування.</p> : null}
           {props.errorMessage ? <p className="error-note">{props.errorMessage}</p> : null}

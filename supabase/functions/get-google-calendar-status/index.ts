@@ -1,4 +1,9 @@
-import { getGoogleConnection } from "../_shared/google-calendar.ts";
+import {
+  calendarSelectionState,
+  getGoogleConnection,
+  hasGoogleTasksScope,
+  listGoogleTaskLists
+} from "../_shared/google-calendar.ts";
 import { handleOptions, jsonResponse } from "../_shared/http.ts";
 import { resolveSessionUser } from "../_shared/session.ts";
 
@@ -17,12 +22,30 @@ Deno.serve(async (req) => {
 
   try {
     const connection = await getGoogleConnection(sessionUser.userId);
+    const selection = calendarSelectionState(connection);
+    let tasksScopeAvailable = false;
+
+    if (connection && hasGoogleTasksScope(connection.scope)) {
+      try {
+        await listGoogleTaskLists(sessionUser.userId);
+        tasksScopeAvailable = true;
+      } catch (tasksError) {
+        const tasksMessage = tasksError instanceof Error ? tasksError.message : "google_task_lists_fetch_failed";
+        console.warn("[get-google-calendar-status] tasks scope unavailable", { tasksMessage });
+        tasksScopeAvailable = false;
+      }
+    }
+
     return jsonResponse({
       ok: true,
       connected: Boolean(connection),
       provider: "google",
       email: connection?.google_email ?? null,
-      calendarId: connection?.calendar_id ?? null,
+      calendarId: selection.defaultCalendarId ?? null,
+      selectedCalendarIds: connection ? selection.selectedCalendarIds : [],
+      defaultCalendarId: connection ? selection.defaultCalendarId : null,
+      defaultTaskListId: connection ? selection.defaultTaskListId : null,
+      tasksScopeAvailable,
       expiresAt: connection?.expires_at ?? null
     });
   } catch (error) {

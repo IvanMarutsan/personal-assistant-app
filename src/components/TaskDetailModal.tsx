@@ -1,7 +1,8 @@
 ﻿import { useEffect, useMemo, useRef, useState } from "react";
 import type { MouseEvent } from "react";
-import type { PlanningFlexibility, ProjectItem, TaskCalendarInboundState, TaskItem, TaskStatus, TaskType } from "../types/api";
+import type { PlanningFlexibility, ProjectItem, RecurrenceFrequency, TaskCalendarInboundState, TaskGoogleInboundState, TaskItem, TaskStatus, TaskType } from "../types/api";
 import { moveReasonLabel } from "../lib/reasons";
+import { RECURRENCE_OPTIONS, parseRecurrenceFrequency, recurrenceLabel } from "../lib/recurrence";
 import { buildTaskTypeOptions, taskTypeLabel } from "../lib/taskTypes";
 
 type TaskActionKind = "done" | "reschedule" | "block" | "unblock" | "cancel";
@@ -22,6 +23,7 @@ type TaskDetailModalProps = {
     scheduledFor?: string | null;
     estimatedMinutes?: number | null;
     planningFlexibility?: PlanningFlexibility | null;
+    recurrenceFrequency?: RecurrenceFrequency | null;
   };
   onSave: (payload: {
     taskId?: string;
@@ -33,6 +35,7 @@ type TaskDetailModalProps = {
     scheduledFor: string | null;
     estimatedMinutes: number | null;
     planningFlexibility: PlanningFlexibility | null;
+    recurrenceFrequency: RecurrenceFrequency | null;
   }) => void;
   onDelete?: () => void;
   onAction: (action: TaskActionKind) => void;
@@ -44,6 +47,12 @@ type TaskDetailModalProps = {
   onKeepCalendarAppVersion?: () => void;
   calendarSyncNotice?: { tone: "success" | "error" | "info"; message: string } | null;
   calendarInboundState?: TaskCalendarInboundState | null;
+  onRetryGoogleTaskSync?: () => void;
+  onDetachGoogleTaskLink?: () => void;
+  onApplyGoogleTaskInbound?: () => void;
+  onReconnectGoogle?: () => void;
+  googleTaskSyncNotice?: { tone: "success" | "error" | "info"; message: string } | null;
+  googleTaskInboundState?: TaskGoogleInboundState | null;
   initialMode?: TaskModalMode;
   showWorkflowActions?: boolean;
 };
@@ -180,6 +189,73 @@ function calendarInboundMessage(state: TaskCalendarInboundState | null | undefin
   if (!state || state.status === "healthy" || state.status === "manual" || state.status === "not_linked") return null;
   return state.message;
 }
+
+function canRetryGoogleTaskSync(task: TaskItem): boolean {
+  if (task.google_task_sync_mode === "manual") return false;
+  if (task.status === "cancelled") return false;
+  return Boolean(task.google_task_id || task.google_task_sync_error || !task.linked_google_task);
+}
+
+function googleTaskSyncStateSummary(task: TaskItem): string | null {
+  if (task.google_task_sync_error === "google_tasks_scope_missing") return "Для Google Tasks потрібне повторне підключення Google.";
+  if (task.google_task_sync_error === "google_tasks_not_connected") return "Google акаунт ще не підключено для Tasks.";
+  if (task.google_task_sync_error === "google_tasks_auth_expired") return "Доступ до Google Tasks завершився.";
+  if (task.google_task_sync_error) return "Зв'язок із Google Tasks потребує уваги.";
+  if (task.google_task_sync_mode === "app_managed" && task.linked_google_task) return "Синхронізовано з Google Tasks.";
+  if (task.google_task_sync_mode === "manual" && task.linked_google_task) return "Задачу прив'язано вручну до Google Tasks.";
+  return "Зв'язку з Google Tasks зараз немає.";
+}
+
+function googleTaskSyncActionHint(task: TaskItem): string | null {
+  if (task.google_task_sync_error === "google_tasks_scope_missing") {
+    return "Поточне підключення Google було створене без дозволу на Tasks. Перепідключи акаунт один раз.";
+  }
+  if (task.google_task_sync_error === "google_tasks_not_connected" || task.google_task_sync_error === "google_tasks_auth_expired") {
+    return "Потрібно перепідключити Google акаунт, щоб задачі знову синхронізувались.";
+  }
+  if (task.google_task_sync_error) return "Можна пересинхронізувати, застосувати зміни з Google Tasks або від'єднати зв'язок.";
+  if (task.google_task_sync_mode === "app_managed" && task.linked_google_task) return "Оновлення задачі синхронізуються в Google Tasks.";
+  if (task.google_task_sync_mode === "manual" && task.linked_google_task) return "Ручний зв'язок можна лише від'єднати в додатку.";
+  return "За потреби можна створити зв'язану задачу в Google Tasks.";
+}
+
+function needsGoogleReconnect(task: TaskItem): boolean {
+  return ["google_tasks_scope_missing", "google_tasks_not_connected", "google_tasks_auth_expired"].includes(
+    task.google_task_sync_error ?? ""
+  );
+}
+
+function retryGoogleTaskLabel(task: TaskItem): string {
+  if (task.linked_google_task || task.google_task_id) return "Пересинхронізувати Google Tasks";
+  return "Створити в Google Tasks";
+}
+
+function detachGoogleTaskLabel(task: TaskItem): string | null {
+  if (!task.linked_google_task && !task.google_task_id) return null;
+  if (task.google_task_sync_mode === "app_managed") return "Від'єднати і прибрати з Google Tasks";
+  return "Від'єднати від Google Tasks";
+}
+
+function detachGoogleTaskConfirm(task: TaskItem): string | null {
+  if (!task.linked_google_task && !task.google_task_id) return null;
+  if (task.google_task_sync_mode === "app_managed") {
+    return "Від'єднати задачу і прибрати зв'язаний запис з Google Tasks?";
+  }
+  return "Від'єднати Google Tasks лише в додатку? Задача в Google Tasks лишиться без змін.";
+}
+
+function deleteGoogleTaskBehaviorLabel(task: TaskItem): string | null {
+  if (!task.linked_google_task && !task.google_task_id) return null;
+  if (task.google_task_sync_mode === "app_managed") {
+    return "Видалення задачі також прибере синхронізовану задачу з Google Tasks.";
+  }
+  return "Видалення прибере лише задачу в додатку. Google Tasks лишиться без змін.";
+}
+
+function googleTaskInboundMessage(state: TaskGoogleInboundState | null | undefined): string | null {
+  if (!state || state.status === "healthy" || state.status === "manual" || state.status === "not_linked") return null;
+  return state.message;
+}
 function timingLabel(task: TaskItem): string {
   const scheduled = task.scheduled_for ? formatLocalDateTime(new Date(task.scheduled_for)) : null;
   const due = task.due_at ? formatLocalDateTime(new Date(task.due_at)) : null;
@@ -189,6 +265,18 @@ function timingLabel(task: TaskItem): string {
   if (scheduled && due) return `Планований старт: ${scheduled} · Дедлайн: ${due} · Оцінка: ${estimate}`;
   if (scheduled) return `Планований старт: ${scheduled} · Оцінка: ${estimate}`;
   return `Беклог · Дедлайн: ${due} · Оцінка: ${estimate}`;
+}
+
+function recurrenceHint(task: TaskItem): string {
+  const label = recurrenceLabel(task.recurrence_rule);
+  if (!label) return "Не повторюється";
+  return `${label} · це повторювана задача.`;
+}
+
+function recurringTaskActionHint(task: TaskItem): string | null {
+  if (!task.recurrence_rule) return null;
+  if (task.status === "done") return "Цей повтор уже завершено. Наступний повтор створюється окремою задачею.";
+  return "Дії в цьому V1 стосуються лише цього повтору. Після «Виконано» з'явиться наступний повтор.";
 }
 
 export function TaskDetailModal(props: TaskDetailModalProps) {
@@ -202,6 +290,7 @@ export function TaskDetailModal(props: TaskDetailModalProps) {
   const [dueAtInput, setDueAtInput] = useState("");
   const [estimatedMinutesInput, setEstimatedMinutesInput] = useState("");
   const [planningFlexibility, setPlanningFlexibility] = useState<PlanningFlexibility | null>(null);
+  const [recurrenceFrequency, setRecurrenceFrequency] = useState<RecurrenceFrequency | null>(null);
 
   const initialMode = props.initialMode ?? "view";
   const isCreateMode = initialMode === "create";
@@ -220,6 +309,7 @@ export function TaskDetailModal(props: TaskDetailModalProps) {
       setDueAtInput(toLocalInput(props.createDefaults?.dueAt ?? null));
       setEstimatedMinutesInput(props.createDefaults?.estimatedMinutes ? String(props.createDefaults.estimatedMinutes) : "");
       setPlanningFlexibility(props.createDefaults?.planningFlexibility ?? null);
+      setRecurrenceFrequency(props.createDefaults?.recurrenceFrequency ?? null);
       return;
     }
 
@@ -233,6 +323,7 @@ export function TaskDetailModal(props: TaskDetailModalProps) {
     setDueAtInput(toLocalInput(props.task.due_at));
     setEstimatedMinutesInput(props.task.estimated_minutes ? String(props.task.estimated_minutes) : "");
     setPlanningFlexibility(props.task.planning_flexibility ?? null);
+    setRecurrenceFrequency(parseRecurrenceFrequency(props.task.recurrence_rule));
   }, [props.open, props.task?.id, initialMode, isCreateMode, props.task, props.createDefaults]);
 
   useEffect(() => {
@@ -253,6 +344,7 @@ export function TaskDetailModal(props: TaskDetailModalProps) {
 
   const parsedEstimatedMinutes = useMemo(() => parseEstimatedMinutes(estimatedMinutesInput), [estimatedMinutesInput]);
   const estimatedMinutesInvalid = estimatedMinutesInput.trim().length > 0 && parsedEstimatedMinutes === null;
+  const recurrenceNeedsAnchor = Boolean(recurrenceFrequency) && !scheduledForInput.trim() && !dueAtInput.trim();
 
   const isDirty = useMemo(() => {
     if (isCreateMode) {
@@ -264,7 +356,8 @@ export function TaskDetailModal(props: TaskDetailModalProps) {
           scheduledForInput ||
           dueAtInput ||
           estimatedMinutesInput.trim() ||
-          planningFlexibility
+          planningFlexibility ||
+          recurrenceFrequency
       );
     }
 
@@ -277,7 +370,8 @@ export function TaskDetailModal(props: TaskDetailModalProps) {
     const sameDue = toIso(dueAtInput) === (props.task.due_at ?? null);
     const sameEstimate = parsedEstimatedMinutes === (props.task.estimated_minutes ?? null);
     const sameFlexibility = planningFlexibility === (props.task.planning_flexibility ?? null);
-    return !(sameTitle && sameDetails && sameProject && sameType && sameScheduled && sameDue && sameEstimate && sameFlexibility);
+    const sameRecurrence = recurrenceFrequency === parseRecurrenceFrequency(props.task.recurrence_rule);
+    return !(sameTitle && sameDetails && sameProject && sameType && sameScheduled && sameDue && sameEstimate && sameFlexibility && sameRecurrence);
   }, [
     props.task,
     title,
@@ -288,6 +382,7 @@ export function TaskDetailModal(props: TaskDetailModalProps) {
     dueAtInput,
     parsedEstimatedMinutes,
     planningFlexibility,
+    recurrenceFrequency,
     isCreateMode,
     estimatedMinutesInput
   ]);
@@ -326,6 +421,7 @@ export function TaskDetailModal(props: TaskDetailModalProps) {
     setDueAtInput(toLocalInput(props.task.due_at));
     setEstimatedMinutesInput(props.task.estimated_minutes ? String(props.task.estimated_minutes) : "");
     setPlanningFlexibility(props.task.planning_flexibility ?? null);
+    setRecurrenceFrequency(parseRecurrenceFrequency(props.task.recurrence_rule));
     if (initialMode === "edit") {
       props.onClose();
       return;
@@ -359,6 +455,8 @@ export function TaskDetailModal(props: TaskDetailModalProps) {
               <p className="inbox-meta">Статус: {statusLabel(task.status)}</p>
               <p className="inbox-meta">Планування: {task.scheduled_for ? "Заплановано" : "Беклог"}</p>
               <p className="inbox-meta">Гнучкість у плані: {planningFlexibilityLabel(task.planning_flexibility)}</p>
+              <p className="inbox-meta">Повторення: {recurrenceHint(task)}</p>
+              {recurringTaskActionHint(task) ? <p className="inbox-meta">{recurringTaskActionHint(task)}</p> : null}
               <p className="inbox-meta">Час: {timingLabel(task)}</p>
               {calendarSyncStateSummary(task) ? <p className="inbox-meta">{calendarSyncStateSummary(task)}</p> : null}
               {calendarSyncActionHint(task) ? <p className="inbox-meta">{calendarSyncActionHint(task)}</p> : null}
@@ -436,6 +534,58 @@ export function TaskDetailModal(props: TaskDetailModalProps) {
                   </div>
                 </div>
               ) : null}
+              {googleTaskSyncStateSummary(task) ? <p className="inbox-meta">{googleTaskSyncStateSummary(task)}</p> : null}
+              {googleTaskSyncActionHint(task) ? <p className="inbox-meta">{googleTaskSyncActionHint(task)}</p> : null}
+              {googleTaskInboundMessage(props.googleTaskInboundState) ? (
+                <p className={props.googleTaskInboundState?.status === "changed" ? "error-note" : "inbox-meta"}>
+                  {googleTaskInboundMessage(props.googleTaskInboundState)}
+                </p>
+              ) : null}
+              {props.googleTaskSyncNotice ? (
+                <p className={props.googleTaskSyncNotice.tone === "error" ? "error-note" : "inbox-meta"}>
+                  {props.googleTaskSyncNotice.message}
+                </p>
+              ) : null}
+              <div className="project-group">
+                <p className="inbox-meta">Google Tasks</p>
+                <p className="inbox-meta">
+                  {task.linked_google_task
+                    ? `Список: ${task.linked_google_task.task_list_id === "@default" ? "Основний список" : task.linked_google_task.task_list_id}`
+                    : "Зв'язаної задачі в Google Tasks поки немає."}
+                </p>
+                {deleteGoogleTaskBehaviorLabel(task) ? <p className="inbox-meta">{deleteGoogleTaskBehaviorLabel(task)}</p> : null}
+                <div className="inbox-actions">
+                  {props.onReconnectGoogle && needsGoogleReconnect(task) ? (
+                    <button type="button" className="ghost" onClick={props.onReconnectGoogle} disabled={props.busy}>
+                      Перепідключити Google
+                    </button>
+                  ) : null}
+                  {props.onRetryGoogleTaskSync && canRetryGoogleTaskSync(task) ? (
+                    <button type="button" className="ghost" onClick={props.onRetryGoogleTaskSync} disabled={props.busy}>
+                      {retryGoogleTaskLabel(task)}
+                    </button>
+                  ) : null}
+                  {props.googleTaskInboundState?.status === "changed" && props.onApplyGoogleTaskInbound ? (
+                    <button type="button" className="ghost" onClick={props.onApplyGoogleTaskInbound} disabled={props.busy}>
+                      Застосувати зміни з Google Tasks
+                    </button>
+                  ) : null}
+                  {props.onDetachGoogleTaskLink && detachGoogleTaskLabel(task) ? (
+                    <button
+                      type="button"
+                      className="ghost"
+                      onClick={() => {
+                        const confirmText = detachGoogleTaskConfirm(task);
+                        if (!confirmText) return;
+                        if (window.confirm(confirmText)) props.onDetachGoogleTaskLink?.();
+                      }}
+                      disabled={props.busy}
+                    >
+                      {detachGoogleTaskLabel(task)}
+                    </button>
+                  ) : null}
+                </div>
+              </div>
               {task.status === "cancelled" ? (
                 <>
                   <p className="inbox-meta">
@@ -498,7 +648,7 @@ export function TaskDetailModal(props: TaskDetailModalProps) {
                         type="button"
                         className="danger"
                         onClick={() => {
-                          const confirmed = window.confirm("Скасувати задачу?");
+                          const confirmed = window.confirm(task.recurrence_rule ? "Скасувати лише цей повтор?" : "Скасувати задачу?");
                           if (confirmed) props.onAction("cancel");
                         }}
                         disabled={props.busy}
@@ -609,6 +759,21 @@ export function TaskDetailModal(props: TaskDetailModalProps) {
                   ))}
                 </select>
               </label>
+              <label>
+                Повторення
+                <select
+                  value={recurrenceFrequency ?? ""}
+                  onChange={(event) => setRecurrenceFrequency((event.target.value || null) as RecurrenceFrequency | null)}
+                  disabled={props.busy}
+                >
+                  {RECURRENCE_OPTIONS.map((option) => (
+                    <option key={option.value || "empty"} value={option.value}>
+                      {option.label}
+                    </option>
+                  ))}
+                </select>
+                {recurrenceNeedsAnchor ? <p className="error-note">Для повторення потрібен дедлайн або планований старт.</p> : null}
+              </label>
             </>
           )}
         </div>
@@ -632,10 +797,11 @@ export function TaskDetailModal(props: TaskDetailModalProps) {
                       dueAt: toIso(dueAtInput),
                       scheduledFor: toIso(scheduledForInput),
                       estimatedMinutes: parsedEstimatedMinutes,
-                      planningFlexibility
+                      planningFlexibility,
+                      recurrenceFrequency
                     })
                   }
-                  disabled={props.busy || !title.trim() || estimatedMinutesInvalid}
+                  disabled={props.busy || !title.trim() || estimatedMinutesInvalid || recurrenceNeedsAnchor}
                 >
                   {props.busy ? (isCreateMode ? "Створення..." : "Збереження...") : isCreateMode ? "Створити" : "Зберегти"}
                 </button>

@@ -6,23 +6,29 @@ import { useDiagnostics } from "../../lib/diagnostics";
 import {
   ApiError,
   applyTaskCalendarInbound,
+  applyTaskGoogleInbound,
   createGoogleCalendarEvent,
   createTask,
   deleteTask,
   detachTaskCalendarLink as detachTaskCalendarLinkRequest,
+  detachTaskGoogleLink as detachTaskGoogleLinkRequest,
   getGoogleCalendarStatus,
   inspectTaskCalendarInbound,
+  inspectTaskGoogleInbound,
   keepTaskCalendarLocalVersion,
   retryTaskCalendarSync as retryTaskCalendarSyncRequest,
+  retryTaskGoogleSync as retryTaskGoogleSyncRequest,
+  startGoogleCalendarConnect,
   getProjects,
   getTasks,
   updateTask,
   updateTaskStatus
 } from "../../lib/api";
 import { moveReasonLabel } from "../../lib/reasons";
+import { recurrenceLabel } from "../../lib/recurrence";
 import { formatTaskTimingTone, isBacklogTask, parseTaskDate, planningFlexibilityLabel } from "../../lib/taskTiming";
 import { isCommunicationTaskType, TASK_TYPE_FILTER_OPTIONS, taskTypeLabel } from "../../lib/taskTypes";
-import type { GoogleCalendarStatus, MoveReasonCode, ProjectItem, TaskCalendarInboundState, TaskItem, TaskType } from "../../types/api";
+import type { GoogleCalendarStatus, MoveReasonCode, ProjectItem, TaskCalendarInboundState, TaskGoogleInboundState, TaskItem, TaskType } from "../../types/api";
 
 const SESSION_KEY = "personal_assistant_app_session_token";
 type TaskStatusScope = "active" | "completed" | "blocked" | "cancelled";
@@ -38,6 +44,15 @@ type CalendarNotice = {
   tone: "success" | "error" | "info";
   message: string;
 };
+
+function oauthReasonLabel(reason: string | null): string {
+  if (!reason) return "Google успішно підключено.";
+  if (reason === "invalid_or_expired_state") return "Спроба підключення застаріла. Запусти її ще раз.";
+  if (reason === "missing_code_or_state") return "Google не повернув потрібні дані для підключення.";
+  if (reason === "google_oauth_callback_failed") return "Не вдалося завершити підключення Google.";
+  if (reason.startsWith("oauth_")) return "Google повернув помилку під час підключення.";
+  return "Підключення Google не вдалося.";
+}
 
 function calendarLinkHint(task: TaskItem): string | null {
   if (task.calendar_sync_error) return "Google Calendar: \u043f\u043e\u0442\u0440\u0456\u0431\u043d\u0430 \u0443\u0432\u0430\u0433\u0430";
@@ -130,14 +145,25 @@ export function TasksPage() {
   const [calendarError, setCalendarError] = useState<string | null>(null);
   const [calendarNotice, setCalendarNotice] = useState<CalendarNotice | null>(null);
   const [calendarInboundState, setCalendarInboundState] = useState<TaskCalendarInboundState | null>(null);
+  const [googleTaskNotice, setGoogleTaskNotice] = useState<CalendarNotice | null>(null);
+  const [googleTaskInboundState, setGoogleTaskInboundState] = useState<TaskGoogleInboundState | null>(null);
+  const [pageNotice, setPageNotice] = useState<CalendarNotice | null>(null);
   const diagnostics = useDiagnostics();
 
   const sessionToken = localStorage.getItem(SESSION_KEY) ?? "";
+  const connectHint = useMemo(() => {
+    const params = new URLSearchParams(window.location.search);
+    const marker = params.get("calendar_connect");
+    const reason = params.get("reason");
+    if (marker === "success") return { tone: "success" as const, message: "Google перепідключено. Оновлюю стан Tasks..." };
+    if (marker === "error") return { tone: "error" as const, message: oauthReasonLabel(reason) };
+    return null;
+  }, []);
 
-  async function loadTasks() {
+  async function loadTasks(): Promise<TaskItem[]> {
     if (!sessionToken) {
       setItems([]);
-      return;
+      return [];
     }
 
     setLoading(true);
@@ -149,6 +175,7 @@ export function TasksPage() {
       setItems(tasks);
       diagnostics.markRefresh();
       diagnostics.setScreenDataSource("tasks_data");
+      return tasks;
     } catch (loadError) {
       if (loadError instanceof ApiError) {
         diagnostics.trackFailure({
@@ -160,6 +187,7 @@ export function TasksPage() {
         });
       }
       setError(loadError instanceof Error ? loadError.message : "Не вдалося завантажити задачі");
+      return [];
     } finally {
       setLoading(false);
     }
@@ -181,13 +209,15 @@ export function TasksPage() {
   async function loadCalendarStatus() {
     if (!sessionToken) {
       setCalendarStatus(null);
-      return;
+      return null;
     }
     try {
       const status = await getGoogleCalendarStatus(sessionToken);
       setCalendarStatus(status);
+      return status;
     } catch {
       setCalendarStatus(null);
+      return null;
     }
   }
 
@@ -195,6 +225,27 @@ export function TasksPage() {
     void Promise.all([loadTasks(), loadProjects(), loadCalendarStatus()]);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  useEffect(() => {
+    if (!connectHint) return;
+    if (connectHint.tone === "success" && sessionToken) {
+      void (async () => {
+        const [, status] = await Promise.all([loadTasks(), loadCalendarStatus()]);
+        setPageNotice(
+          status?.tasksScopeAvailable
+            ? { tone: "success", message: "Google перепідключено. Google Tasks уже доступні." }
+            : { tone: "info", message: "Google перепідключено, але Google Tasks досі недоступні для цього акаунта." }
+        );
+      })();
+    } else {
+      setPageNotice(connectHint);
+    }
+    const url = new URL(window.location.href);
+    url.searchParams.delete("calendar_connect");
+    url.searchParams.delete("reason");
+    window.history.replaceState({}, "", url.toString());
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [connectHint, sessionToken]);
   useEffect(() => {
     if (!sessionToken || !activeTask || activeTask.calendar_sync_mode !== "app_managed" || !activeTask.calendar_event_id) {
       setCalendarInboundState(null);
@@ -215,6 +266,27 @@ export function TasksPage() {
       cancelled = true;
     };
   }, [activeTask?.id, activeTask?.calendar_event_id, activeTask?.calendar_sync_mode, sessionToken]);
+
+  useEffect(() => {
+    if (!sessionToken || !activeTask || activeTask.google_task_sync_mode !== "app_managed" || !activeTask.google_task_id) {
+      setGoogleTaskInboundState(null);
+      return;
+    }
+
+    let cancelled = false;
+    void (async () => {
+      try {
+        const state = await inspectTaskGoogleInbound({ sessionToken, taskId: activeTask.id });
+        if (!cancelled) setGoogleTaskInboundState(state);
+      } catch {
+        if (!cancelled) setGoogleTaskInboundState(null);
+      }
+    })();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [activeTask?.id, activeTask?.google_task_id, activeTask?.google_task_sync_mode, sessionToken]);
 
   async function createCalendarFromTask(payload: {
     title: string;
@@ -469,7 +541,13 @@ export function TasksPage() {
         ? " Задача синхронізована з Google Calendar, тому пов'язану подію теж буде видалено."
         : " Задача пов'язана з подією Google Calendar, але сама подія не буде видалена."
       : "";
-    const confirmed = window.confirm(`Видалити задачу "${activeTask.title}"?${calendarWarning}`);
+    const googleTaskWarning = activeTask.linked_google_task
+      ? activeTask.google_task_sync_mode === "app_managed"
+        ? " Зв'язану задачу в Google Tasks теж буде видалено."
+        : " Зв'язок з Google Tasks буде прибрано лише локально."
+      : "";
+    const recurrenceWarning = activeTask.recurrence_rule ? " Це видалить лише цей повтор." : "";
+    const confirmed = window.confirm(`Видалити задачу "${activeTask.title}"?${recurrenceWarning}${calendarWarning}${googleTaskWarning}`);
     if (!confirmed) return;
 
     setWorkingTaskId(activeTask.id);
@@ -481,7 +559,7 @@ export function TasksPage() {
       setActiveTask(null);
       setTaskModalMode("view");
       setCalendarNotice(null);
-      setCalendarNotice(null);
+      setGoogleTaskNotice(null);
       await loadTasks();
     } catch (deleteError) {
       if (deleteError instanceof ApiError) {
@@ -509,6 +587,7 @@ export function TasksPage() {
     scheduledFor: string | null;
     estimatedMinutes: number | null;
     planningFlexibility: "essential" | "flexible" | null;
+    recurrenceFrequency: "daily" | "weekly" | "monthly" | null;
   }) {
     if (!sessionToken) return;
 
@@ -520,8 +599,12 @@ export function TasksPage() {
     });
 
     try {
+      let createdTaskId: string | null = null;
+      let createdGoogleTaskSyncError: string | null = null;
+      let createdLinkedGoogleTask = false;
+
       if (isCreate) {
-        await createTask({
+        const created = await createTask({
           sessionToken,
           title: payload.title,
           details: payload.details,
@@ -530,8 +613,12 @@ export function TasksPage() {
           dueAt: payload.dueAt,
           scheduledFor: payload.scheduledFor,
           estimatedMinutes: payload.estimatedMinutes,
-          planningFlexibility: payload.planningFlexibility
+          planningFlexibility: payload.planningFlexibility,
+          recurrenceFrequency: payload.recurrenceFrequency
         });
+        createdTaskId = created.taskId;
+        createdGoogleTaskSyncError = created.googleTaskSyncError;
+        createdLinkedGoogleTask = created.linkedGoogleTask;
       } else if (payload.taskId) {
         await updateTask({
           sessionToken,
@@ -543,13 +630,39 @@ export function TasksPage() {
           dueAt: payload.dueAt,
           scheduledFor: payload.scheduledFor,
           estimatedMinutes: payload.estimatedMinutes,
-          planningFlexibility: payload.planningFlexibility
+          planningFlexibility: payload.planningFlexibility,
+          recurrenceFrequency: payload.recurrenceFrequency
         });
       }
 
-      setActiveTask(null);
-      setTaskModalMode("view");
-      await loadTasks();
+      const tasks = await loadTasks();
+      const createdTask = createdTaskId ? tasks.find((task) => task.id === createdTaskId) ?? null : null;
+
+      if (isCreate && createdTask) {
+        setActiveTask(createdTask);
+        setTaskModalMode("view");
+      } else {
+        setActiveTask(null);
+        setTaskModalMode("view");
+      }
+
+        if (isCreate) {
+          if (createdGoogleTaskSyncError) {
+            setPageNotice({
+              tone: "info",
+              message:
+                createdGoogleTaskSyncError === "google_tasks_scope_missing"
+                  ? "Задачу створено в додатку, але Google Tasks ще недоступні для цього підключення. Перепідключи Google у вкладці «Календар»."
+                  : createdGoogleTaskSyncError === "google_tasks_permission_denied"
+                    ? "Задачу створено в додатку, але Google Tasks зараз не дає доступ. Перепідключи Google і перевір дозволи для Tasks."
+                  : "Задачу створено в додатку, але синхронізація з Google Tasks зараз недоступна."
+            });
+        } else if (createdLinkedGoogleTask) {
+          setPageNotice({ tone: "success", message: "Задачу створено в додатку і синхронізовано з Google Tasks." });
+        } else {
+          setPageNotice({ tone: "success", message: "Задачу створено в додатку." });
+        }
+      }
     } catch (saveError) {
       if (saveError instanceof ApiError) {
         diagnostics.trackFailure({
@@ -698,10 +811,140 @@ export function TasksPage() {
     }
   }
 
+  async function retryGoogleTaskSync(task: TaskItem) {
+    if (!sessionToken) {
+      setError("Спочатку авторизуйся в Інбоксі.");
+      return;
+    }
+
+    setWorkingTaskId(task.id);
+    setError(null);
+    diagnostics.trackAction("retry_task_google_sync", { taskId: task.id });
+
+    try {
+      await retryTaskGoogleSyncRequest({ sessionToken, taskId: task.id });
+      setGoogleTaskNotice({
+        tone: "success",
+        message: task.linked_google_task || task.google_task_id ? "Синхронізацію з Google Tasks оновлено." : "Задачу створено в Google Tasks."
+      });
+      await loadTasks();
+    } catch (retryError) {
+      if (retryError instanceof ApiError) {
+        diagnostics.trackFailure({
+          path: retryError.path,
+          status: retryError.status,
+          code: retryError.code,
+          message: retryError.message,
+          details: retryError.details
+        });
+      }
+      setError(retryError instanceof Error ? retryError.message : "Не вдалося синхронізувати задачу з Google Tasks");
+    } finally {
+      setWorkingTaskId(null);
+    }
+  }
+
+  async function applyInboundGoogleTaskChange(task: TaskItem) {
+    if (!sessionToken) {
+      setError("Спочатку авторизуйся в Інбоксі.");
+      return;
+    }
+
+    setWorkingTaskId(task.id);
+    setError(null);
+    diagnostics.trackAction("apply_task_google_inbound", { taskId: task.id });
+
+    try {
+      const state = await applyTaskGoogleInbound({ sessionToken, taskId: task.id });
+      setGoogleTaskNotice({
+        tone: "success",
+        message: state.message ?? "Зміни з Google Tasks застосовано."
+      });
+      await loadTasks();
+    } catch (applyError) {
+      if (applyError instanceof ApiError) {
+        diagnostics.trackFailure({
+          path: applyError.path,
+          status: applyError.status,
+          code: applyError.code,
+          message: applyError.message,
+          details: applyError.details
+        });
+      }
+      setGoogleTaskNotice({ tone: "error", message: "Не вдалося застосувати зміни з Google Tasks." });
+      setError(applyError instanceof Error ? applyError.message : "Не вдалося застосувати зміни з Google Tasks.");
+    } finally {
+      setWorkingTaskId(null);
+    }
+  }
+
+  async function detachGoogleTaskLink(task: TaskItem) {
+    if (!sessionToken) {
+      setError("Спочатку авторизуйся в Інбоксі.");
+      return;
+    }
+
+    setWorkingTaskId(task.id);
+    setError(null);
+    diagnostics.trackAction("detach_task_google_link", { taskId: task.id });
+
+    try {
+      await detachTaskGoogleLinkRequest({ sessionToken, taskId: task.id });
+      setGoogleTaskNotice({
+        tone: "success",
+        message: task.google_task_sync_mode === "app_managed" ? "Зв'язок із Google Tasks прибрано." : "Google Tasks від'єднано від задачі."
+      });
+      await loadTasks();
+    } catch (detachError) {
+      if (detachError instanceof ApiError) {
+        diagnostics.trackFailure({
+          path: detachError.path,
+          status: detachError.status,
+          code: detachError.code,
+          message: detachError.message,
+          details: detachError.details
+        });
+      }
+      setGoogleTaskNotice({ tone: "error", message: "Не вдалося від'єднати Google Tasks." });
+      setError(detachError instanceof Error ? detachError.message : "Не вдалося від'єднати Google Tasks.");
+    } finally {
+      setWorkingTaskId(null);
+    }
+  }
+
+  async function reconnectGoogleForTasks() {
+    if (!sessionToken) {
+      setError("Спочатку авторизуйся в Інбоксі.");
+      return;
+    }
+
+    try {
+      const result = await startGoogleCalendarConnect({ sessionToken, returnPath: "/tasks" });
+      if (window.Telegram?.WebApp?.openLink) {
+        window.Telegram.WebApp.openLink(result.authUrl);
+        return;
+      }
+      window.open(result.authUrl, "_blank", "noopener,noreferrer");
+    } catch (connectError) {
+      if (connectError instanceof ApiError) {
+        diagnostics.trackFailure({
+          path: connectError.path,
+          status: connectError.status,
+          code: connectError.code,
+          message: connectError.message,
+          details: connectError.details
+        });
+      }
+      setError(connectError instanceof Error ? connectError.message : "Не вдалося почати перепідключення Google.");
+    }
+  }
+
   function openCreateTask() {
     setTaskModalMode("create");
     setActiveTask(null);
     setCalendarNotice(null);
+    setGoogleTaskNotice(null);
+    setPageNotice(null);
     setError(null);
   }
 
@@ -715,6 +958,7 @@ export function TasksPage() {
         <div className="task-card__main">
           <p className="inbox-main-text task-card-title">
             {task.title}
+            {task.recurrence_rule ? <span className="recurrence-badge">{recurrenceLabel(task.recurrence_rule)}</span> : null}
             {task.is_protected_essential ? <span className="essential-badge">Важлива задача</span> : null}
             {task.planning_flexibility ? <span className={`planning-badge planning-badge--${task.planning_flexibility}`}>{planningFlexibilityLabel(task.planning_flexibility)}</span> : null}
           </p>
@@ -732,6 +976,7 @@ export function TasksPage() {
                 {task.cancel_reason_text ? ` / ${task.cancel_reason_text}` : ""}
               </p>
             ) : null}
+            {task.recurrence_rule ? <p className="inbox-meta">Це повторювана задача. Дії тут стосуються лише цього повтору.</p> : null}
             {calendarHint ? <p className="inbox-meta task-card__calendar">{calendarHint}</p> : null}
           </div>
         </div>
@@ -802,6 +1047,8 @@ export function TasksPage() {
           Створити задачу
         </button>
       </div>
+
+      {pageNotice ? <p className={pageNotice.tone === "error" ? "error-note" : "inbox-meta"}>{pageNotice.message}</p> : null}
 
       <div className="filters-wrap">
         <details className="filter-dropdown">
@@ -910,6 +1157,8 @@ export function TasksPage() {
         busy={workingTaskId !== null}
         calendarSyncNotice={activeTask ? calendarNotice : null}
         calendarInboundState={activeTask ? calendarInboundState : null}
+        googleTaskSyncNotice={activeTask ? googleTaskNotice : null}
+        googleTaskInboundState={activeTask ? googleTaskInboundState : null}
         onClose={() => {
           setActiveTask(null);
           setTaskModalMode("view");
@@ -950,6 +1199,21 @@ export function TasksPage() {
         onApplyCalendarInbound={() => {
           if (!activeTask) return;
           void applyInboundCalendarChange(activeTask);
+        }}
+        onRetryGoogleTaskSync={() => {
+          if (!activeTask) return;
+          void retryGoogleTaskSync(activeTask);
+        }}
+        onDetachGoogleTaskLink={() => {
+          if (!activeTask) return;
+          void detachGoogleTaskLink(activeTask);
+        }}
+        onApplyGoogleTaskInbound={() => {
+          if (!activeTask) return;
+          void applyInboundGoogleTaskChange(activeTask);
+        }}
+        onReconnectGoogle={() => {
+          void reconnectGoogleForTasks();
         }}
         onOpenLinkedCalendarEvent={(url) => {
           diagnostics.trackAction("open_task_linked_calendar_event", { taskId: activeTask?.id });

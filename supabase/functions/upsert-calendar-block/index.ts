@@ -2,6 +2,7 @@ import { handleOptions, jsonResponse, safeJson } from "../_shared/http.ts";
 import { resolveSessionUser } from "../_shared/session.ts";
 import { createAdminClient } from "../_shared/db.ts";
 import { upsertCalendarBlock } from "../_shared/calendar-blocks.ts";
+import { buildSupportedRecurrenceRule, parseSupportedRecurrenceFrequency } from "../_shared/recurrence.ts";
 type Body = {
   id?: string | null;
   title?: string;
@@ -10,6 +11,7 @@ type Body = {
   endAt?: string;
   timezone?: string | null;
   projectId?: string | null;
+  recurrenceFrequency?: string | null;
 };
 function parseIso(input: string | undefined): string | null {
   if (!input?.trim()) return null;
@@ -42,10 +44,15 @@ Deno.serve(async (req) => {
   const title = body?.title?.trim();
   const startAt = parseIso(body?.startAt);
   const endAt = parseIso(body?.endAt);
+  const recurrenceFrequency = parseSupportedRecurrenceFrequency(body?.recurrenceFrequency ?? null);
+  const recurrenceRule = buildSupportedRecurrenceRule(recurrenceFrequency);
   if (!title) return jsonResponse({ ok: false, error: "missing_title" }, 400);
   if (!startAt || !endAt) return jsonResponse({ ok: false, error: "invalid_time_range" }, 400);
   if (new Date(endAt).getTime() <= new Date(startAt).getTime()) {
     return jsonResponse({ ok: false, error: "invalid_time_range" }, 400);
+  }
+  if (body?.recurrenceFrequency !== undefined && body?.recurrenceFrequency !== null && !recurrenceFrequency) {
+    return jsonResponse({ ok: false, error: "invalid_recurrence_frequency" }, 400);
   }
   try {
     if (body?.projectId) {
@@ -64,7 +71,9 @@ Deno.serve(async (req) => {
         startAt,
         endAt,
         timezone: body?.timezone ?? null,
-        projectId: body?.projectId ?? null
+        projectId: body?.projectId ?? null,
+        recurrenceRule,
+        recurrenceTimezone: recurrenceRule ? body?.timezone ?? "UTC" : null
       }
     });
     return jsonResponse({ ok: true, block });
