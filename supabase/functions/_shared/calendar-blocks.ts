@@ -33,6 +33,7 @@ type GoogleCalendarApiEvent = {
   description?: string | null;
   status?: string | null;
   htmlLink?: string | null;
+  eventType?: string | null;
   recurringEventId?: string | null;
   recurrence?: string[] | null;
   start?: { dateTime?: string | null; date?: string | null; timeZone?: string | null };
@@ -134,6 +135,109 @@ function googleEventsUrl(calendarId: string, eventId?: string): string {
   return eventId ? `${base}/${encodeURIComponent(eventId)}` : base;
 }
 
+function normalizeMatchingTitle(value: string | null | undefined): string {
+  return (value ?? "").trim().replace(/\s+/g, " ").toLocaleLowerCase("uk-UA");
+}
+
+function normalizeMatchingInstant(value: string | null | undefined): string | null {
+  if (!value) return null;
+  const parsed = new Date(value);
+  if (Number.isNaN(parsed.getTime())) return null;
+  return parsed.toISOString();
+}
+
+async function listGoogleLinkedTaskRowsForWindow(input: {
+  supabase: SupabaseAdminClient;
+  userId: string;
+  timeMin: string;
+  timeMax: string;
+}): Promise<Array<{ title: string; due_at: string | null; scheduled_for: string | null }>> {
+  const { data, error } = await input.supabase
+    .from("tasks")
+    .select("title, due_at, scheduled_for")
+    .eq("user_id", input.userId)
+    .eq("google_task_provider", "google_tasks");
+
+  if (error) throw error;
+  const rows = (data as Array<{ title: string; due_at: string | null; scheduled_for: string | null }> | null) ?? [];
+  const minTs = new Date(input.timeMin).getTime();
+  const maxTs = new Date(input.timeMax).getTime();
+  return rows.filter((row) => {
+    const scheduledTs = row.scheduled_for ? new Date(row.scheduled_for).getTime() : Number.NaN;
+    const dueTs = row.due_at ? new Date(row.due_at).getTime() : Number.NaN;
+    return (
+      (!Number.isNaN(scheduledTs) && scheduledTs >= minTs && scheduledTs <= maxTs) ||
+      (!Number.isNaN(dueTs) && dueTs >= minTs && dueTs <= maxTs)
+    );
+  });
+}
+
+async function suppressGoogleTaskShadowEvents(input: {
+  supabase: SupabaseAdminClient;
+  userId: string;
+  events: GoogleCalendarApiEvent[];
+}): Promise<{ events: GoogleCalendarApiEvent[]; suppressedKeys: string[] }> {
+  if (input.events.length === 0) {
+    return { events: [], suppressedKeys: [] };
+  }
+
+  const parsedEvents = input.events
+    .map((event) => ({ event, parsed: parseGoogleEvent(event) }))
+    .filter((item): item is { event: GoogleCalendarApiEvent; parsed: NonNullable<ReturnType<typeof parseGoogleEvent>> } => Boolean(item.parsed));
+
+  if (parsedEvents.length === 0) {
+    return { events: input.events, suppressedKeys: [] };
+  }
+
+  const startTimes = parsedEvents.map((item) => new Date(item.parsed.startAt).getTime());
+  const timeMin = new Date(Math.min(...startTimes) - 24 * 60 * 60 * 1000).toISOString();
+  const timeMax = new Date(Math.max(...startTimes) + 24 * 60 * 60 * 1000).toISOString();
+  const linkedTasks = await listGoogleLinkedTaskRowsForWindow({
+    supabase: input.supabase,
+    userId: input.userId,
+    timeMin,
+    timeMax
+  });
+
+  if (linkedTasks.length === 0) {
+    return { events: input.events, suppressedKeys: [] };
+  }
+
+  const taskKeys = new Set<string>();
+  for (const task of linkedTasks) {
+    const titleKey = normalizeMatchingTitle(task.title);
+    const instants = [normalizeMatchingInstant(task.scheduled_for), normalizeMatchingInstant(task.due_at)].filter(
+      (value): value is string => Boolean(value)
+    );
+    for (const instant of instants) {
+      taskKeys.add(`${titleKey}|${instant}`);
+    }
+  }
+
+  const keptEvents: GoogleCalendarApiEvent[] = [];
+  const suppressedKeys: string[] = [];
+
+  for (const item of parsedEvents) {
+    const titleKey = normalizeMatchingTitle(item.parsed.title);
+    const instantKey = normalizeMatchingInstant(item.parsed.startAt);
+    const providerKey = `${item.event.calendarId ?? "primary"}:${item.event.id}`;
+    if (instantKey && taskKeys.has(`${titleKey}|${instantKey}`)) {
+      suppressedKeys.push(providerKey);
+      continue;
+    }
+    keptEvents.push(item.event);
+  }
+
+  const parsedEventIds = new Set(parsedEvents.map((item) => item.event.id));
+  for (const event of input.events) {
+    if (!parsedEventIds.has(event.id)) {
+      keptEvents.push(event);
+    }
+  }
+
+  return { events: keptEvents, suppressedKeys };
+}
+
 export async function listGoogleCalendarEvents(input: {
   userId: string;
   timeMin: string;
@@ -150,6 +254,7 @@ export async function listGoogleCalendarEvents(input: {
       apiUrl.searchParams.set("timeMin", input.timeMin);
       apiUrl.searchParams.set("timeMax", input.timeMax);
       apiUrl.searchParams.set("maxResults", String(perCalendarMax));
+      apiUrl.searchParams.append("eventTypes", "default");
 
       const response = await fetch(apiUrl.toString(), {
         headers: { authorization: `Bearer ${auth.accessToken}` }
@@ -323,8 +428,27 @@ export async function syncCalendarBlocksFromGoogle(input: {
   maxResults?: number;
 }): Promise<CalendarBlockRow[]> {
   const supabase = createAdminClient();
-  const events = await listGoogleCalendarEvents(input);
+  const rawEvents = await listGoogleCalendarEvents(input);
+  const { events, suppressedKeys } = await suppressGoogleTaskShadowEvents({
+    supabase,
+    userId: input.userId,
+    events: rawEvents
+  });
   const providerKeys = events.map((event) => ({ providerCalendarId: event.calendarId ?? "primary", providerEventId: event.id })).filter((item) => item.providerEventId);
+  const suppressedProviderKeys = suppressedKeys.map((key) => {
+    const separator = key.indexOf(":");
+    return {
+      providerCalendarId: key.slice(0, separator),
+      providerEventId: key.slice(separator + 1)
+    };
+  });
+  if (suppressedProviderKeys.length > 0) {
+    const suppressedExisting = await selectBlocksByProviderIds(supabase, input.userId, suppressedProviderKeys);
+    for (const row of suppressedExisting) {
+      const { error } = await supabase.from("calendar_blocks").delete().eq("id", row.id).eq("user_id", input.userId);
+      if (error) throw error;
+    }
+  }
   const existing = await selectBlocksByProviderIds(supabase, input.userId, providerKeys);
   const existingMap = new Map(existing.map((row) => [`${row.provider_calendar_id}:${row.provider_event_id ?? ""}`, row]));
   const normalizedRows = events

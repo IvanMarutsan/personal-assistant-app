@@ -99,6 +99,8 @@ export type GoogleCalendarStatus = {
   defaultCalendarId: string | null;
   defaultTaskListId: string | null;
   tasksScopeAvailable: boolean;
+  tasksAccessState?: "usable" | "scope_missing" | "permission_denied" | "auth_expired" | "not_connected" | "unknown";
+  tasksAccessError?: string | null;
   expiresAt: string | null;
 };
 
@@ -128,6 +130,8 @@ export type GoogleIntegrationPreferences = {
   defaultCalendarId: string | null;
   defaultTaskListId: string | null;
   tasksScopeAvailable: boolean;
+  tasksAccessState?: "usable" | "scope_missing" | "permission_denied" | "auth_expired" | "not_connected" | "unknown";
+  tasksAccessError?: string | null;
 };
 
 export type GoogleCalendarEventItem = {
@@ -309,6 +313,13 @@ export type TaskGoogleInboundState =
       status: "missing";
       message: string;
     };
+export type TaskGoogleImportResult = {
+  importedCount: number;
+  updatedCount: number;
+  unchangedCount: number;
+  totalRemoteCount: number;
+  listId: string | null;
+};
 export type PlanningSummary = {
   generatedAt: string;
   timezone: string;

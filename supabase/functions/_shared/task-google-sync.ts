@@ -1,5 +1,12 @@
 import { createAdminClient } from "./db.ts";
-import { getGoogleAccessTokenForUser, hasGoogleTasksScope, listGoogleTaskLists } from "./google-calendar.ts";
+import {
+  classifyGoogleTasksApiError,
+  forceRefreshGoogleAccessTokenForUser,
+  getGoogleAccessTokenForUser,
+  hasGoogleTasksScope,
+  listGoogleTaskLists,
+  parseGoogleApiError
+} from "./google-calendar.ts";
 
 export type TaskGoogleSyncMode = "app_managed" | "manual";
 
@@ -37,6 +44,14 @@ export type TaskGoogleInboundState =
       message: string;
     };
 
+export type GoogleTasksInboundImportResult = {
+  importedCount: number;
+  updatedCount: number;
+  unchangedCount: number;
+  totalRemoteCount: number;
+  listId: string | null;
+};
+
 type SupabaseAdminClient = ReturnType<typeof createAdminClient>;
 
 type GoogleTaskPayload = {
@@ -58,6 +73,11 @@ type GoogleTaskSnapshot = {
   hidden: boolean;
 };
 
+type GoogleTaskListResponse = {
+  items?: Array<Partial<GoogleTaskSnapshot>> | null;
+  nextPageToken?: string | null;
+};
+
 const DEFAULT_TASK_LIST_ID = "@default";
 
 function normalizeNotes(value: string | null | undefined): string | null {
@@ -72,14 +92,31 @@ function normalizeDueAt(value: string | null | undefined): string | null {
   return parsed.toISOString();
 }
 
+function deriveScheduledForFromGoogleDue(value: string | null | undefined): string | null {
+  const normalized = normalizeDueAt(value);
+  if (!normalized) return null;
+  const date = new Date(normalized);
+  if (
+    date.getUTCHours() === 0 &&
+    date.getUTCMinutes() === 0 &&
+    date.getUTCSeconds() === 0 &&
+    date.getUTCMilliseconds() === 0
+  ) {
+    return null;
+  }
+  return normalized;
+}
+
 function googleTasksApiUrl(listId = DEFAULT_TASK_LIST_ID, taskId?: string): string {
   const base = `https://tasks.googleapis.com/tasks/v1/lists/${encodeURIComponent(listId)}/tasks`;
   return taskId ? `${base}/${encodeURIComponent(taskId)}` : base;
 }
 
-async function getGoogleTasksAccess(userId: string): Promise<{ accessToken: string; listId: string }> {
+async function getGoogleTasksAccess(userId: string, forceRefresh = false): Promise<{ accessToken: string; listId: string }> {
   try {
-    const auth = await getGoogleAccessTokenForUser(userId);
+    const auth = forceRefresh
+      ? await forceRefreshGoogleAccessTokenForUser(userId)
+      : await getGoogleAccessTokenForUser(userId);
     if (!hasGoogleTasksScope(auth.scope)) {
       throw new Error("google_tasks_scope_missing");
     }
@@ -109,9 +146,10 @@ function buildGoogleTaskPayload(task: TaskGoogleSyncRow): GoogleTaskPayload {
   };
 }
 
-async function googleCreateTask(userId: string, payload: GoogleTaskPayload, listId = DEFAULT_TASK_LIST_ID): Promise<GoogleTaskSnapshot> {
-  const auth = await getGoogleTasksAccess(userId);
-  const response = await fetch(googleTasksApiUrl(listId), {
+async function googleCreateTask(userId: string, payload: GoogleTaskPayload, listId = DEFAULT_TASK_LIST_ID, forceRefresh = false): Promise<GoogleTaskSnapshot> {
+  const auth = await getGoogleTasksAccess(userId, forceRefresh);
+  const effectiveListId = listId === DEFAULT_TASK_LIST_ID ? auth.listId : listId;
+  const response = await fetch(googleTasksApiUrl(effectiveListId), {
     method: "POST",
     headers: {
       authorization: `Bearer ${auth.accessToken}`,
@@ -120,10 +158,21 @@ async function googleCreateTask(userId: string, payload: GoogleTaskPayload, list
     body: JSON.stringify(payload)
   });
 
-  const body = (await response.json().catch(() => null)) as Partial<GoogleTaskSnapshot> | null;
-  if (!response.ok || !body?.id) {
-    throw new Error(response.status === 403 ? "google_tasks_permission_denied" : `google_task_create_failed_${response.status}`);
+  if (!response.ok) {
+    const parsedError = await parseGoogleApiError(response);
+    const errorCode = classifyGoogleTasksApiError({
+      action: "create",
+      status: response.status,
+      message: parsedError.message,
+      reason: parsedError.reason
+    });
+    if (!forceRefresh && ["google_tasks_insufficient_permissions", "google_tasks_permission_denied"].includes(errorCode)) {
+      return await googleCreateTask(userId, payload, effectiveListId, true);
+    }
+    throw new Error(errorCode);
   }
+  const body = (await response.json().catch(() => null)) as Partial<GoogleTaskSnapshot> | null;
+  if (!body?.id) throw new Error("google_task_create_failed_invalid_response");
 
   return {
     id: body.id,
@@ -137,8 +186,8 @@ async function googleCreateTask(userId: string, payload: GoogleTaskPayload, list
   };
 }
 
-async function googleUpdateTask(userId: string, listId: string, taskId: string, payload: GoogleTaskPayload): Promise<GoogleTaskSnapshot> {
-  const auth = await getGoogleTasksAccess(userId);
+async function googleUpdateTask(userId: string, listId: string, taskId: string, payload: GoogleTaskPayload, forceRefresh = false): Promise<GoogleTaskSnapshot> {
+  const auth = await getGoogleTasksAccess(userId, forceRefresh);
   const response = await fetch(googleTasksApiUrl(listId, taskId), {
     method: "PATCH",
     headers: {
@@ -148,10 +197,21 @@ async function googleUpdateTask(userId: string, listId: string, taskId: string, 
     body: JSON.stringify(payload)
   });
 
-  const body = (await response.json().catch(() => null)) as Partial<GoogleTaskSnapshot> | null;
-  if (!response.ok || !body?.id) {
-    throw new Error(response.status === 404 ? "google_task_not_found" : response.status === 403 ? "google_tasks_permission_denied" : `google_task_update_failed_${response.status}`);
+  if (!response.ok) {
+    const parsedError = await parseGoogleApiError(response);
+    const errorCode = classifyGoogleTasksApiError({
+      action: "update",
+      status: response.status,
+      message: parsedError.message,
+      reason: parsedError.reason
+    });
+    if (!forceRefresh && ["google_tasks_insufficient_permissions", "google_tasks_permission_denied"].includes(errorCode)) {
+      return await googleUpdateTask(userId, listId, taskId, payload, true);
+    }
+    throw new Error(errorCode);
   }
+  const body = (await response.json().catch(() => null)) as Partial<GoogleTaskSnapshot> | null;
+  if (!body?.id) throw new Error("google_task_update_failed_invalid_response");
 
   return {
     id: body.id,
@@ -165,8 +225,8 @@ async function googleUpdateTask(userId: string, listId: string, taskId: string, 
   };
 }
 
-async function googleGetTask(userId: string, listId: string, taskId: string): Promise<GoogleTaskSnapshot> {
-  const auth = await getGoogleTasksAccess(userId);
+async function googleGetTask(userId: string, listId: string, taskId: string, forceRefresh = false): Promise<GoogleTaskSnapshot> {
+  const auth = await getGoogleTasksAccess(userId, forceRefresh);
   const response = await fetch(googleTasksApiUrl(listId, taskId), {
     method: "GET",
     headers: {
@@ -174,10 +234,21 @@ async function googleGetTask(userId: string, listId: string, taskId: string): Pr
     }
   });
 
-  const body = (await response.json().catch(() => null)) as Partial<GoogleTaskSnapshot> | null;
-  if (!response.ok || !body?.id) {
-    throw new Error(response.status === 404 ? "google_task_not_found" : response.status === 403 ? "google_tasks_permission_denied" : `google_task_fetch_failed_${response.status}`);
+  if (!response.ok) {
+    const parsedError = await parseGoogleApiError(response);
+    const errorCode = classifyGoogleTasksApiError({
+      action: "fetch",
+      status: response.status,
+      message: parsedError.message,
+      reason: parsedError.reason
+    });
+    if (!forceRefresh && ["google_tasks_insufficient_permissions", "google_tasks_permission_denied"].includes(errorCode)) {
+      return await googleGetTask(userId, listId, taskId, true);
+    }
+    throw new Error(errorCode);
   }
+  const body = (await response.json().catch(() => null)) as Partial<GoogleTaskSnapshot> | null;
+  if (!body?.id) throw new Error("google_task_fetch_failed_invalid_response");
 
   return {
     id: body.id,
@@ -191,8 +262,8 @@ async function googleGetTask(userId: string, listId: string, taskId: string): Pr
   };
 }
 
-async function googleDeleteTask(userId: string, listId: string, taskId: string): Promise<void> {
-  const auth = await getGoogleTasksAccess(userId);
+async function googleDeleteTask(userId: string, listId: string, taskId: string, forceRefresh = false): Promise<void> {
+  const auth = await getGoogleTasksAccess(userId, forceRefresh);
   const response = await fetch(googleTasksApiUrl(listId, taskId), {
     method: "DELETE",
     headers: {
@@ -201,7 +272,73 @@ async function googleDeleteTask(userId: string, listId: string, taskId: string):
   });
 
   if (response.ok || response.status === 404) return;
-  throw new Error(response.status === 403 ? "google_tasks_permission_denied" : `google_task_delete_failed_${response.status}`);
+  const parsedError = await parseGoogleApiError(response);
+  const errorCode = classifyGoogleTasksApiError({
+    action: "delete",
+    status: response.status,
+    message: parsedError.message,
+    reason: parsedError.reason
+  });
+  if (!forceRefresh && ["google_tasks_insufficient_permissions", "google_tasks_permission_denied"].includes(errorCode)) {
+    return await googleDeleteTask(userId, listId, taskId, true);
+  }
+  throw new Error(errorCode);
+}
+
+async function googleListTasks(userId: string, listId: string, forceRefresh = false): Promise<GoogleTaskSnapshot[]> {
+  const auth = await getGoogleTasksAccess(userId, forceRefresh);
+  const effectiveListId = listId === DEFAULT_TASK_LIST_ID ? auth.listId : listId;
+  const items: GoogleTaskSnapshot[] = [];
+  let pageToken: string | null = null;
+
+  do {
+    const url = new URL(googleTasksApiUrl(effectiveListId));
+    url.searchParams.set("showCompleted", "true");
+    url.searchParams.set("showHidden", "true");
+    url.searchParams.set("maxResults", "100");
+    if (pageToken) {
+      url.searchParams.set("pageToken", pageToken);
+    }
+
+    const response = await fetch(url.toString(), {
+      method: "GET",
+      headers: {
+        authorization: `Bearer ${auth.accessToken}`
+      }
+    });
+
+    if (!response.ok) {
+      const parsedError = await parseGoogleApiError(response);
+      const errorCode = classifyGoogleTasksApiError({
+        action: "list",
+        status: response.status,
+        message: parsedError.message,
+        reason: parsedError.reason
+      });
+      if (!forceRefresh && ["google_tasks_insufficient_permissions", "google_tasks_permission_denied"].includes(errorCode)) {
+        return await googleListTasks(userId, effectiveListId, true);
+      }
+      throw new Error(errorCode);
+    }
+
+    const body = (await response.json().catch(() => null)) as GoogleTaskListResponse | null;
+    for (const item of body?.items ?? []) {
+      if (!item?.id) continue;
+      items.push({
+        id: item.id,
+        title: item.title ?? "",
+        notes: item.notes ?? null,
+        due: item.due ?? null,
+        status: item.status === "completed" ? "completed" : "needsAction",
+        completed: item.completed ?? null,
+        deleted: Boolean(item.deleted),
+        hidden: Boolean(item.hidden)
+      });
+    }
+    pageToken = body?.nextPageToken ?? null;
+  } while (pageToken);
+
+  return items;
 }
 
 async function updateTaskGoogleFields(
@@ -391,6 +528,124 @@ export async function applyTaskInboundGoogleChange(
   return {
     status: "healthy",
     message: "Зміни з Google Tasks застосовано."
+  };
+}
+
+export async function importGoogleTasksIntoLocal(
+  supabase: SupabaseAdminClient,
+  userId: string
+): Promise<GoogleTasksInboundImportResult> {
+  const { listId } = await getGoogleTasksAccess(userId);
+  const remoteTasks = (await googleListTasks(userId, listId)).filter((task) => !task.deleted);
+  const remoteIds = remoteTasks.map((task) => task.id);
+
+  if (remoteIds.length === 0) {
+    return {
+      importedCount: 0,
+      updatedCount: 0,
+      unchangedCount: 0,
+      totalRemoteCount: 0,
+      listId
+    };
+  }
+
+  const { data: existingRows, error: existingError } = await supabase
+    .from("tasks")
+    .select(
+      "id, user_id, title, details, status, due_at, scheduled_for, estimated_minutes, google_task_provider, google_task_list_id, google_task_id, google_task_sync_mode, google_task_sync_error"
+    )
+    .eq("user_id", userId)
+    .eq("google_task_provider", "google_tasks")
+    .eq("google_task_list_id", listId)
+    .in("google_task_id", remoteIds);
+
+  if (existingError) throw existingError;
+
+  const existingByRemoteId = new Map(
+    ((existingRows as TaskGoogleSyncRow[] | null) ?? [])
+      .filter((row) => row.google_task_id)
+      .map((row) => [row.google_task_id as string, row])
+  );
+
+  let importedCount = 0;
+  let updatedCount = 0;
+  let unchangedCount = 0;
+
+  for (const remote of remoteTasks) {
+    const remoteTitle = remote.title.trim() || "Задача";
+    const remoteDetails = normalizeNotes(remote.notes);
+    const remoteDueAt = normalizeDueAt(remote.due);
+    const remoteScheduledFor = deriveScheduledForFromGoogleDue(remote.due);
+    const remoteStatus = remote.status === "completed" ? "done" : "planned";
+    const existing = existingByRemoteId.get(remote.id);
+
+    if (existing) {
+      const existingScheduledMatchesDerived =
+        existing.scheduled_for === null || existing.scheduled_for === normalizeDueAt(existing.due_at);
+      const nextScheduledFor = existingScheduledMatchesDerived ? remoteScheduledFor : existing.scheduled_for;
+      const changed =
+        existing.title.trim() !== remoteTitle ||
+        normalizeNotes(existing.details) !== remoteDetails ||
+        normalizeDueAt(existing.due_at) !== remoteDueAt ||
+        normalizeDueAt(nextScheduledFor) !== normalizeDueAt(existing.scheduled_for) ||
+        existing.status !== remoteStatus ||
+        existing.google_task_sync_error !== null;
+
+      if (!changed) {
+        unchangedCount += 1;
+        continue;
+      }
+
+      const { error: updateError } = await supabase
+        .from("tasks")
+        .update({
+          title: remoteTitle.slice(0, 120),
+          details: remoteDetails,
+          due_at: remoteDueAt,
+          scheduled_for: nextScheduledFor,
+          status: remoteStatus,
+          google_task_provider: "google_tasks",
+          google_task_list_id: listId,
+          google_task_id: remote.id,
+          google_task_sync_mode: existing.google_task_sync_mode ?? "app_managed",
+          google_task_sync_error: null
+        })
+        .eq("id", existing.id)
+        .eq("user_id", userId);
+
+      if (updateError) throw updateError;
+      updatedCount += 1;
+      continue;
+    }
+
+    const { error: insertError } = await supabase.from("tasks").insert({
+      user_id: userId,
+      title: remoteTitle.slice(0, 120),
+      details: remoteDetails,
+      task_type: "admin",
+      status: remoteStatus,
+      importance: 3,
+      due_at: remoteDueAt,
+      scheduled_for: remoteScheduledFor,
+      estimated_minutes: null,
+      planning_flexibility: null,
+      google_task_provider: "google_tasks",
+      google_task_list_id: listId,
+      google_task_id: remote.id,
+      google_task_sync_mode: "app_managed",
+      google_task_sync_error: null
+    });
+
+    if (insertError) throw insertError;
+    importedCount += 1;
+  }
+
+  return {
+    importedCount,
+    updatedCount,
+    unchangedCount,
+    totalRemoteCount: remoteTasks.length,
+    listId
   };
 }
 

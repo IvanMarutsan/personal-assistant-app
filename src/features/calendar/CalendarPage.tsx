@@ -80,6 +80,30 @@ function oauthReasonLabel(reason: string | null): string {
   return "Підключення Google Calendar не вдалося.";
 }
 
+function googleTasksRecoveryHint(input: {
+  tasksScopeAvailable: boolean;
+  tasksAccessState?: GoogleIntegrationPreferences["tasksAccessState"] | GoogleCalendarStatus["tasksAccessState"];
+  tasksAccessError?: string | null;
+}): string | null {
+  if (input.tasksScopeAvailable) return "Google Tasks доступні.";
+  if (input.tasksAccessState === "scope_missing") {
+    return "Google підключено для календарів, але без дозволу на Google Tasks. Перепідключи акаунт.";
+  }
+  if (input.tasksAccessError === "google_tasks_api_disabled") {
+    return "Google Calendar підключено, але в поточному Google Cloud проєкті Tasks API вимкнений або недоступний. Це вже не лікується простим перепідключенням у Mini App.";
+  }
+  if (input.tasksAccessError === "google_tasks_insufficient_permissions") {
+    return "Google повертає недостатні права саме для Tasks API. Спробуй перепідключення ще раз; якщо стан лишається, проблема вже на стороні Google інтеграції.";
+  }
+  if (input.tasksAccessState === "permission_denied") {
+    return "Google календарі підключено, але Google відхиляє доступ саме до Tasks API. Якщо перепідключення не допомагає, проблема вже на стороні Google інтеграції.";
+  }
+  if (input.tasksAccessState === "auth_expired") {
+    return "Доступ до Google Tasks завершився. Перепідключи акаунт.";
+  }
+  return "Google Tasks зараз недоступні.";
+}
+
 export function CalendarPage() {
   const diagnostics = useDiagnostics();
   const sessionToken = localStorage.getItem(SESSION_KEY) ?? "";
@@ -98,6 +122,12 @@ export function CalendarPage() {
   const [preferencesBusy, setPreferencesBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [blockError, setBlockError] = useState<string | null>(null);
+
+  const effectiveTasksAccessState = integrationPreferences?.tasksAccessState ?? status?.tasksAccessState;
+  const effectiveTasksAccessError =
+    integrationPreferences?.tasksAccessError === "google_tasks_permission_denied" && status?.tasksAccessError
+      ? status.tasksAccessError
+      : integrationPreferences?.tasksAccessError ?? status?.tasksAccessError ?? null;
 
   const connectHint = useMemo(() => {
     const params = new URLSearchParams(window.location.search);
@@ -373,6 +403,7 @@ export function CalendarPage() {
             <p className="inbox-meta">Календар за замовчуванням: {calendarDisplayName(integrationPreferences, status.defaultCalendarId ?? status.calendarId)}</p>
             <p className="inbox-meta">Видимі календарі: {integrationPreferences?.selectedCalendarIds.length ?? status.selectedCalendarIds.length}</p>
             <p className="inbox-meta">Google Tasks за замовчуванням: {taskListDisplayName(integrationPreferences, status.defaultTaskListId)}</p>
+            <p className="inbox-meta">Google Tasks: {googleTasksRecoveryHint({ tasksScopeAvailable: status.tasksScopeAvailable, tasksAccessState: status.tasksAccessState, tasksAccessError: status.tasksAccessError })}</p>
           </>
         ) : (
           <p className="empty-note">Google Calendar не підключено.</p>
@@ -464,7 +495,13 @@ export function CalendarPage() {
               </select>
             </label>
           ) : (
-            <p className="inbox-meta">Google Tasks поки що використовує основний список за замовчуванням.</p>
+            <p className="inbox-meta">
+              {googleTasksRecoveryHint({
+                tasksScopeAvailable: integrationPreferences.tasksScopeAvailable,
+                tasksAccessState: effectiveTasksAccessState,
+                tasksAccessError: effectiveTasksAccessError
+              }) ?? "Google Tasks поки що використовує основний список за замовчуванням."}
+            </p>
           )}
         </section>
       ) : null}

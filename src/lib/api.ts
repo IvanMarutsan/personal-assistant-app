@@ -20,6 +20,7 @@ import type {
   PlanningSummary,
   ProjectItem,
   TaskCalendarInboundState,
+  TaskGoogleImportResult,
   TaskGoogleInboundState,
   TaskItem,
   TaskType,
@@ -106,8 +107,14 @@ function resolveUserSafeMessage(status: number, code: string | null, fallback: s
   if (code === "google_tasks_auth_expired") {
     return "Доступ до Google Tasks завершився. Перепідключи Google акаунт.";
   }
+  if (code === "google_tasks_api_disabled") {
+    return "Google Tasks API недоступний для цього підключення. Це вже схоже на проблему в Google Cloud / Google API налаштуваннях.";
+  }
+  if (code === "google_tasks_insufficient_permissions") {
+    return "Google не дав достатніх прав для Google Tasks. Спробуй перепідключити акаунт ще раз.";
+  }
   if (code === "google_tasks_permission_denied") {
-    return "Немає доступу до Google Tasks. Перевір підключення Google акаунта.";
+    return "Немає доступу до Google Tasks. Google Calendar може бути підключений окремо, але Tasks API зараз відхиляє доступ.";
   }
   if (code === "google_task_link_not_found") {
     return "Зв'язок із Google Tasks уже відсутній.";
@@ -246,6 +253,8 @@ export async function getGoogleCalendarStatus(sessionToken: string): Promise<Goo
     defaultCalendarId: string | null;
     defaultTaskListId: string | null;
     tasksScopeAvailable: boolean;
+    tasksAccessState?: "usable" | "scope_missing" | "permission_denied" | "auth_expired" | "not_connected" | "unknown";
+    tasksAccessError?: string | null;
     expiresAt: string | null;
   }>("get-google-calendar-status", {
     method: "GET",
@@ -261,6 +270,8 @@ export async function getGoogleCalendarStatus(sessionToken: string): Promise<Goo
     defaultCalendarId: result.defaultCalendarId ?? null,
     defaultTaskListId: result.defaultTaskListId ?? null,
     tasksScopeAvailable: Boolean(result.tasksScopeAvailable),
+    tasksAccessState: result.tasksAccessState ?? "not_connected",
+    tasksAccessError: result.tasksAccessError ?? null,
     expiresAt: result.expiresAt
   };
 }
@@ -275,6 +286,8 @@ export async function getGoogleIntegrationPreferences(sessionToken: string): Pro
     defaultCalendarId: string | null;
     defaultTaskListId: string | null;
     tasksScopeAvailable: boolean;
+    tasksAccessState?: "usable" | "scope_missing" | "permission_denied" | "auth_expired" | "not_connected" | "unknown";
+    tasksAccessError?: string | null;
   }>("get-google-integration-preferences", {
     method: "GET",
     headers: sessionHeaders(sessionToken)
@@ -287,7 +300,9 @@ export async function getGoogleIntegrationPreferences(sessionToken: string): Pro
     selectedCalendarIds: result.selectedCalendarIds ?? [],
     defaultCalendarId: result.defaultCalendarId ?? null,
     defaultTaskListId: result.defaultTaskListId ?? null,
-    tasksScopeAvailable: Boolean(result.tasksScopeAvailable)
+    tasksScopeAvailable: Boolean(result.tasksScopeAvailable),
+    tasksAccessState: result.tasksAccessState ?? "not_connected",
+    tasksAccessError: result.tasksAccessError ?? null
   };
 }
 
@@ -804,6 +819,21 @@ export async function applyTaskGoogleInbound(input: {
   });
 
   return result.state;
+}
+export async function importGoogleTasksInbound(input: {
+  sessionToken: string;
+}): Promise<TaskGoogleImportResult> {
+  const result = await request<{
+    ok: true;
+    action: "import_visible";
+    result: TaskGoogleImportResult;
+  }>("sync-task-google-inbound", {
+    method: "POST",
+    headers: sessionHeaders(input.sessionToken),
+    body: JSON.stringify({ action: "import_visible" })
+  });
+
+  return result.result;
 }
 export async function inspectTaskCalendarInbound(input: {
   sessionToken: string;

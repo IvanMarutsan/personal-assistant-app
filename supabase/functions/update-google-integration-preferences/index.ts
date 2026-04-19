@@ -59,7 +59,17 @@ Deno.serve(async (req) => {
       } catch (taskListsError) {
         const taskListsMessage = taskListsError instanceof Error ? taskListsError.message : "google_task_lists_fetch_failed";
         console.warn("[update-google-integration-preferences] task lists unavailable", { taskListsMessage });
-        if (["google_tasks_scope_missing", "google_tasks_permission_denied", "google_task_lists_fetch_failed_401", "google_task_lists_fetch_failed_403"].includes(taskListsMessage)) {
+        if (
+          [
+            "google_tasks_scope_missing",
+            "google_tasks_auth_expired",
+            "google_tasks_permission_denied",
+            "google_tasks_api_disabled",
+            "google_tasks_insufficient_permissions",
+            "google_task_lists_fetch_failed_401",
+            "google_task_lists_fetch_failed_403"
+          ].includes(taskListsMessage)
+        ) {
           normalizedTaskListId = currentSelection.defaultTaskListId;
         } else {
           throw taskListsError;

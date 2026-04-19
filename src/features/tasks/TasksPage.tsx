@@ -15,6 +15,7 @@ import {
   getGoogleCalendarStatus,
   inspectTaskCalendarInbound,
   inspectTaskGoogleInbound,
+  importGoogleTasksInbound,
   keepTaskCalendarLocalVersion,
   retryTaskCalendarSync as retryTaskCalendarSyncRequest,
   retryTaskGoogleSync as retryTaskGoogleSyncRequest,
@@ -234,7 +235,13 @@ export function TasksPage() {
         setPageNotice(
           status?.tasksScopeAvailable
             ? { tone: "success", message: "Google перепідключено. Google Tasks уже доступні." }
-            : { tone: "info", message: "Google перепідключено, але Google Tasks досі недоступні для цього акаунта." }
+            : status?.tasksAccessError === "google_tasks_api_disabled"
+              ? { tone: "error", message: "Google перепідключено, але Tasks API все ще вимкнений або недоступний у Google Cloud проєкті цього підключення." }
+              : status?.tasksAccessError === "google_tasks_insufficient_permissions"
+                ? { tone: "info", message: "Google перепідключено, але Google усе ще повертає недостатні права для Tasks API." }
+            : status?.tasksAccessState === "permission_denied"
+              ? { tone: "info", message: "Google перепідключено, але Google усе ще відхиляє доступ до Tasks API." }
+              : { tone: "info", message: "Google перепідключено, але Google Tasks досі недоступні для цього акаунта." }
         );
       })();
     } else {
@@ -653,9 +660,13 @@ export function TasksPage() {
               message:
                 createdGoogleTaskSyncError === "google_tasks_scope_missing"
                   ? "Задачу створено в додатку, але Google Tasks ще недоступні для цього підключення. Перепідключи Google у вкладці «Календар»."
+                  : createdGoogleTaskSyncError === "google_tasks_api_disabled"
+                    ? "Задачу створено в додатку, але Tasks API вимкнений або недоступний у Google Cloud проєкті цього підключення."
+                    : createdGoogleTaskSyncError === "google_tasks_insufficient_permissions"
+                      ? "Задачу створено в додатку, але Google повертає недостатні права для Tasks API навіть після підключення."
                   : createdGoogleTaskSyncError === "google_tasks_permission_denied"
                     ? "Задачу створено в додатку, але Google Tasks зараз не дає доступ. Перепідключи Google і перевір дозволи для Tasks."
-                  : "Задачу створено в додатку, але синхронізація з Google Tasks зараз недоступна."
+                    : "Задачу створено в додатку, але синхронізація з Google Tasks зараз недоступна."
             });
         } else if (createdLinkedGoogleTask) {
           setPageNotice({ tone: "success", message: "Задачу створено в додатку і синхронізовано з Google Tasks." });
@@ -912,6 +923,62 @@ export function TasksPage() {
     }
   }
 
+  async function importExternalGoogleTasks() {
+    if (!sessionToken) {
+      setError("Спочатку авторизуйся в Інбоксі.");
+      return;
+    }
+
+    setWorkingTaskId("__google_tasks_import__");
+    setError(null);
+    diagnostics.trackAction("import_google_tasks_inbound", { route: "/tasks" });
+
+    try {
+      const result = await importGoogleTasksInbound({ sessionToken });
+      await loadTasks();
+
+      if (result.importedCount === 0 && result.updatedCount === 0) {
+        setPageNotice({
+          tone: "info",
+          message:
+            result.totalRemoteCount > 0
+              ? `Google Tasks перевірено: нових задач немає, ${result.unchangedCount} уже синхронізовано.`
+              : "У вибраному Google Tasks списку поки немає задач для імпорту."
+        });
+        return;
+      }
+
+      const parts: string[] = [];
+      if (result.importedCount > 0) {
+        parts.push(`імпортовано ${result.importedCount}`);
+      }
+      if (result.updatedCount > 0) {
+        parts.push(`оновлено ${result.updatedCount}`);
+      }
+      if (result.unchangedCount > 0) {
+        parts.push(`без змін ${result.unchangedCount}`);
+      }
+
+      setPageNotice({
+        tone: "success",
+        message: `Google Tasks оновлено: ${parts.join(", ")}.`
+      });
+    } catch (importError) {
+      if (importError instanceof ApiError) {
+        diagnostics.trackFailure({
+          path: importError.path,
+          status: importError.status,
+          code: importError.code,
+          message: importError.message,
+          details: importError.details
+        });
+      }
+      setError(importError instanceof Error ? importError.message : "Не вдалося оновити задачі з Google Tasks.");
+    } finally {
+      setWorkingTaskId(null);
+    }
+  }
+
   async function reconnectGoogleForTasks() {
     if (!sessionToken) {
       setError("Спочатку авторизуйся в Інбоксі.");
@@ -1045,6 +1112,16 @@ export function TasksPage() {
       <div className="toolbar-row">
         <button type="button" onClick={openCreateTask} disabled={!sessionToken || loading || workingTaskId !== null}>
           Створити задачу
+        </button>
+        <button
+          type="button"
+          className="ghost"
+          onClick={() => {
+            void importExternalGoogleTasks();
+          }}
+          disabled={!sessionToken || loading || workingTaskId !== null}
+        >
+          Оновити з Google Tasks
         </button>
       </div>
 

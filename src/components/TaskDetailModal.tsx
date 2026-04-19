@@ -200,6 +200,9 @@ function googleTaskSyncStateSummary(task: TaskItem): string | null {
   if (task.google_task_sync_error === "google_tasks_scope_missing") return "Для Google Tasks потрібне повторне підключення Google.";
   if (task.google_task_sync_error === "google_tasks_not_connected") return "Google акаунт ще не підключено для Tasks.";
   if (task.google_task_sync_error === "google_tasks_auth_expired") return "Доступ до Google Tasks завершився.";
+  if (task.google_task_sync_error === "google_tasks_api_disabled") return "Google Tasks API вимкнений або недоступний у Google Cloud проєкті цього підключення.";
+  if (task.google_task_sync_error === "google_tasks_insufficient_permissions") return "Google повертає недостатні дозволи саме для Google Tasks.";
+  if (task.google_task_sync_error === "google_tasks_permission_denied") return "Google Tasks підключені некоректно: Google відхиляє доступ саме до Tasks API.";
   if (task.google_task_sync_error) return "Зв'язок із Google Tasks потребує уваги.";
   if (task.google_task_sync_mode === "app_managed" && task.linked_google_task) return "Синхронізовано з Google Tasks.";
   if (task.google_task_sync_mode === "manual" && task.linked_google_task) return "Задачу прив'язано вручну до Google Tasks.";
@@ -213,6 +216,15 @@ function googleTaskSyncActionHint(task: TaskItem): string | null {
   if (task.google_task_sync_error === "google_tasks_not_connected" || task.google_task_sync_error === "google_tasks_auth_expired") {
     return "Потрібно перепідключити Google акаунт, щоб задачі знову синхронізувались.";
   }
+  if (task.google_task_sync_error === "google_tasks_api_disabled") {
+    return "Локальна задача працює нормально, але сам Google Cloud проєкт цього OAuth підключення не дає доступу до Tasks API. Просте перепідключення саме по собі це не виправить.";
+  }
+  if (task.google_task_sync_error === "google_tasks_insufficient_permissions") {
+    return "Google повертає недостатні права для Tasks API. Спочатку спробуй перепідключення; якщо стан не змінюється, проблема вже поза локальною сесією.";
+  }
+  if (task.google_task_sync_error === "google_tasks_permission_denied") {
+    return "Календар Google підключено, але сам Google Tasks API відхиляє доступ. Це вже більше схоже на Google-side configuration blocker, ніж на збій створення задачі в додатку.";
+  }
   if (task.google_task_sync_error) return "Можна пересинхронізувати, застосувати зміни з Google Tasks або від'єднати зв'язок.";
   if (task.google_task_sync_mode === "app_managed" && task.linked_google_task) return "Оновлення задачі синхронізуються в Google Tasks.";
   if (task.google_task_sync_mode === "manual" && task.linked_google_task) return "Ручний зв'язок можна лише від'єднати в додатку.";
@@ -220,7 +232,7 @@ function googleTaskSyncActionHint(task: TaskItem): string | null {
 }
 
 function needsGoogleReconnect(task: TaskItem): boolean {
-  return ["google_tasks_scope_missing", "google_tasks_not_connected", "google_tasks_auth_expired"].includes(
+  return ["google_tasks_scope_missing", "google_tasks_not_connected", "google_tasks_auth_expired", "google_tasks_insufficient_permissions"].includes(
     task.google_task_sync_error ?? ""
   );
 }

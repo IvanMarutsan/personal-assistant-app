@@ -66,6 +66,20 @@ export type GoogleTaskListItem = {
   isDefault: boolean;
 };
 
+export type GoogleTasksAccessState =
+  | "usable"
+  | "scope_missing"
+  | "permission_denied"
+  | "auth_expired"
+  | "not_connected"
+  | "unknown";
+
+export type GoogleTasksAccessProbe = {
+  state: GoogleTasksAccessState;
+  errorCode: string | null;
+  taskLists: GoogleTaskListItem[];
+};
+
 export type ResolvedGoogleCalendarSelection = {
   selectedCalendarIds: string[];
   defaultCalendarId: string;
@@ -97,6 +111,19 @@ type GoogleTaskListApiItem = {
   id?: string;
   title?: string | null;
   updated?: string | null;
+};
+
+type GoogleApiErrorEnvelope = {
+  error?: {
+    code?: number;
+    message?: string;
+    status?: string;
+    errors?: Array<{
+      reason?: string;
+      message?: string;
+      domain?: string;
+    }>;
+  };
 };
 
 function randomHex(bytes = 24): string {
@@ -157,6 +184,50 @@ function normalizeDefaultCalendarId(value: string | null | undefined, selectedCa
 
 function normalizeDefaultTaskListId(value: string | null | undefined): string {
   return value?.trim() || DEFAULT_TASK_LIST_ID;
+}
+
+export async function parseGoogleApiError(response: Response): Promise<{
+  code: number;
+  message: string | null;
+  status: string | null;
+  reason: string | null;
+}> {
+  const payload = (await response.json().catch(() => null)) as GoogleApiErrorEnvelope | null;
+  const errorInfo = payload?.error ?? null;
+  const reason = errorInfo?.errors?.find((item) => item?.reason)?.reason ?? null;
+  return {
+    code: errorInfo?.code ?? response.status,
+    message: errorInfo?.message ?? null,
+    status: errorInfo?.status ?? null,
+    reason
+  };
+}
+
+export function classifyGoogleTasksApiError(input: {
+  action: "list" | "create" | "update" | "fetch" | "delete";
+  status: number;
+  message: string | null;
+  reason: string | null;
+}): string {
+  if (input.status === 401) return "google_tasks_auth_expired";
+  if (input.status === 404 && ["update", "fetch", "delete"].includes(input.action)) return "google_task_not_found";
+  if (input.status === 403) {
+    const combined = `${input.reason ?? ""} ${input.message ?? ""}`.toLowerCase();
+    if (
+      combined.includes("accessnotconfigured") ||
+      combined.includes("service_disabled") ||
+      combined.includes("tasks api has not been used") ||
+      combined.includes("api has not been used in project") ||
+      combined.includes("is disabled")
+    ) {
+      return "google_tasks_api_disabled";
+    }
+    if (combined.includes("insufficientpermissions")) {
+      return "google_tasks_insufficient_permissions";
+    }
+    return "google_tasks_permission_denied";
+  }
+  return `google_task_${input.action}_failed_${input.status}`;
 }
 
 function resolveTaskListSelectionAgainstAvailableLists(input: {
@@ -378,13 +449,13 @@ export async function getGoogleConnection(userId: string): Promise<GoogleCalenda
   return (data as GoogleCalendarConnection | null) ?? null;
 }
 
-export async function getGoogleAccessTokenForUser(userId: string): Promise<GoogleAccessContext> {
+async function resolveGoogleAccessTokenForUser(userId: string, forceRefresh: boolean): Promise<GoogleAccessContext> {
   const connection = await getGoogleConnection(userId);
   if (!connection) throw new Error("calendar_not_connected");
 
   const selection = calendarSelectionState(connection);
 
-  if (!isExpiringSoon(connection.expires_at)) {
+  if (!forceRefresh && !isExpiringSoon(connection.expires_at)) {
     return {
       accessToken: connection.access_token,
       calendarId: selection.defaultCalendarId,
@@ -423,6 +494,14 @@ export async function getGoogleAccessTokenForUser(userId: string): Promise<Googl
     googleEmail: connection.google_email,
     scope: refreshed.scope ?? connection.scope ?? null
   };
+}
+
+export async function getGoogleAccessTokenForUser(userId: string): Promise<GoogleAccessContext> {
+  return await resolveGoogleAccessTokenForUser(userId, false);
+}
+
+export async function forceRefreshGoogleAccessTokenForUser(userId: string): Promise<GoogleAccessContext> {
+  return await resolveGoogleAccessTokenForUser(userId, true);
 }
 
 export async function listGoogleCalendars(userId: string): Promise<GoogleCalendarListItem[]> {
@@ -471,8 +550,10 @@ export async function listGoogleCalendars(userId: string): Promise<GoogleCalenda
     });
 }
 
-export async function listGoogleTaskLists(userId: string): Promise<GoogleTaskListItem[]> {
-  const auth = await getGoogleAccessTokenForUser(userId);
+async function listGoogleTaskListsAttempt(userId: string, forceRefresh: boolean): Promise<GoogleTaskListItem[]> {
+  const auth = forceRefresh
+    ? await forceRefreshGoogleAccessTokenForUser(userId)
+    : await getGoogleAccessTokenForUser(userId);
   if (!hasGoogleTasksScope(auth.scope)) {
     throw new Error("google_tasks_scope_missing");
   }
@@ -483,7 +564,19 @@ export async function listGoogleTaskLists(userId: string): Promise<GoogleTaskLis
 
   const payload = (await response.json().catch(() => null)) as { items?: GoogleTaskListApiItem[] } | null;
   if (!response.ok) {
-    throw new Error(response.status === 403 ? "google_tasks_permission_denied" : `google_task_lists_fetch_failed_${response.status}`);
+    const parsedError = await parseGoogleApiError(
+      new Response(JSON.stringify(payload), { status: response.status, headers: response.headers })
+    );
+    const errorCode = classifyGoogleTasksApiError({
+      action: "list",
+      status: response.status,
+      message: parsedError.message,
+      reason: parsedError.reason
+    });
+    if (!forceRefresh && ["google_tasks_insufficient_permissions", "google_tasks_permission_denied"].includes(errorCode)) {
+      return await listGoogleTaskListsAttempt(userId, true);
+    }
+    throw new Error(errorCode);
   }
 
   const rawItems = (payload?.items ?? [])
@@ -510,6 +603,55 @@ export async function listGoogleTaskLists(userId: string): Promise<GoogleTaskLis
       if (b.isDefault && !a.isDefault) return 1;
       return a.title.localeCompare(b.title, "uk-UA");
     });
+}
+
+export async function listGoogleTaskLists(userId: string): Promise<GoogleTaskListItem[]> {
+  return await listGoogleTaskListsAttempt(userId, false);
+}
+
+export async function probeGoogleTasksAccess(userId: string): Promise<GoogleTasksAccessProbe> {
+  const connection = await getGoogleConnection(userId);
+  if (!connection) {
+    return { state: "not_connected", errorCode: "calendar_not_connected", taskLists: [] };
+  }
+
+  if (!hasGoogleTasksScope(connection.scope)) {
+    return { state: "scope_missing", errorCode: "google_tasks_scope_missing", taskLists: [] };
+  }
+
+  try {
+    const taskLists = await listGoogleTaskLists(userId);
+    return {
+      state: "usable",
+      errorCode: null,
+      taskLists
+    };
+  } catch (error) {
+    const message = error instanceof Error ? error.message : "google_tasks_access_failed";
+    if (
+      [
+        "google_tasks_permission_denied",
+        "google_tasks_api_disabled",
+        "google_tasks_insufficient_permissions",
+        "google_task_lists_fetch_failed_403"
+      ].includes(message)
+    ) {
+      return { state: "permission_denied", errorCode: message, taskLists: [] };
+    }
+    if (
+      [
+        "calendar_refresh_token_missing",
+        "google_tasks_auth_expired",
+        "google_task_lists_fetch_failed_401"
+      ].includes(message)
+    ) {
+      return { state: "auth_expired", errorCode: message, taskLists: [] };
+    }
+    if (message === "google_tasks_scope_missing") {
+      return { state: "scope_missing", errorCode: message, taskLists: [] };
+    }
+    return { state: "unknown", errorCode: message, taskLists: [] };
+  }
 }
 
 export async function updateGoogleConnectionPreferences(input: {

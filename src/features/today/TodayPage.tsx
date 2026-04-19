@@ -733,10 +733,16 @@ export function TodayPage({ surface = "day" }: TodayPageProps) {
         await loadToday();
         try {
           const status = await getGoogleCalendarStatus(sessionToken);
-          setPageNotice(
-            status.tasksScopeAvailable
-              ? { tone: "success", message: "Google перепідключено. Google Tasks уже доступні." }
-              : { tone: "info", message: "Google перепідключено, але Google Tasks досі недоступні для цього акаунта." }
+        setPageNotice(
+          status.tasksScopeAvailable
+            ? { tone: "success", message: "Google перепідключено. Google Tasks уже доступні." }
+            : status.tasksAccessError === "google_tasks_api_disabled"
+              ? { tone: "error", message: "Google перепідключено, але Tasks API все ще вимкнений або недоступний у Google Cloud проєкті цього підключення." }
+              : status.tasksAccessError === "google_tasks_insufficient_permissions"
+                ? { tone: "info", message: "Google перепідключено, але Google усе ще повертає недостатні права для Tasks API." }
+              : status.tasksAccessState === "permission_denied"
+                ? { tone: "info", message: "Google перепідключено, але Google усе ще відхиляє доступ до Tasks API." }
+                : { tone: "info", message: "Google перепідключено, але Google Tasks досі недоступні для цього акаунта." }
           );
         } catch {
           setPageNotice(connectHint);
@@ -1335,9 +1341,13 @@ export function TodayPage({ surface = "day" }: TodayPageProps) {
           message:
             created.googleTaskSyncError === "google_tasks_scope_missing"
               ? "Задачу створено в додатку, але Google Tasks ще недоступні для цього підключення. Перепідключи Google у вкладці «Календар»."
+              : created.googleTaskSyncError === "google_tasks_api_disabled"
+                ? "Задачу створено в додатку, але Tasks API вимкнений або недоступний у Google Cloud проєкті цього підключення."
+                : created.googleTaskSyncError === "google_tasks_insufficient_permissions"
+                  ? "Задачу створено в додатку, але Google повертає недостатні права для Tasks API навіть після підключення."
               : created.googleTaskSyncError === "google_tasks_permission_denied"
                 ? "Задачу створено в додатку, але Google Tasks зараз не дає доступ. Перепідключи Google і перевір дозволи для Tasks."
-              : "Задачу створено в додатку, але синхронізація з Google Tasks зараз недоступна."
+                : "Задачу створено в додатку, але синхронізація з Google Tasks зараз недоступна."
         });
       } else if (!scheduledForSelectedDay) {
         setPageNotice({

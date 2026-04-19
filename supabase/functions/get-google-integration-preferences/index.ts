@@ -1,9 +1,8 @@
 import {
   calendarSelectionState,
   getGoogleConnection,
-  hasGoogleTasksScope,
   listGoogleCalendars,
-  listGoogleTaskLists
+  probeGoogleTasksAccess
 } from "../_shared/google-calendar.ts";
 import { handleOptions, jsonResponse } from "../_shared/http.ts";
 import { resolveSessionUser } from "../_shared/session.ts";
@@ -32,7 +31,9 @@ Deno.serve(async (req) => {
         selectedCalendarIds: [],
         defaultCalendarId: null,
         defaultTaskListId: null,
-        tasksScopeAvailable: false
+        tasksScopeAvailable: false,
+        tasksAccessState: "not_connected",
+        tasksAccessError: "calendar_not_connected"
       });
     }
 
@@ -40,21 +41,8 @@ Deno.serve(async (req) => {
     const selection = calendarSelectionState(connection);
     const selectedCalendarIds = calendars.filter((calendar) => calendar.selected).map((calendar) => calendar.id);
     const defaultCalendarId = calendars.find((calendar) => calendar.default)?.id ?? selection.defaultCalendarId;
-    const tasksScopeAvailable = hasGoogleTasksScope(connection.scope);
-    let taskLists = [];
-    let resolvedTasksScopeAvailable = tasksScopeAvailable;
-    if (tasksScopeAvailable) {
-      try {
-        taskLists = await listGoogleTaskLists(sessionUser.userId);
-      } catch (taskListsError) {
-        const taskListsMessage = taskListsError instanceof Error ? taskListsError.message : "google_task_lists_fetch_failed";
-        console.warn("[get-google-integration-preferences] task lists unavailable", { taskListsMessage });
-        if (["google_tasks_scope_missing", "google_tasks_permission_denied", "google_task_lists_fetch_failed_401", "google_task_lists_fetch_failed_403"].includes(taskListsMessage)) {
-          resolvedTasksScopeAvailable = false;
-        }
-        taskLists = [];
-      }
-    }
+    const tasksAccess = await probeGoogleTasksAccess(sessionUser.userId);
+    const taskLists = tasksAccess.taskLists;
 
     return jsonResponse({
       ok: true,
@@ -64,7 +52,9 @@ Deno.serve(async (req) => {
       selectedCalendarIds,
       defaultCalendarId,
       defaultTaskListId: selection.defaultTaskListId,
-      tasksScopeAvailable: resolvedTasksScopeAvailable
+      tasksScopeAvailable: tasksAccess.state === "usable",
+      tasksAccessState: tasksAccess.state,
+      tasksAccessError: tasksAccess.errorCode
     });
   } catch (error) {
     const message = error instanceof Error ? error.message : "google_integration_preferences_failed";
@@ -77,7 +67,9 @@ Deno.serve(async (req) => {
         selectedCalendarIds: [],
         defaultCalendarId: null,
         defaultTaskListId: null,
-        tasksScopeAvailable: false
+        tasksScopeAvailable: false,
+        tasksAccessState: "not_connected",
+        tasksAccessError: "calendar_not_connected"
       });
     }
     if (message === "google_tasks_scope_missing") {
@@ -92,7 +84,9 @@ Deno.serve(async (req) => {
         selectedCalendarIds: calendars.filter((calendar) => calendar.selected).map((calendar) => calendar.id),
         defaultCalendarId: calendars.find((calendar) => calendar.default)?.id ?? selection.defaultCalendarId,
         defaultTaskListId: selection.defaultTaskListId,
-        tasksScopeAvailable: false
+        tasksScopeAvailable: false,
+        tasksAccessState: "scope_missing",
+        tasksAccessError: "google_tasks_scope_missing"
       });
     }
     console.error("[get-google-integration-preferences] failed", error);
